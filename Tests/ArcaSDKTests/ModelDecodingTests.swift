@@ -290,7 +290,7 @@ final class ModelDecodingTests: XCTestCase {
             },
             "poolAddress": "0x1234567890abcdef",
             "tokenAddress": "0xabcdef1234567890",
-            "chain": "anvil",
+            "chain": "reth",
             "expiresAt": "2026-03-07T11:00:00.000000Z"
         }
         """.data(using: .utf8)!
@@ -298,7 +298,7 @@ final class ModelDecodingTests: XCTestCase {
         let response = try decoder.decode(InitiateDepositResponse.self, from: json)
         XCTAssertEqual(response.operation.type, .deposit)
         XCTAssertEqual(response.poolAddress, "0x1234567890abcdef")
-        XCTAssertEqual(response.chain, "anvil")
+        XCTAssertEqual(response.chain, "reth")
     }
 
     // MARK: - Market Data
