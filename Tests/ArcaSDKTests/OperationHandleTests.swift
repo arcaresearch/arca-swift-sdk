@@ -226,8 +226,8 @@ final class OperationResponseConformanceTests: XCTestCase {
         XCTAssertEqual(updated.operation.state, .completed)
     }
 
-    func testInitiateDepositResponseConformance() {
-        let original = InitiateDepositResponse(
+    func testFundAccountResponseConformance() {
+        let original = FundAccountResponse(
             operation: makeOperation(state: .pending),
             poolAddress: "0xabc",
             tokenAddress: "0xdef",
@@ -241,8 +241,8 @@ final class OperationResponseConformanceTests: XCTestCase {
         XCTAssertEqual(updated.chain, "ethereum")
     }
 
-    func testInitiateWithdrawalResponseConformance() {
-        let original = InitiateWithdrawalResponse(
+    func testDefundAccountResponseConformance() {
+        let original = DefundAccountResponse(
             operation: makeOperation(state: .pending),
             txHash: "0x123"
         )

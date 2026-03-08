@@ -295,7 +295,7 @@ final class ModelDecodingTests: XCTestCase {
         }
         """.data(using: .utf8)!
 
-        let response = try decoder.decode(InitiateDepositResponse.self, from: json)
+        let response = try decoder.decode(FundAccountResponse.self, from: json)
         XCTAssertEqual(response.operation.type, .deposit)
         XCTAssertEqual(response.poolAddress, "0x1234567890abcdef")
         XCTAssertEqual(response.chain, "reth")

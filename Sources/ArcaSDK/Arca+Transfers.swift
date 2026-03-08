@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - Transfers, Deposits, Withdrawals
+// MARK: - Transfers, Fund/Defund Account
 
 extension Arca {
 
@@ -34,8 +34,9 @@ extension Arca {
         }
     }
 
-    /// Initiate a deposit to a denominated Arca object.
-    /// In demo realms, deposits are simulated.
+    /// Programmatically fund an Arca object. This is a developer/test tool for
+    /// non-production use (testing, competitions, programmatic account seeding).
+    /// For production deposit flows, use ``createPaymentLink(type:arcaRef:amount:)``.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
@@ -45,14 +46,14 @@ extension Arca {
     ///   - amount: Amount as decimal string
     ///   - path: Optional operation path for idempotency
     ///   - senderAddress: Optional sender wallet address (for on-chain matching)
-    public func deposit(
+    public func fundAccount(
         arcaRef: String,
         amount: String,
         path: String? = nil,
         senderAddress: String? = nil
-    ) -> OperationHandle<InitiateDepositResponse> {
+    ) -> OperationHandle<FundAccountResponse> {
         operationHandle { [self] in
-            try await client.post("/deposit", body: DepositRequest(
+            try await client.post("/fund-account", body: FundAccountRequest(
                 realmId: realm,
                 arcaPath: arcaRef,
                 amount: amount,
@@ -62,7 +63,9 @@ extension Arca {
         }
     }
 
-    /// Initiate a withdrawal from a denominated Arca object.
+    /// Programmatically withdraw from an Arca object. This is a developer/test tool
+    /// for non-production use. For production withdrawal flows, use
+    /// ``createPaymentLink(type:arcaRef:amount:)``.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
@@ -72,14 +75,14 @@ extension Arca {
     ///   - amount: Amount as decimal string
     ///   - destinationAddress: On-chain destination address (omit to burn in demo mode)
     ///   - path: Optional operation path for idempotency
-    public func withdrawal(
+    public func defundAccount(
         arcaPath: String,
         amount: String,
         destinationAddress: String? = nil,
         path: String? = nil
-    ) -> OperationHandle<InitiateWithdrawalResponse> {
+    ) -> OperationHandle<DefundAccountResponse> {
         operationHandle { [self] in
-            try await client.post("/withdrawal", body: WithdrawalRequest(
+            try await client.post("/defund-account", body: DefundAccountRequest(
                 realmId: realm,
                 arcaPath: arcaPath,
                 amount: amount,
@@ -100,7 +103,7 @@ private struct TransferRequest: Encodable {
     let amount: String
 }
 
-private struct DepositRequest: Encodable {
+private struct FundAccountRequest: Encodable {
     let realmId: String
     let arcaPath: String
     let amount: String
@@ -108,7 +111,7 @@ private struct DepositRequest: Encodable {
     let senderAddress: String?
 }
 
-private struct WithdrawalRequest: Encodable {
+private struct DefundAccountRequest: Encodable {
     let realmId: String
     let arcaPath: String
     let amount: String

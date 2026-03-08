@@ -10,9 +10,9 @@ public struct TransferResponse: Codable, Sendable, OperationResponse {
     }
 }
 
-// MARK: - Deposit
+// MARK: - Fund Account
 
-public struct InitiateDepositResponse: Codable, Sendable, OperationResponse {
+public struct FundAccountResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
     public let poolAddress: String?
     public let tokenAddress: String?
@@ -30,9 +30,9 @@ public struct InitiateDepositResponse: Codable, Sendable, OperationResponse {
     }
 }
 
-// MARK: - Withdrawal
+// MARK: - Defund Account
 
-public struct InitiateWithdrawalResponse: Codable, Sendable, OperationResponse {
+public struct DefundAccountResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
     public let txHash: String?
 
