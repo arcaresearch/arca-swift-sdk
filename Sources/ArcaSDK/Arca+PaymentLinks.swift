@@ -6,6 +6,9 @@ extension Arca {
 
     /// Create a payment link for deposit or withdrawal.
     ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
+    ///
     /// - Parameters:
     ///   - type: Whether this is a deposit or withdrawal link
     ///   - arcaRef: Target Arca path
@@ -20,21 +23,25 @@ extension Arca {
         returnUrl: String? = nil,
         expiresInMinutes: Int? = nil,
         metadata: [String: Any]? = nil
-    ) async throws -> CreatePaymentLinkResponse {
-        var metadataStr: String?
-        if let metadata = metadata,
-           let data = try? JSONSerialization.data(withJSONObject: metadata) {
-            metadataStr = String(data: data, encoding: .utf8)
+    ) -> OperationHandle<CreatePaymentLinkResponse> {
+        let metadataStr: String? = {
+            guard let metadata = metadata,
+                  let data = try? JSONSerialization.data(withJSONObject: metadata) else {
+                return nil
+            }
+            return String(data: data, encoding: .utf8)
+        }()
+        return operationHandle { [self] in
+            try await client.post("/payment-links", body: CreatePaymentLinkRequest(
+                realmId: realm,
+                type: type.rawValue,
+                arcaPath: arcaRef,
+                amount: amount,
+                returnUrl: returnUrl,
+                expiresInMinutes: expiresInMinutes,
+                metadata: metadataStr
+            ))
         }
-        return try await client.post("/payment-links", body: CreatePaymentLinkRequest(
-            realmId: realm,
-            type: type.rawValue,
-            arcaPath: arcaRef,
-            amount: amount,
-            returnUrl: returnUrl,
-            expiresInMinutes: expiresInMinutes,
-            metadata: metadataStr
-        ))
     }
 
     /// List payment links, optionally filtered by type and/or status.

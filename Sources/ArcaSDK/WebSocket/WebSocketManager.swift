@@ -212,6 +212,15 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of exchange fill events (fill data + originating event).
+    public func fillEvents() -> AsyncStream<(SimFill, RealmEvent)> {
+        filteredStream { event in
+            guard event.type == EventType.exchangeFill.rawValue,
+                  let fill = event.fill else { return nil }
+            return (fill, event)
+        }
+    }
+
     /// Stream of closed candle events only (finalized candles).
     public func candleClosedEvents() -> AsyncStream<CandleEvent> {
         filteredStream { event in

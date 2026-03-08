@@ -6,6 +6,9 @@ extension Arca {
 
     /// Create a denominated Arca object at the given path (idempotent).
     ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
+    ///
     /// - Parameters:
     ///   - ref: Full Arca path (e.g. `/users/u123/usd/main`)
     ///   - denomination: Currency denomination (e.g. `USD`, `BTC`)
@@ -16,18 +19,23 @@ extension Arca {
         denomination: String,
         metadata: String? = nil,
         operationPath: String? = nil
-    ) async throws -> CreateArcaObjectResponse {
-        try await client.post("/objects", body: CreateObjectRequest(
-            realmId: realm,
-            path: ref,
-            type: "denominated",
-            denomination: denomination,
-            metadata: metadata,
-            operationPath: operationPath
-        ))
+    ) -> OperationHandle<CreateArcaObjectResponse> {
+        operationHandle { [self] in
+            try await client.post("/objects", body: CreateObjectRequest(
+                realmId: realm,
+                path: ref,
+                type: "denominated",
+                denomination: denomination,
+                metadata: metadata,
+                operationPath: operationPath
+            ))
+        }
     }
 
     /// Create an Arca object of any type at the given path (idempotent).
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
     ///   - ref: Full Arca path
@@ -41,18 +49,23 @@ extension Arca {
         denomination: String? = nil,
         metadata: String? = nil,
         operationPath: String? = nil
-    ) async throws -> CreateArcaObjectResponse {
-        try await client.post("/objects", body: CreateObjectRequest(
-            realmId: realm,
-            path: ref,
-            type: type.rawValue,
-            denomination: denomination,
-            metadata: metadata,
-            operationPath: operationPath
-        ))
+    ) -> OperationHandle<CreateArcaObjectResponse> {
+        operationHandle { [self] in
+            try await client.post("/objects", body: CreateObjectRequest(
+                realmId: realm,
+                path: ref,
+                type: type.rawValue,
+                denomination: denomination,
+                metadata: metadata,
+                operationPath: operationPath
+            ))
+        }
     }
 
     /// Delete an Arca object by path.
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
     ///   - ref: Arca path to delete
@@ -64,14 +77,16 @@ extension Arca {
         sweepTo: String? = nil,
         liquidatePositions: Bool = false,
         operationPath: String? = nil
-    ) async throws -> DeleteArcaObjectResponse {
-        try await client.post("/objects/delete", body: DeleteObjectRequest(
-            realmId: realm,
-            path: ref,
-            sweepToPath: sweepTo,
-            liquidatePositions: liquidatePositions,
-            operationPath: operationPath
-        ))
+    ) -> OperationHandle<DeleteArcaObjectResponse> {
+        operationHandle { [self] in
+            try await client.post("/objects/delete", body: DeleteObjectRequest(
+                realmId: realm,
+                path: ref,
+                sweepToPath: sweepTo,
+                liquidatePositions: liquidatePositions,
+                operationPath: operationPath
+            ))
+        }
     }
 
     /// Get an Arca object by path.

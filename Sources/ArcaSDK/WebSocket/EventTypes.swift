@@ -22,6 +22,7 @@ public enum EventType: String, Sendable {
     case agentDone = "agent.done"
     case agentStepUpdated = "agent.step_updated"
     case agentExecutionDone = "agent.execution_done"
+    case exchangeFill = "exchange.fill"
 }
 
 /// Channel groups for WebSocket subscriptions.

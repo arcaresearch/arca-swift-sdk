@@ -79,35 +79,75 @@ extension Arca {
 
     /// Wait for a specific operation to reach a terminal state.
     ///
-    /// Polls the operation via HTTP at regular intervals until the state
-    /// is no longer `pending`. Throws ``ArcaError/operationFailed(operation:)``
-    /// if the terminal state is `failed` or `expired`.
+    /// Uses WebSocket `operation.updated` events for real-time settlement
+    /// detection with periodic HTTP polling as a safety net. Automatically
+    /// ensures the WebSocket is connected and subscribed to operations.
+    ///
+    /// Throws ``ArcaError/operationFailed(operation:)`` if the terminal
+    /// state is `failed` or `expired`.
     ///
     /// - Parameters:
     ///   - operationId: The operation to wait for
     ///   - timeoutSeconds: Maximum wait time (default: 30)
-    ///   - pollIntervalSeconds: Time between polls (default: 1)
     public func waitForOperation(
         operationId: String,
-        timeoutSeconds: TimeInterval = 30,
-        pollIntervalSeconds: TimeInterval = 1
+        timeoutSeconds: TimeInterval = 30
     ) async throws -> Operation {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        try await waitForSettlement(operationId, timeoutSeconds: timeoutSeconds)
+    }
 
-        while Date() < deadline {
-            let detail = try await getOperation(operationId: operationId)
-            if detail.operation.state.isTerminal {
-                try throwIfOperationFailed(detail.operation)
-                return detail.operation
+    /// Internal WebSocket-based settlement wait used by ``OperationHandle``.
+    func waitForSettlement(
+        _ operationId: String,
+        timeoutSeconds: TimeInterval = 30
+    ) async throws -> Operation {
+        await ws.ensureConnected()
+        await ws.subscribe(channels: [.operations])
+
+        return try await withThrowingTaskGroup(of: Operation.self) { group in
+            // WebSocket path: listen for matching operation.updated events
+            group.addTask {
+                let stream = await self.ws.operationEvents()
+                for await (op, _) in stream {
+                    if op.id.rawValue == operationId && op.state.isTerminal {
+                        try self.throwIfOperationFailed(op)
+                        return op
+                    }
+                }
+                throw ArcaError.unknown(
+                    code: "STREAM_ENDED",
+                    message: "Operation event stream ended",
+                    errorId: nil
+                )
             }
-            try await Task.sleep(nanoseconds: UInt64(pollIntervalSeconds * 1_000_000_000))
-        }
 
-        throw ArcaError.unknown(
-            code: "TIMEOUT",
-            message: "Timed out waiting for operation \(operationId) after \(Int(timeoutSeconds))s",
-            errorId: nil
-        )
+            // HTTP fallback: periodic polling as a safety net
+            group.addTask {
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    let detail = try await self.getOperation(operationId: operationId)
+                    if detail.operation.state.isTerminal {
+                        try self.throwIfOperationFailed(detail.operation)
+                        return detail.operation
+                    }
+                }
+                throw CancellationError()
+            }
+
+            // Timeout
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw ArcaError.unknown(
+                    code: "TIMEOUT",
+                    message: "Timed out waiting for operation \(operationId) after \(Int(timeoutSeconds))s",
+                    errorId: nil
+                )
+            }
+
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 
     /// Throws ``ArcaError/operationFailed(operation:)`` when the operation

@@ -7,6 +7,9 @@ extension Arca {
     /// Create a Perps Exchange Arca object.
     /// Automatically sets type=exchange and denomination=USD.
     ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
+    ///
     /// - Parameters:
     ///   - ref: Full Arca path (e.g. `/exchanges/hl1`)
     ///   - exchangeType: Exchange provider (defaults to `hyperliquid`)
@@ -15,18 +18,20 @@ extension Arca {
         ref: String,
         exchangeType: String = "hyperliquid",
         operationPath: String? = nil
-    ) async throws -> CreateArcaObjectResponse {
-        let metadata = try JSONEncoder().encode(["exchangeType": exchangeType])
-        let metadataString = String(data: metadata, encoding: .utf8)
+    ) -> OperationHandle<CreateArcaObjectResponse> {
+        operationHandle { [self] in
+            let metadata = try JSONEncoder().encode(["exchangeType": exchangeType])
+            let metadataString = String(data: metadata, encoding: .utf8)
 
-        return try await client.post("/objects", body: CreateExchangeRequest(
-            realmId: realm,
-            path: ref,
-            type: "exchange",
-            denomination: "USD",
-            metadata: metadataString,
-            operationPath: operationPath
-        ))
+            return try await client.post("/objects", body: CreateExchangeRequest(
+                realmId: realm,
+                path: ref,
+                type: "exchange",
+                denomination: "USD",
+                metadata: metadataString,
+                operationPath: operationPath
+            ))
+        }
     }
 
     /// Get exchange account state (equity, margin, positions, orders).
@@ -80,6 +85,13 @@ extension Arca {
 
     /// Place an order on an exchange Arca object.
     ///
+    /// Returns an ``OrderHandle`` with order lifecycle methods:
+    /// - `try await order.settled` — wait for placement
+    /// - `try await order.filled()` — wait for fill
+    /// - `for try await fill in order.fills()` — stream fills
+    /// - `order.onFill { fill in ... }` — callback per fill
+    /// - `try await order.cancel().settled` — cancel the order
+    ///
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
@@ -108,24 +120,46 @@ extension Arca {
         timeInForce: TimeInForce = .gtc,
         builderFeeBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil
-    ) async throws -> OrderOperationResponse {
-        let response: OrderOperationResponse = try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
-            realmId: realm,
-            path: path,
-            coin: coin,
-            side: side.rawValue,
-            orderType: orderType.rawValue,
-            size: size,
-            szDenom: szDenom.rawValue,
-            price: price,
-            leverage: leverage,
-            reduceOnly: reduceOnly,
-            timeInForce: timeInForce.rawValue,
-            builderFeeBps: builderFeeBps,
-            feeTargets: feeTargets
-        ))
-        try throwIfOperationFailed(response.operation)
-        return response
+    ) -> OrderHandle {
+        let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
+            try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
+                realmId: realm,
+                path: path,
+                coin: coin,
+                side: side.rawValue,
+                orderType: orderType.rawValue,
+                size: size,
+                szDenom: szDenom.rawValue,
+                price: price,
+                leverage: leverage,
+                reduceOnly: reduceOnly,
+                timeInForce: timeInForce.rawValue,
+                builderFeeBps: builderFeeBps,
+                feeTargets: feeTargets
+            ))
+        }
+
+        let deps = OrderHandleDeps(
+            getOrder: { [self] objId, orderId in
+                try await self.getOrder(objectId: objId, orderId: orderId)
+            },
+            fillEvents: { [self] in
+                await self.ws.fillEvents()
+            },
+            cancelOrder: { [self] cancelPath, objId, orderId in
+                self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
+            },
+            waitForSettlement: { [self] operationId in
+                try await self.waitForSettlement(operationId)
+            }
+        )
+
+        return OrderHandle(
+            inner: inner,
+            objectId: objectId,
+            placementPath: path,
+            deps: deps
+        )
     }
 
     /// List orders for an exchange Arca object.
@@ -141,17 +175,20 @@ extension Arca {
     }
 
     /// Cancel an order on an exchange Arca object.
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement.
     public func cancelOrder(
         path: String,
         objectId: String,
         orderId: String
-    ) async throws -> OrderOperationResponse {
-        let response: OrderOperationResponse = try await client.delete(
-            "/objects/\(objectId)/exchange/orders/\(orderId)",
-            query: ["realmId": realm, "path": path]
-        )
-        try throwIfOperationFailed(response.operation)
-        return response
+    ) -> OperationHandle<OrderOperationResponse> {
+        operationHandle { [self] in
+            try await client.delete(
+                "/objects/\(objectId)/exchange/orders/\(orderId)",
+                query: ["realmId": realm, "path": path]
+            )
+        }
     }
 
     /// List positions for an exchange Arca object.

@@ -9,6 +9,9 @@ extension Arca {
     /// Settlement is immediate for denominated targets, or async for
     /// targets that require a receiver workflow (e.g. exchange objects).
     ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
+    ///
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - from: Source Arca path
@@ -19,20 +22,23 @@ extension Arca {
         from: String,
         to: String,
         amount: String
-    ) async throws -> TransferResponse {
-        let response: TransferResponse = try await client.post("/transfer", body: TransferRequest(
-            realmId: realm,
-            path: path,
-            sourceArcaPath: from,
-            targetArcaPath: to,
-            amount: amount
-        ))
-        try throwIfOperationFailed(response.operation)
-        return response
+    ) -> OperationHandle<TransferResponse> {
+        operationHandle { [self] in
+            try await client.post("/transfer", body: TransferRequest(
+                realmId: realm,
+                path: path,
+                sourceArcaPath: from,
+                targetArcaPath: to,
+                amount: amount
+            ))
+        }
     }
 
     /// Initiate a deposit to a denominated Arca object.
     /// In demo realms, deposits are simulated.
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
     ///   - arcaRef: Target Arca path
@@ -44,19 +50,22 @@ extension Arca {
         amount: String,
         path: String? = nil,
         senderAddress: String? = nil
-    ) async throws -> InitiateDepositResponse {
-        let response: InitiateDepositResponse = try await client.post("/deposit", body: DepositRequest(
-            realmId: realm,
-            arcaPath: arcaRef,
-            amount: amount,
-            path: path,
-            senderAddress: senderAddress
-        ))
-        try throwIfOperationFailed(response.operation)
-        return response
+    ) -> OperationHandle<InitiateDepositResponse> {
+        operationHandle { [self] in
+            try await client.post("/deposit", body: DepositRequest(
+                realmId: realm,
+                arcaPath: arcaRef,
+                amount: amount,
+                path: path,
+                senderAddress: senderAddress
+            ))
+        }
     }
 
     /// Initiate a withdrawal from a denominated Arca object.
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
     ///   - arcaPath: Source Arca path
@@ -68,16 +77,16 @@ extension Arca {
         amount: String,
         destinationAddress: String? = nil,
         path: String? = nil
-    ) async throws -> InitiateWithdrawalResponse {
-        let response: InitiateWithdrawalResponse = try await client.post("/withdrawal", body: WithdrawalRequest(
-            realmId: realm,
-            arcaPath: arcaPath,
-            amount: amount,
-            destinationAddress: destinationAddress ?? "",
-            path: path
-        ))
-        try throwIfOperationFailed(response.operation)
-        return response
+    ) -> OperationHandle<InitiateWithdrawalResponse> {
+        operationHandle { [self] in
+            try await client.post("/withdrawal", body: WithdrawalRequest(
+                realmId: realm,
+                arcaPath: arcaPath,
+                amount: amount,
+                destinationAddress: destinationAddress ?? "",
+                path: path
+            ))
+        }
     }
 }
 

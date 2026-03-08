@@ -19,9 +19,13 @@ public struct PaymentLinkResponse: Codable, Sendable {
     public let createdAt: String
 }
 
-public struct CreatePaymentLinkResponse: Codable, Sendable {
+public struct CreatePaymentLinkResponse: Codable, Sendable, OperationResponse {
     public let paymentLink: PaymentLinkResponse
     public let operation: Operation
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(paymentLink: paymentLink, operation: op)
+    }
 }
 
 public struct PaymentLinkListResponse: Codable, Sendable {

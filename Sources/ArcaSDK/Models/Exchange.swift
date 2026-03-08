@@ -137,8 +137,12 @@ public struct LeverageSetting: Codable, Sendable {
 
 // MARK: - Order Operation
 
-public struct OrderOperationResponse: Codable, Sendable {
+public struct OrderOperationResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(operation: op)
+    }
 }
 
 // MARK: - Fee Target

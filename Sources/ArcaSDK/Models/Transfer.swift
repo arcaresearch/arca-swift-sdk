@@ -2,25 +2,43 @@ import Foundation
 
 // MARK: - Transfer
 
-public struct TransferResponse: Codable, Sendable {
+public struct TransferResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(operation: op)
+    }
 }
 
 // MARK: - Deposit
 
-public struct InitiateDepositResponse: Codable, Sendable {
+public struct InitiateDepositResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
     public let poolAddress: String?
     public let tokenAddress: String?
     public let chain: String?
     public let expiresAt: String?
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(
+            operation: op,
+            poolAddress: poolAddress,
+            tokenAddress: tokenAddress,
+            chain: chain,
+            expiresAt: expiresAt
+        )
+    }
 }
 
 // MARK: - Withdrawal
 
-public struct InitiateWithdrawalResponse: Codable, Sendable {
+public struct InitiateWithdrawalResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
     public let txHash: String?
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(operation: op, txHash: txHash)
+    }
 }
 
 // MARK: - Nonce

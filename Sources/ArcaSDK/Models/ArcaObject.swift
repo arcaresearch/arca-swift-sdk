@@ -97,14 +97,22 @@ public struct ArcaObjectBrowseResponse: Codable, Sendable {
     public let objects: [ArcaObject]
 }
 
-public struct CreateArcaObjectResponse: Codable, Sendable {
+public struct CreateArcaObjectResponse: Codable, Sendable, OperationResponse {
     public let object: ArcaObject
     public let operation: Operation
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(object: object, operation: op)
+    }
 }
 
-public struct DeleteArcaObjectResponse: Codable, Sendable {
+public struct DeleteArcaObjectResponse: Codable, Sendable, OperationResponse {
     public let object: ArcaObject
     public let operation: Operation
+
+    public func withOperation(_ op: Operation) -> Self {
+        .init(object: object, operation: op)
+    }
 }
 
 public struct ArcaObjectDetailResponse: Codable, Sendable {

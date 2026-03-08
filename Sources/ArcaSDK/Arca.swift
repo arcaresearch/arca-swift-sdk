@@ -48,6 +48,21 @@ public final class Arca: Sendable {
     /// The resolved realm ID for this SDK instance.
     public var realm: String { realmId }
 
+    // MARK: - Operation Handle Factory
+
+    /// Create an ``OperationHandle`` that starts the HTTP call eagerly
+    /// and wires up WebSocket-based settlement waiting.
+    func operationHandle<T: OperationResponse>(
+        _ submit: @escaping @Sendable () async throws -> T
+    ) -> OperationHandle<T> {
+        OperationHandle(
+            submit: submit,
+            waitForSettlement: { [self] operationId in
+                try await self.waitForSettlement(operationId)
+            }
+        )
+    }
+
     // MARK: - JWT Payload Decoding
 
     private static func extractRealmId(from token: String) throws -> String {

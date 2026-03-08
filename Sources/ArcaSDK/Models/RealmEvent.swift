@@ -17,4 +17,5 @@ public struct RealmEvent: Codable, Sendable {
     public let coin: String?
     public let interval: String?
     public let candle: Candle?
+    public let fill: SimFill?
 }
