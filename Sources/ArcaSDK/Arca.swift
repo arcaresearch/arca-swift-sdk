@@ -6,7 +6,7 @@ import Foundation
 /// All methods are `async throws` and use Swift structured concurrency.
 ///
 /// ```swift
-/// let arca = try Arca(token: scopedJwt, baseURL: URL(string: "https://api.arca.dev")!)
+/// let arca = try Arca(token: scopedJwt, baseURL: URL(string: "https://api.arcaos.io")!)
 /// let objects = try await arca.listObjects()
 /// ```
 public final class Arca: Sendable {
@@ -22,9 +22,9 @@ public final class Arca: Sendable {
     ///
     /// - Parameters:
     ///   - token: Scoped JWT issued by your backend
-    ///   - baseURL: Base URL of the Arca API (defaults to `https://api.arca.dev`)
+    ///   - baseURL: Base URL of the Arca API (defaults to `https://api.arcaos.io`)
     ///   - realmId: Explicit realm ID override (decoded from token if omitted)
-    public init(token: String, baseURL: URL = URL(string: "https://api.arca.dev")!, realmId: String? = nil) throws {
+    public init(token: String, baseURL: URL = URL(string: "https://api.arcaos.io")!, realmId: String? = nil) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
         self.realmId = resolved
