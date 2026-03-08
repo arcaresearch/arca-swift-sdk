@@ -35,6 +35,10 @@ public enum ArcaError: Error, Sendable {
     /// Server returned a non-JSON response.
     case nonJsonResponse(statusCode: Int, body: String)
 
+    /// The operation completed with a non-success terminal state (`failed` or `expired`).
+    /// The full `Operation` is available for inspection (e.g. `operation.outcome`).
+    case operationFailed(operation: Operation)
+
     /// Unknown API error code.
     case unknown(code: String, message: String, errorId: String?)
 }
@@ -54,6 +58,9 @@ extension ArcaError: LocalizedError {
         case .nonJsonResponse(let status, let body):
             let preview = body.prefix(200)
             return "Non-JSON response (HTTP \(status)): \(preview)"
+        case .operationFailed(let op):
+            let reason = op.outcome ?? op.state.rawValue
+            return "Operation \(op.id) \(op.state.rawValue): \(reason)"
         case .unknown(let code, let message, _): return "\(code): \(message)"
         }
     }

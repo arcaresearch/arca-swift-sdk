@@ -80,7 +80,8 @@ extension Arca {
     /// Wait for a specific operation to reach a terminal state.
     ///
     /// Polls the operation via HTTP at regular intervals until the state
-    /// is no longer `pending`.
+    /// is no longer `pending`. Throws ``ArcaError/operationFailed(operation:)``
+    /// if the terminal state is `failed` or `expired`.
     ///
     /// - Parameters:
     ///   - operationId: The operation to wait for
@@ -96,6 +97,7 @@ extension Arca {
         while Date() < deadline {
             let detail = try await getOperation(operationId: operationId)
             if detail.operation.state.isTerminal {
+                try throwIfOperationFailed(detail.operation)
                 return detail.operation
             }
             try await Task.sleep(nanoseconds: UInt64(pollIntervalSeconds * 1_000_000_000))
@@ -106,5 +108,16 @@ extension Arca {
             message: "Timed out waiting for operation \(operationId) after \(Int(timeoutSeconds))s",
             errorId: nil
         )
+    }
+
+    /// Throws ``ArcaError/operationFailed(operation:)`` when the operation
+    /// reached a non-success terminal state.
+    func throwIfOperationFailed(_ operation: Operation) throws {
+        switch operation.state {
+        case .failed, .expired:
+            throw ArcaError.operationFailed(operation: operation)
+        case .pending, .completed:
+            break
+        }
     }
 }

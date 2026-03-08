@@ -109,7 +109,7 @@ extension Arca {
         builderFeeBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil
     ) async throws -> OrderOperationResponse {
-        try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
+        let response: OrderOperationResponse = try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
             realmId: realm,
             path: path,
             coin: coin,
@@ -124,6 +124,8 @@ extension Arca {
             builderFeeBps: builderFeeBps,
             feeTargets: feeTargets
         ))
+        try throwIfOperationFailed(response.operation)
+        return response
     }
 
     /// List orders for an exchange Arca object.
@@ -144,10 +146,12 @@ extension Arca {
         objectId: String,
         orderId: String
     ) async throws -> OrderOperationResponse {
-        try await client.delete(
+        let response: OrderOperationResponse = try await client.delete(
             "/objects/\(objectId)/exchange/orders/\(orderId)",
             query: ["realmId": realm, "path": path]
         )
+        try throwIfOperationFailed(response.operation)
+        return response
     }
 
     /// List positions for an exchange Arca object.
@@ -192,14 +196,33 @@ extension Arca {
 
 // MARK: - Exchange Enums
 
-public enum OrderSide: String, Sendable {
+public enum OrderSide: String, Codable, Sendable {
     case buy = "BUY"
     case sell = "SELL"
 }
 
-public enum OrderType: String, Sendable {
+public enum PositionSide: String, Codable, Sendable {
+    case long = "LONG"
+    case short = "SHORT"
+}
+
+public enum OrderType: String, Codable, Sendable {
     case market = "MARKET"
     case limit = "LIMIT"
+}
+
+public enum OrderStatus: String, Codable, Sendable {
+    case pending = "PENDING"
+    case open = "OPEN"
+    case partiallyFilled = "PARTIALLY_FILLED"
+    case filled = "FILLED"
+    case cancelled = "CANCELLED"
+    case failed = "FAILED"
+}
+
+public enum LeverageType: String, Codable, Sendable {
+    case cross
+    case isolated
 }
 
 public enum SizeDenomination: String, Sendable {
@@ -207,7 +230,7 @@ public enum SizeDenomination: String, Sendable {
     case usd
 }
 
-public enum TimeInForce: String, Sendable {
+public enum TimeInForce: String, Codable, Sendable {
     case gtc = "GTC"
     case ioc = "IOC"
     case alo = "ALO"

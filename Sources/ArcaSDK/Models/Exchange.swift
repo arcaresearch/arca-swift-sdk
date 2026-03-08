@@ -25,7 +25,7 @@ public struct SimPosition: Codable, Sendable {
     public let accountId: SimAccountID
     public let realmId: RealmID
     public let coin: String
-    public let side: String
+    public let side: PositionSide
     public let size: String
     public let entryPrice: String
     public let leverage: Int
@@ -41,15 +41,15 @@ public struct SimOrder: Codable, Sendable {
     public let accountId: SimAccountID
     public let realmId: RealmID
     public let coin: String
-    public let side: String
-    public let orderType: String
+    public let side: OrderSide
+    public let orderType: OrderType
     public let price: String?
     public let size: String
     public let filledSize: String
     public let avgFillPrice: String?
-    public let status: String
+    public let status: OrderStatus
     public let reduceOnly: Bool
-    public let timeInForce: String
+    public let timeInForce: TimeInForce
     public let leverage: Int
     public let builderFeeBps: Int?
     public let createdAt: String
@@ -62,7 +62,7 @@ public struct SimFill: Codable, Sendable {
     public let accountId: SimAccountID
     public let realmId: RealmID
     public let coin: String
-    public let side: String
+    public let side: OrderSide
     public let price: String
     public let size: String
     public let fee: String
@@ -106,7 +106,7 @@ public struct SimOrderWithFills: Codable, Sendable {
 // MARK: - Active Asset Data
 
 public struct LeverageInfo: Codable, Sendable {
-    public let type: String
+    public let type: LeverageType
     public let value: Int
 }
 

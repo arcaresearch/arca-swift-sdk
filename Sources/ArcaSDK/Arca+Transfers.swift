@@ -20,13 +20,15 @@ extension Arca {
         to: String,
         amount: String
     ) async throws -> TransferResponse {
-        try await client.post("/transfer", body: TransferRequest(
+        let response: TransferResponse = try await client.post("/transfer", body: TransferRequest(
             realmId: realm,
             path: path,
             sourceArcaPath: from,
             targetArcaPath: to,
             amount: amount
         ))
+        try throwIfOperationFailed(response.operation)
+        return response
     }
 
     /// Initiate a deposit to a denominated Arca object.
@@ -43,13 +45,15 @@ extension Arca {
         path: String? = nil,
         senderAddress: String? = nil
     ) async throws -> InitiateDepositResponse {
-        try await client.post("/deposit", body: DepositRequest(
+        let response: InitiateDepositResponse = try await client.post("/deposit", body: DepositRequest(
             realmId: realm,
             arcaPath: arcaRef,
             amount: amount,
             path: path,
             senderAddress: senderAddress
         ))
+        try throwIfOperationFailed(response.operation)
+        return response
     }
 
     /// Initiate a withdrawal from a denominated Arca object.
@@ -65,13 +69,15 @@ extension Arca {
         destinationAddress: String? = nil,
         path: String? = nil
     ) async throws -> InitiateWithdrawalResponse {
-        try await client.post("/withdrawal", body: WithdrawalRequest(
+        let response: InitiateWithdrawalResponse = try await client.post("/withdrawal", body: WithdrawalRequest(
             realmId: realm,
             arcaPath: arcaPath,
             amount: amount,
             destinationAddress: destinationAddress ?? "",
             path: path
         ))
+        try throwIfOperationFailed(response.operation)
+        return response
     }
 }
 
