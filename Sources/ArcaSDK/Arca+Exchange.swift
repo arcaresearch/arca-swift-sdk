@@ -229,6 +229,36 @@ extension Arca {
         if let endTime = endTime { query["endTime"] = String(endTime) }
         return try await client.get("/exchange/market/candles/\(coin)", query: query)
     }
+
+    /// Subscribe to real-time mid prices for all assets.
+    /// Fetches an initial snapshot, then streams updates via WebSocket.
+    ///
+    /// - Parameter exchange: Exchange identifier (default: `"sim"`)
+    /// - Returns: A ``MarketPriceStream`` with the initial prices and an async update stream.
+    public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
+        let snapshot = try await getMarketMids()
+        await ws.ensureConnected()
+        await ws.subscribeMids(exchange: exchange)
+        let updates = await ws.midsEvents()
+        return MarketPriceStream(
+            initialPrices: snapshot.mids,
+            updates: updates,
+            stop: { [ws] in await ws.unsubscribeMids() }
+        )
+    }
+}
+
+/// A stream of real-time mid prices.
+/// `initialPrices` contains the snapshot at subscription time;
+/// `updates` yields each subsequent `mids.updated` payload.
+public struct MarketPriceStream: Sendable {
+    /// Mid prices at the time the stream was created.
+    public let initialPrices: [String: String]
+    /// Async stream of price updates. Each element is the full set of mids
+    /// received in a `mids.updated` WebSocket event.
+    public let updates: AsyncStream<[String: String]>
+    /// Stop listening and unsubscribe from mid price updates.
+    public let stop: @Sendable () async -> Void
 }
 
 // MARK: - Exchange Enums

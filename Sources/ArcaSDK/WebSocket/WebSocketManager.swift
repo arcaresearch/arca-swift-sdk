@@ -100,7 +100,8 @@ public actor WebSocketManager {
     }
 
     /// Subscribe to real-time mid price updates.
-    public func subscribeMids(exchange: String, coins: [String]) {
+    /// Pass an empty `coins` array (the default) to subscribe to all assets.
+    public func subscribeMids(exchange: String, coins: [String] = []) {
         subscribedMids = (exchange, coins)
         sendMessage(.subscribeMids(exchange: exchange, coins: coins))
     }
