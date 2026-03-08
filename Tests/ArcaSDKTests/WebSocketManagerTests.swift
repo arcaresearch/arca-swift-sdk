@@ -77,4 +77,51 @@ final class WebSocketManagerTests: XCTestCase {
         let status = await manager.status
         XCTAssertEqual(status, .disconnected)
     }
+
+    // MARK: - Subscribe Candles Message Encoding
+
+    func testSubscribeCandlesMessageEncoding() throws {
+        let message = OutboundMessage.subscribeCandles(coins: ["BTC"], intervals: ["1m", "5m"])
+        let data = try JSONEncoder().encode(message)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(json["action"] as? String, "subscribe_candles")
+        XCTAssertEqual(json["coins"] as? [String], ["BTC"])
+        XCTAssertEqual(json["intervals"] as? [String], ["1m", "5m"])
+    }
+
+    func testUnsubscribeCandlesMessageEncoding() throws {
+        let message = OutboundMessage.unsubscribeCandles
+        let data = try JSONEncoder().encode(message)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(json["action"] as? String, "unsubscribe_candles")
+    }
+
+    // MARK: - WatchStream Types
+
+    func testSendableBoxValue() {
+        let box = SendableBox([1, 2, 3])
+        XCTAssertEqual(box.value, [1, 2, 3])
+    }
+
+    func testSendableBoxUpdate() {
+        let box = SendableBox([1, 2, 3])
+        box.update { $0.append(4) }
+        XCTAssertEqual(box.value, [1, 2, 3, 4])
+    }
+
+    func testSendableBoxThreadSafety() {
+        let box = SendableBox(0)
+        let group = DispatchGroup()
+        for _ in 0..<100 {
+            group.enter()
+            DispatchQueue.global().async {
+                box.update { $0 += 1 }
+                group.leave()
+            }
+        }
+        group.wait()
+        XCTAssertEqual(box.value, 100)
+    }
 }

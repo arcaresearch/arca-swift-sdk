@@ -231,19 +231,20 @@ extension Arca {
     }
 
     /// Subscribe to real-time mid prices for all assets.
-    /// Fetches an initial snapshot, then streams updates via WebSocket.
+    /// Uses server-side snapshots: the WebSocket sends current mids on subscribe.
+    /// Returns a ``MarketPriceStream`` whose `initialPrices` contains the snapshot
+    /// and `updates` yields each subsequent update. Call `stop()` when done.
     ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
-    /// - Returns: A ``MarketPriceStream`` with the initial prices and an async update stream.
     public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
-        let snapshot = try await getMarketMids()
         await ws.ensureConnected()
-        await ws.subscribeMids(exchange: exchange)
+        let snapshot: [String: String] = await ws.waitForSnapshot(channel: "mids")
+        await ws.acquireMids(exchange: exchange)
         let updates = await ws.midsEvents()
         return MarketPriceStream(
-            initialPrices: snapshot.mids,
+            initialPrices: snapshot,
             updates: updates,
-            stop: { [ws] in await ws.unsubscribeMids() }
+            stop: { [ws] in await ws.releaseMids() }
         )
     }
 }

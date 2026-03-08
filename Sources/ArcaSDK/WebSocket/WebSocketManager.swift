@@ -35,6 +35,18 @@ public actor WebSocketManager {
 
     private var _status: ConnectionStatus = .disconnected
 
+    // Ref-counted subscription engine
+    private var channelRefs: [String: Int] = [:]
+    private var midsRefs = 0
+    private var midsExchange = "sim"
+    private var candleRefCoins: [String: Set<String>] = [:] // coin → set of interval rawValues
+    private var unsubTasks: [String: Task<Void, Never>] = [:]
+    private var idleDisconnectTask: Task<Void, Never>?
+    private static let unsubDebounceNs: UInt64 = 100_000_000 // 100ms
+    private static let idleDisconnectNs: UInt64 = 60_000_000_000 // 60s
+
+    private var snapshotContinuations: [String: [CheckedContinuation<Any, Never>]] = [:]
+
     public init(
         baseURL: URL,
         token: String,
@@ -80,6 +92,9 @@ public actor WebSocketManager {
         reconnectTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        cancelIdleTimer()
+        for task in unsubTasks.values { task.cancel() }
+        unsubTasks.removeAll()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         setStatus(.disconnected)
@@ -122,6 +137,183 @@ public actor WebSocketManager {
     public func unsubscribeCandles() {
         subscribedCandles = nil
         sendMessage(.unsubscribeCandles)
+    }
+
+    // MARK: - Ref-Counted Subscription Management
+
+    /// Acquire interest in a channel. Increments ref count;
+    /// auto-connects and subscribes on first interest.
+    public func acquireChannel(_ channel: Channel) {
+        cancelIdleTimer()
+        let key = channel.rawValue
+        let prev = channelRefs[key, default: 0]
+        channelRefs[key] = prev + 1
+        if prev == 0 {
+            let timerKey = "ch:\(key)"
+            if let task = unsubTasks.removeValue(forKey: timerKey) {
+                task.cancel()
+            } else {
+                ensureConnected()
+                subscribe(channels: [channel])
+            }
+        }
+    }
+
+    /// Release interest in a channel. Decrements ref count;
+    /// debounced unsubscribe when the last watcher leaves.
+    public func releaseChannel(_ channel: Channel) {
+        let key = channel.rawValue
+        let current = channelRefs[key, default: 0]
+        if current <= 1 {
+            channelRefs.removeValue(forKey: key)
+            let timerKey = "ch:\(key)"
+            unsubTasks[timerKey] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+                guard !Task.isCancelled else { return }
+                await self?.finishRelease(channel: channel, timerKey: timerKey)
+            }
+        } else {
+            channelRefs[key] = current - 1
+        }
+    }
+
+    private func finishRelease(channel: Channel, timerKey: String) {
+        unsubTasks.removeValue(forKey: timerKey)
+        if channelRefs[channel.rawValue] == nil {
+            unsubscribe(channels: [channel])
+        }
+        maybeStartIdleTimer()
+    }
+
+    /// Acquire interest in mid price updates.
+    public func acquireMids(exchange: String) {
+        cancelIdleTimer()
+        midsExchange = exchange
+        midsRefs += 1
+        if midsRefs == 1 {
+            let timerKey = "mids"
+            if let task = unsubTasks.removeValue(forKey: timerKey) {
+                task.cancel()
+            } else {
+                ensureConnected()
+                subscribeMids(exchange: exchange)
+            }
+        }
+    }
+
+    /// Release interest in mid price updates.
+    public func releaseMids() {
+        midsRefs = max(0, midsRefs - 1)
+        if midsRefs == 0 {
+            let timerKey = "mids"
+            unsubTasks[timerKey] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+                guard !Task.isCancelled else { return }
+                await self?.finishMidsRelease(timerKey: timerKey)
+            }
+        }
+    }
+
+    private func finishMidsRelease(timerKey: String) {
+        unsubTasks.removeValue(forKey: timerKey)
+        if midsRefs == 0 {
+            unsubscribeMids()
+        }
+        maybeStartIdleTimer()
+    }
+
+    /// Acquire interest in candle updates.
+    public func acquireCandles(coins: [String], intervals: [CandleInterval]) {
+        cancelIdleTimer()
+        for coin in coins {
+            if candleRefCoins[coin] == nil {
+                candleRefCoins[coin] = Set()
+            }
+            for iv in intervals {
+                candleRefCoins[coin]!.insert(iv.rawValue)
+            }
+        }
+        ensureConnected()
+        syncCandleSubscription()
+    }
+
+    /// Release interest in candle updates.
+    public func releaseCandles(coins: [String], intervals: [CandleInterval]) {
+        for coin in coins {
+            guard var ivs = candleRefCoins[coin] else { continue }
+            for iv in intervals { ivs.remove(iv.rawValue) }
+            if ivs.isEmpty {
+                candleRefCoins.removeValue(forKey: coin)
+            } else {
+                candleRefCoins[coin] = ivs
+            }
+        }
+        let timerKey = "candles"
+        unsubTasks[timerKey] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.finishCandleRelease(timerKey: timerKey)
+        }
+    }
+
+    private func finishCandleRelease(timerKey: String) {
+        unsubTasks.removeValue(forKey: timerKey)
+        syncCandleSubscription()
+        maybeStartIdleTimer()
+    }
+
+    private func syncCandleSubscription() {
+        if candleRefCoins.isEmpty {
+            unsubscribeCandles()
+            return
+        }
+        let allCoins = Array(candleRefCoins.keys)
+        var allIntervals = Set<String>()
+        for ivs in candleRefCoins.values {
+            allIntervals.formUnion(ivs)
+        }
+        let intervals = allIntervals.compactMap { CandleInterval(rawValue: $0) }
+        subscribeCandles(coins: allCoins, intervals: intervals)
+    }
+
+    /// Wait for a snapshot message on a given channel key.
+    public func waitForSnapshot<T>(channel: String) async -> T {
+        await withCheckedContinuation { continuation in
+            snapshotContinuations[channel, default: []].append(continuation)
+        } as! T
+    }
+
+    private func dispatchSnapshot(channel: String, data: Any) {
+        guard let continuations = snapshotContinuations.removeValue(forKey: channel) else { return }
+        for continuation in continuations {
+            continuation.resume(returning: data)
+        }
+    }
+
+    private func hasAnyInterest() -> Bool {
+        !channelRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty
+    }
+
+    private func maybeStartIdleTimer() {
+        guard !hasAnyInterest() else { return }
+        guard idleDisconnectTask == nil else { return }
+        idleDisconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.idleDisconnectNs)
+            guard !Task.isCancelled else { return }
+            await self?.idleDisconnect()
+        }
+    }
+
+    private func idleDisconnect() {
+        idleDisconnectTask = nil
+        if !hasAnyInterest() {
+            disconnect()
+        }
+    }
+
+    private func cancelIdleTimer() {
+        idleDisconnectTask?.cancel()
+        idleDisconnectTask = nil
     }
 
     // MARK: - Event Streams
@@ -295,10 +487,14 @@ public actor WebSocketManager {
         guard let data = text.data(using: .utf8) else { return }
         let decoder = JSONDecoder()
 
-        if let control = try? decoder.decode(InboundControlMessage.self, from: data) {
-            if control.type == "authenticated" {
+        // Try to parse as a generic JSON dictionary first for snapshot handling
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let msgType = json["type"] as? String ?? ""
+
+            if msgType == "authenticated" {
                 reconnectAttempt = 0
                 setStatus(.connected)
+                // Re-subscribe from raw subscription state
                 if !subscribedChannels.isEmpty {
                     sendMessage(.subscribe(channels: Array(subscribedChannels)))
                 }
@@ -308,9 +504,32 @@ public actor WebSocketManager {
                 if let candles = subscribedCandles {
                     sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)))
                 }
+                // Re-subscribe from ref-counted state
+                let refChannels = Array(channelRefs.keys)
+                let newChannels = refChannels.filter { !subscribedChannels.contains($0) }
+                if !newChannels.isEmpty {
+                    sendMessage(.subscribe(channels: newChannels))
+                }
+                if midsRefs > 0 && subscribedMids == nil {
+                    sendMessage(.subscribeMids(exchange: midsExchange, coins: []))
+                }
+                if !candleRefCoins.isEmpty && subscribedCandles == nil {
+                    syncCandleSubscription()
+                }
                 return
             }
-            if control.type == "error" {
+
+            if msgType == "error" {
+                return
+            }
+
+            // Snapshot messages from server
+            if msgType == "snapshot", let channel = json["channel"] as? String {
+                dispatchSnapshot(channel: channel, data: json["data"] as Any)
+                return
+            }
+            if msgType == "mids.snapshot", let mids = json["mids"] as? [String: String] {
+                dispatchSnapshot(channel: "mids", data: mids)
                 return
             }
         }
