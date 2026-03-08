@@ -14,4 +14,7 @@ public struct RealmEvent: Codable, Sendable {
     public let mids: [String: String]?
     public let exchangeState: ExchangeState?
     public let aggregation: PathAggregation?
+    public let coin: String?
+    public let interval: String?
+    public let candle: Candle?
 }

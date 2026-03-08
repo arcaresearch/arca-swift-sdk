@@ -176,3 +176,36 @@ public struct SimBookResponse: Codable, Sendable {
     public let asks: [SimBookLevel]
     public let time: Int
 }
+
+// MARK: - Candle Data
+
+public enum CandleInterval: String, Codable, Sendable, CaseIterable {
+    case oneMinute = "1m"
+    case fiveMinutes = "5m"
+    case fifteenMinutes = "15m"
+    case oneHour = "1h"
+    case fourHours = "4h"
+    case oneDay = "1d"
+}
+
+public struct Candle: Codable, Sendable {
+    public let t: Int
+    public let o: String
+    public let h: String
+    public let l: String
+    public let c: String
+    public let v: String
+    public let n: Int
+}
+
+public struct CandlesResponse: Codable, Sendable {
+    public let coin: String
+    public let interval: String
+    public let candles: [Candle]
+}
+
+public struct CandleEvent: Sendable {
+    public let coin: String
+    public let interval: CandleInterval
+    public let candle: Candle
+}

@@ -7,6 +7,8 @@ enum OutboundMessage: Encodable {
     case unsubscribe(channels: [String])
     case subscribeMids(exchange: String, coins: [String])
     case unsubscribeMids
+    case subscribeCandles(coins: [String], intervals: [String])
+    case unsubscribeCandles
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -27,11 +29,17 @@ enum OutboundMessage: Encodable {
             try container.encode(coins, forKey: .coins)
         case .unsubscribeMids:
             try container.encode("unsubscribe_mids", forKey: .action)
+        case .subscribeCandles(let coins, let intervals):
+            try container.encode("subscribe_candles", forKey: .action)
+            try container.encode(coins, forKey: .coins)
+            try container.encode(intervals, forKey: .intervals)
+        case .unsubscribeCandles:
+            try container.encode("unsubscribe_candles", forKey: .action)
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, token, realmId, channels, exchange, coins
+        case action, token, realmId, channels, exchange, coins, intervals
     }
 }
 

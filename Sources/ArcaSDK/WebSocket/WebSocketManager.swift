@@ -23,6 +23,7 @@ public actor WebSocketManager {
 
     private var subscribedChannels: Set<String> = []
     private var subscribedMids: (exchange: String, coins: [String])?
+    private var subscribedCandles: (coins: [String], intervals: [CandleInterval])?
     private var shouldReconnect = false
     private var reconnectAttempt = 0
     private let maxReconnectDelay: TimeInterval
@@ -110,6 +111,18 @@ public actor WebSocketManager {
         sendMessage(.unsubscribeMids)
     }
 
+    /// Subscribe to real-time candle updates for given coins and intervals.
+    public func subscribeCandles(coins: [String], intervals: [CandleInterval]) {
+        subscribedCandles = (coins, intervals)
+        sendMessage(.subscribeCandles(coins: coins, intervals: intervals.map(\.rawValue)))
+    }
+
+    /// Unsubscribe from candle updates.
+    public func unsubscribeCandles() {
+        subscribedCandles = nil
+        sendMessage(.unsubscribeCandles)
+    }
+
     // MARK: - Event Streams
 
     /// A stream of all realm events. Each call creates an independent stream;
@@ -186,6 +199,31 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of candle events (both closed and in-progress updates).
+    public func candleEvents() -> AsyncStream<CandleEvent> {
+        filteredStream { event in
+            guard event.type == EventType.candleClosed.rawValue
+               || event.type == EventType.candleUpdated.rawValue,
+                  let coin = event.coin,
+                  let intervalStr = event.interval,
+                  let interval = CandleInterval(rawValue: intervalStr),
+                  let candle = event.candle else { return nil }
+            return CandleEvent(coin: coin, interval: interval, candle: candle)
+        }
+    }
+
+    /// Stream of closed candle events only (finalized candles).
+    public func candleClosedEvents() -> AsyncStream<CandleEvent> {
+        filteredStream { event in
+            guard event.type == EventType.candleClosed.rawValue,
+                  let coin = event.coin,
+                  let intervalStr = event.interval,
+                  let interval = CandleInterval(rawValue: intervalStr),
+                  let candle = event.candle else { return nil }
+            return CandleEvent(coin: coin, interval: interval, candle: candle)
+        }
+    }
+
     // MARK: - Private: Connection
 
     private func doConnect() {
@@ -256,6 +294,9 @@ public actor WebSocketManager {
                 }
                 if let mids = subscribedMids {
                     sendMessage(.subscribeMids(exchange: mids.exchange, coins: mids.coins))
+                }
+                if let candles = subscribedCandles {
+                    sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)))
                 }
                 return
             }

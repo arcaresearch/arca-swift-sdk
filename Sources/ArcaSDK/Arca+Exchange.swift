@@ -169,6 +169,25 @@ extension Arca {
     public func getOrderBook(coin: String) async throws -> SimBookResponse {
         try await client.get("/exchange/market/book/\(coin)")
     }
+
+    /// Get OHLCV candle data for a specific coin.
+    ///
+    /// - Parameters:
+    ///   - coin: Asset name (e.g. `BTC`, `ETH`)
+    ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
+    ///   - startTime: Optional start time in epoch milliseconds
+    ///   - endTime: Optional end time in epoch milliseconds
+    public func getCandles(
+        coin: String,
+        interval: CandleInterval,
+        startTime: Int? = nil,
+        endTime: Int? = nil
+    ) async throws -> CandlesResponse {
+        var query: [String: String] = ["interval": interval.rawValue]
+        if let startTime = startTime { query["startTime"] = String(startTime) }
+        if let endTime = endTime { query["endTime"] = String(endTime) }
+        return try await client.get("/exchange/market/candles/\(coin)", query: query)
+    }
 }
 
 // MARK: - Exchange Enums
