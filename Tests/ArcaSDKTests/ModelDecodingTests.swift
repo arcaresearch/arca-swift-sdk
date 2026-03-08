@@ -289,6 +289,123 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(pos.unrealizedPnl)
     }
 
+    func testExchangeStateDecodingWithOpenOrders() throws {
+        let json = """
+        {
+            "account": {
+                "id": "act_01abc",
+                "realmId": "rlm_01def",
+                "name": "test-exchange",
+                "usdBalance": "10000",
+                "createdAt": "2026-03-07T10:00:00.000000Z",
+                "updatedAt": "2026-03-07T10:00:00.000000Z"
+            },
+            "marginSummary": {
+                "accountValue": "10000",
+                "totalNtlPos": "0",
+                "totalMarginUsed": "0",
+                "withdrawable": "10000",
+                "totalUnrealizedPnl": "0"
+            },
+            "positions": [],
+            "openOrders": [
+                {
+                    "id": "ord_01abc",
+                    "accountId": "act_01abc",
+                    "realmId": "rlm_01def",
+                    "coin": "ETH",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "price": "3000",
+                    "size": "1.0",
+                    "filledSize": "0",
+                    "avgFillPrice": null,
+                    "status": "OPEN",
+                    "reduceOnly": false,
+                    "timeInForce": "GTC",
+                    "leverage": 3,
+                    "builderFeeBps": null,
+                    "createdAt": "2026-03-07T10:00:00.000000Z",
+                    "updatedAt": "2026-03-07T10:00:00.000000Z"
+                }
+            ],
+            "feeRates": null
+        }
+        """.data(using: .utf8)!
+
+        let state = try decoder.decode(ExchangeState.self, from: json)
+        XCTAssertEqual(state.openOrders.count, 1)
+        let order = state.openOrders[0]
+        XCTAssertEqual(order.id.rawValue, "ord_01abc")
+        XCTAssertEqual(order.accountId?.rawValue, "act_01abc")
+        XCTAssertEqual(order.realmId?.rawValue, "rlm_01def")
+        XCTAssertEqual(order.coin, "ETH")
+        XCTAssertEqual(order.side, .buy)
+        XCTAssertEqual(order.orderType, .limit)
+        XCTAssertEqual(order.price, "3000")
+        XCTAssertEqual(order.size, "1.0")
+        XCTAssertEqual(order.filledSize, "0")
+        XCTAssertNil(order.avgFillPrice)
+        XCTAssertEqual(order.status, .open)
+        XCTAssertFalse(order.reduceOnly)
+        XCTAssertEqual(order.timeInForce, .gtc)
+        XCTAssertEqual(order.leverage, 3)
+        XCTAssertNil(order.builderFeeBps)
+        XCTAssertEqual(order.createdAt, "2026-03-07T10:00:00.000000Z")
+        XCTAssertEqual(order.updatedAt, "2026-03-07T10:00:00.000000Z")
+    }
+
+    func testExchangeStateDecodingWithOpenOrders_MissingOptionalFields() throws {
+        let json = """
+        {
+            "account": {
+                "id": "act_01abc",
+                "realmId": "rlm_01def",
+                "name": "test-exchange",
+                "usdBalance": "10000",
+                "createdAt": "2026-03-07T10:00:00.000000Z",
+                "updatedAt": "2026-03-07T10:00:00.000000Z"
+            },
+            "marginSummary": {
+                "accountValue": "10000",
+                "totalNtlPos": "0",
+                "totalMarginUsed": "0",
+                "withdrawable": "10000",
+                "totalUnrealizedPnl": "0"
+            },
+            "positions": [],
+            "openOrders": [
+                {
+                    "id": "ord_01abc",
+                    "coin": "ETH",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "size": "1.0",
+                    "filledSize": "0",
+                    "status": "OPEN",
+                    "reduceOnly": false,
+                    "timeInForce": "GTC",
+                    "leverage": 3
+                }
+            ],
+            "feeRates": null
+        }
+        """.data(using: .utf8)!
+
+        let state = try decoder.decode(ExchangeState.self, from: json)
+        XCTAssertEqual(state.openOrders.count, 1)
+        let order = state.openOrders[0]
+        XCTAssertEqual(order.coin, "ETH")
+        XCTAssertEqual(order.side, .buy)
+        XCTAssertNil(order.accountId)
+        XCTAssertNil(order.realmId)
+        XCTAssertNil(order.createdAt)
+        XCTAssertNil(order.updatedAt)
+        XCTAssertNil(order.price)
+        XCTAssertNil(order.avgFillPrice)
+        XCTAssertNil(order.builderFeeBps)
+    }
+
     // MARK: - Aggregation
 
     func testPathAggregationDecoding() throws {

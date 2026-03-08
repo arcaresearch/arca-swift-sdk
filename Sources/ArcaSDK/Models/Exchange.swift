@@ -38,8 +38,8 @@ public struct SimPosition: Codable, Sendable {
 
 public struct SimOrder: Codable, Sendable {
     public let id: SimOrderID
-    public let accountId: SimAccountID
-    public let realmId: RealmID
+    public let accountId: SimAccountID?
+    public let realmId: RealmID?
     public let coin: String
     public let side: OrderSide
     public let orderType: OrderType
@@ -52,8 +52,8 @@ public struct SimOrder: Codable, Sendable {
     public let timeInForce: TimeInForce
     public let leverage: Int
     public let builderFeeBps: Int?
-    public let createdAt: String
-    public let updatedAt: String
+    public let createdAt: String?
+    public let updatedAt: String?
 }
 
 public struct SimFill: Codable, Sendable {
