@@ -238,8 +238,8 @@ extension Arca {
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
     public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
         await ws.ensureConnected()
-        let snapshot: [String: String] = await ws.waitForSnapshot(channel: "mids")
-        await ws.acquireMids(exchange: exchange)
+        let snapshotData = try await ws.acquireMidsAwaitingSnapshot(exchange: exchange)
+        let snapshot = snapshotData as? [String: String] ?? [:]
         let updates = await ws.midsEvents()
         return MarketPriceStream(
             initialPrices: snapshot,

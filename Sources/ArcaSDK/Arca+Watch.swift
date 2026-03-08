@@ -7,8 +7,8 @@ extension Arca {
     /// Call `stop()` when done.
     public func watchOperations() async throws -> OperationWatchStream {
         await ws.ensureConnected()
-        let snapshot: [[String: Any]] = await ws.waitForSnapshot(channel: "operations")
-        await ws.acquireChannel(.operations)
+        let snapshotData = try await ws.acquireChannelAwaitingSnapshot(.operations)
+        let snapshot = snapshotData as? [[String: Any]] ?? []
 
         let decoder = JSONDecoder()
         let initial: [Operation] = snapshot.compactMap { dict in
