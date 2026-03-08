@@ -9,11 +9,17 @@ let package = Package(
     ],
     products: [
         .library(name: "ArcaSDK", targets: ["ArcaSDK"]),
+        .library(name: "ArcaUI", targets: ["ArcaUI"]),
     ],
     targets: [
         .target(
             name: "ArcaSDK",
             path: "Sources/ArcaSDK"
+        ),
+        .target(
+            name: "ArcaUI",
+            dependencies: ["ArcaSDK"],
+            path: "Sources/ArcaUI"
         ),
         .testTarget(
             name: "ArcaSDKTests",
