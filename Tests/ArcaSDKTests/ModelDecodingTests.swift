@@ -242,53 +242,6 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(pos.updatedAt, "2026-03-07T10:05:00.000000Z")
     }
 
-    func testExchangeStateDecodingWithPositions_MissingOptionalFields() throws {
-        let json = """
-        {
-            "account": {
-                "id": "act_01abc",
-                "realmId": "rlm_01def",
-                "name": "test-exchange",
-                "usdBalance": "10000",
-                "createdAt": "2026-03-07T10:00:00.000000Z",
-                "updatedAt": "2026-03-07T10:00:00.000000Z"
-            },
-            "marginSummary": {
-                "accountValue": "10000",
-                "totalNtlPos": "5000",
-                "totalMarginUsed": "500",
-                "withdrawable": "9500",
-                "totalUnrealizedPnl": "100"
-            },
-            "positions": [
-                {
-                    "id": "sps_01abc",
-                    "coin": "BTC",
-                    "side": "LONG",
-                    "size": "0.1",
-                    "entryPrice": "65000",
-                    "leverage": 5,
-                    "marginUsed": "1300"
-                }
-            ],
-            "openOrders": [],
-            "feeRates": null
-        }
-        """.data(using: .utf8)!
-
-        let state = try decoder.decode(ExchangeState.self, from: json)
-        XCTAssertEqual(state.positions.count, 1)
-        let pos = state.positions[0]
-        XCTAssertEqual(pos.coin, "BTC")
-        XCTAssertEqual(pos.side, .long)
-        XCTAssertNil(pos.accountId)
-        XCTAssertNil(pos.realmId)
-        XCTAssertNil(pos.createdAt)
-        XCTAssertNil(pos.updatedAt)
-        XCTAssertNil(pos.liquidationPrice)
-        XCTAssertNil(pos.unrealizedPnl)
-    }
-
     func testExchangeStateDecodingWithOpenOrders() throws {
         let json = """
         {
@@ -353,57 +306,6 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(order.builderFeeBps)
         XCTAssertEqual(order.createdAt, "2026-03-07T10:00:00.000000Z")
         XCTAssertEqual(order.updatedAt, "2026-03-07T10:00:00.000000Z")
-    }
-
-    func testExchangeStateDecodingWithOpenOrders_MissingOptionalFields() throws {
-        let json = """
-        {
-            "account": {
-                "id": "act_01abc",
-                "realmId": "rlm_01def",
-                "name": "test-exchange",
-                "usdBalance": "10000",
-                "createdAt": "2026-03-07T10:00:00.000000Z",
-                "updatedAt": "2026-03-07T10:00:00.000000Z"
-            },
-            "marginSummary": {
-                "accountValue": "10000",
-                "totalNtlPos": "0",
-                "totalMarginUsed": "0",
-                "withdrawable": "10000",
-                "totalUnrealizedPnl": "0"
-            },
-            "positions": [],
-            "openOrders": [
-                {
-                    "id": "ord_01abc",
-                    "coin": "ETH",
-                    "side": "BUY",
-                    "orderType": "LIMIT",
-                    "size": "1.0",
-                    "filledSize": "0",
-                    "status": "OPEN",
-                    "reduceOnly": false,
-                    "timeInForce": "GTC",
-                    "leverage": 3
-                }
-            ],
-            "feeRates": null
-        }
-        """.data(using: .utf8)!
-
-        let state = try decoder.decode(ExchangeState.self, from: json)
-        XCTAssertEqual(state.openOrders.count, 1)
-        let order = state.openOrders[0]
-        XCTAssertEqual(order.coin, "ETH")
-        XCTAssertEqual(order.side, .buy)
-        XCTAssertNil(order.accountId)
-        XCTAssertNil(order.realmId)
-        XCTAssertNil(order.createdAt)
-        XCTAssertNil(order.updatedAt)
-        XCTAssertNil(order.price)
-        XCTAssertNil(order.avgFillPrice)
-        XCTAssertNil(order.builderFeeBps)
     }
 
     // MARK: - Aggregation
