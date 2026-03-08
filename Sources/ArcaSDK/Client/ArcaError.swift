@@ -39,9 +39,6 @@ public enum ArcaError: Error, Sendable {
     /// The full `Operation` is available for inspection (e.g. `operation.outcome`).
     case operationFailed(operation: Operation)
 
-    /// The server did not send a snapshot within the timeout period.
-    case snapshotTimeout(channel: String)
-
     /// Unknown API error code.
     case unknown(code: String, message: String, errorId: String?)
 }
@@ -64,8 +61,6 @@ extension ArcaError: LocalizedError {
         case .operationFailed(let op):
             let reason = op.outcome ?? op.state.rawValue
             return "Operation \(op.id) \(op.state.rawValue): \(reason)"
-        case .snapshotTimeout(let channel):
-            return "Snapshot timeout: server did not send a snapshot for '\(channel)' within the timeout period"
         case .unknown(let code, let message, _): return "\(code): \(message)"
         }
     }

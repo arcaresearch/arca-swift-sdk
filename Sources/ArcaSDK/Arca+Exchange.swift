@@ -231,35 +231,61 @@ extension Arca {
     }
 
     /// Subscribe to real-time mid prices for all assets.
-    /// Uses server-side snapshots: the WebSocket sends current mids on subscribe.
-    /// Returns a ``MarketPriceStream`` whose `initialPrices` contains the snapshot
-    /// and `updates` yields each subsequent update. Call `stop()` when done.
+    /// Returns immediately; the stream starts in `.loading` and transitions
+    /// to `.connected` when the first snapshot arrives.
+    /// Call `stop()` when done.
     ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
     public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
         await ws.ensureConnected()
-        let snapshotData = try await ws.acquireMidsAwaitingSnapshot(exchange: exchange)
-        let snapshot = snapshotData as? [String: String] ?? [:]
-        let updates = await ws.midsEvents()
+
+        let state = SendableBox<WatchStreamState>(.loading)
+        let prices = SendableBox<[String: String]>([:])
+
+        let snapshotId = await ws.onSnapshot(channel: "mids") { data in
+            let mids = data as? [String: String] ?? [:]
+            prices.update { $0 = mids }
+            state.update { $0 = .connected }
+        }
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && state.value != .loading {
+                    state.update { $0 = .reconnecting }
+                }
+            }
+        }
+
+        await ws.acquireMids(exchange: exchange)
+
+        let midsStream = await ws.midsEvents()
+        let updates = AsyncStream<[String: String]> { continuation in
+            let task = Task {
+                for await mids in midsStream {
+                    prices.update { current in
+                        for (key, value) in mids {
+                            current[key] = value
+                        }
+                    }
+                    continuation.yield(prices.value)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
         return MarketPriceStream(
-            initialPrices: snapshot,
+            state: state,
+            prices: prices,
             updates: updates,
-            stop: { [ws] in await ws.releaseMids() }
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.removeSnapshotHandler(channel: "mids", id: snapshotId)
+                await ws.releaseMids()
+            }
         )
     }
-}
-
-/// A stream of real-time mid prices.
-/// `initialPrices` contains the snapshot at subscription time;
-/// `updates` yields each subsequent `mids.updated` payload.
-public struct MarketPriceStream: Sendable {
-    /// Mid prices at the time the stream was created.
-    public let initialPrices: [String: String]
-    /// Async stream of price updates. Each element is the full set of mids
-    /// received in a `mids.updated` WebSocket event.
-    public let updates: AsyncStream<[String: String]>
-    /// Stop listening and unsubscribe from mid price updates.
-    public let stop: @Sendable () async -> Void
 }
 
 // MARK: - Exchange Enums

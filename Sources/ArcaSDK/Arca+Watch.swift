@@ -3,19 +3,36 @@ import Foundation
 extension Arca {
 
     /// Subscribe to real-time operation events.
-    /// The server sends an initial snapshot, then streams creates and updates.
+    /// Returns immediately; the stream starts in `.loading` and transitions
+    /// to `.connected` when the first snapshot arrives.
     /// Call `stop()` when done.
     public func watchOperations() async throws -> OperationWatchStream {
         await ws.ensureConnected()
-        let snapshotData = try await ws.acquireChannelAwaitingSnapshot(.operations)
-        let snapshot = snapshotData as? [[String: Any]] ?? []
 
+        let state = SendableBox<WatchStreamState>(.loading)
+        let box = SendableBox<[Operation]>([])
         let decoder = JSONDecoder()
-        let initial: [Operation] = snapshot.compactMap { dict in
-            guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
-            return try? decoder.decode(Operation.self, from: data)
+
+        let snapshotId = await ws.onSnapshot(channel: "operations") { data in
+            let snapshot = data as? [[String: Any]] ?? []
+            let ops: [Operation] = snapshot.compactMap { dict in
+                guard let d = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+                return try? decoder.decode(Operation.self, from: d)
+            }
+            box.update { $0 = ops }
+            state.update { $0 = .connected }
         }
-        let box = SendableBox(initial)
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && state.value != .loading {
+                    state.update { $0 = .reconnecting }
+                }
+            }
+        }
+
+        await ws.acquireChannel(.operations)
 
         let operationUpdates = await ws.operationEvents()
         let updates = AsyncStream<(Operation, RealmEvent)> { continuation in
@@ -36,21 +53,53 @@ extension Arca {
         }
 
         return OperationWatchStream(
+            state: state,
             operations: box,
             updates: updates,
-            stop: { [ws] in await ws.releaseChannel(.operations) }
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.removeSnapshotHandler(channel: "operations", id: snapshotId)
+                await ws.releaseChannel(.operations)
+            }
         )
     }
 
     /// Subscribe to real-time balance updates.
+    /// Returns immediately; the stream starts in `.loading` and transitions
+    /// to `.connected` when the first snapshot arrives.
     /// Optionally filter by an Arca path prefix.
     /// Call `stop()` when done.
     public func watchBalances(arcaRef: String? = nil) async throws -> BalanceWatchStream {
         await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.loading)
+        let box = SendableBox<[String: BalanceSnapshot]>([:])
+
+        let snapshotId = await ws.onSnapshot(channel: "balances") { data in
+            let entries = data as? [[String: Any]] ?? []
+            var map: [String: BalanceSnapshot] = [:]
+            let decoder = JSONDecoder()
+            for entry in entries {
+                guard let d = try? JSONSerialization.data(withJSONObject: entry),
+                      let snap = try? decoder.decode(BalanceSnapshot.self, from: d) else { continue }
+                map[snap.entityId] = snap
+            }
+            box.update { $0 = map }
+            state.update { $0 = .connected }
+        }
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && state.value != .loading {
+                    state.update { $0 = .reconnecting }
+                }
+            }
+        }
+
         await ws.acquireChannel(.balances)
 
         let balanceUpdates = await ws.balanceEvents()
-        let box = SendableBox<[String: BalanceSnapshot]>([:])
 
         let updates = AsyncStream<(String, RealmEvent)> { continuation in
             let task = Task {
@@ -66,27 +115,47 @@ extension Arca {
         }
 
         return BalanceWatchStream(
+            state: state,
             balances: box,
             updates: updates,
-            stop: { [ws] in await ws.releaseChannel(.balances) }
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.removeSnapshotHandler(channel: "balances", id: snapshotId)
+                await ws.releaseChannel(.balances)
+            }
         )
     }
 
     /// Subscribe to real-time exchange state and fill events.
+    /// Returns immediately in `.connected` state (exchange has no snapshot).
     /// Call `stop()` when done.
     public func watchExchange() async throws -> ExchangeWatchStream {
         await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.connected)
+        let box = SendableBox<ExchangeState?>(nil)
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected {
+                    state.update { $0 = .connected }
+                }
+            }
+        }
+
         await ws.acquireChannel(.exchange)
 
         let stateEvents = await ws.exchangeEvents()
         let fillEvents = await ws.fillEvents()
-        let box = SendableBox<ExchangeState?>(nil)
 
         let updates = AsyncStream<ExchangeUpdate> { continuation in
             let stateTask = Task {
-                for await (state, event) in stateEvents {
-                    box.update { $0 = state }
-                    continuation.yield(.stateUpdate(state, event))
+                for await (exchangeState, event) in stateEvents {
+                    box.update { $0 = exchangeState }
+                    continuation.yield(.stateUpdate(exchangeState, event))
                 }
             }
             let fillTask = Task {
@@ -101,13 +170,18 @@ extension Arca {
         }
 
         return ExchangeWatchStream(
+            state: state,
             exchangeState: box,
             updates: updates,
-            stop: { [ws] in await ws.releaseChannel(.exchange) }
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseChannel(.exchange)
+            }
         )
     }
 
     /// Subscribe to real-time candle updates.
+    /// Returns immediately in `.connected` state (candles have no snapshot).
     /// Call `stop()` when done.
     ///
     /// - Parameters:
@@ -115,6 +189,20 @@ extension Arca {
     ///   - intervals: Candle intervals (e.g. `[.oneMinute, .fiveMinutes]`)
     public func watchCandles(coins: [String], intervals: [CandleInterval]) async throws -> CandleWatchStream {
         await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.connected)
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected {
+                    state.update { $0 = .connected }
+                }
+            }
+        }
+
         await ws.acquireCandles(coins: coins, intervals: intervals)
 
         let candleStream = await ws.candleEvents()
@@ -133,8 +221,12 @@ extension Arca {
         }
 
         return CandleWatchStream(
+            state: state,
             updates: updates,
-            stop: { [ws] in await ws.releaseCandles(coins: coins, intervals: intervals) }
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseCandles(coins: coins, intervals: intervals)
+            }
         )
     }
 }

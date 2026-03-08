@@ -45,8 +45,7 @@ public actor WebSocketManager {
     private static let unsubDebounceNs: UInt64 = 100_000_000 // 100ms
     private static let idleDisconnectNs: UInt64 = 60_000_000_000 // 60s
 
-    private var snapshotContinuations: [String: [CheckedContinuation<Any, Error>]] = [:]
-    public static let snapshotTimeoutNs: UInt64 = 10_000_000_000 // 10s
+    private var snapshotHandlers: [String: [UUID: @Sendable (Any) -> Void]] = [:]
 
     public init(
         baseURL: URL,
@@ -277,68 +276,28 @@ public actor WebSocketManager {
         subscribeCandles(coins: allCoins, intervals: intervals)
     }
 
-    /// Subscribe to a channel and wait for the server's snapshot response.
-    ///
-    /// Registers the snapshot continuation *before* sending the subscribe message,
-    /// preventing the race where a snapshot arrives before a listener is registered.
-    /// Throws ``ArcaError/snapshotTimeout`` if the server doesn't respond in time.
-    public func acquireChannelAwaitingSnapshot(
-        _ channel: Channel,
-        timeoutNanoseconds: UInt64 = WebSocketManager.snapshotTimeoutNs
-    ) async throws -> Any {
-        let key = channel.rawValue
-        let timeoutTask = Task { [weak self] in
-            try await Task.sleep(nanoseconds: timeoutNanoseconds)
-            await self?.failSnapshotContinuations(channel: key)
-        }
-        do {
-            let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
-                snapshotContinuations[key, default: []].append(continuation)
-                acquireChannel(channel)
-            }
-            timeoutTask.cancel()
-            return result
-        } catch {
-            releaseChannel(channel)
-            throw error
-        }
+    /// Register a persistent handler for snapshot messages on a channel.
+    /// The handler fires on every snapshot (initial and reconnect).
+    /// Returns an ID that can be passed to ``removeSnapshotHandler`` to unregister.
+    @discardableResult
+    public func onSnapshot(channel: String, handler: @escaping @Sendable (Any) -> Void) -> UUID {
+        let id = UUID()
+        snapshotHandlers[channel, default: [:]][id] = handler
+        return id
     }
 
-    /// Subscribe to mids and wait for the server's snapshot response.
-    ///
-    /// Same atomic register-then-subscribe pattern as ``acquireChannelAwaitingSnapshot``.
-    public func acquireMidsAwaitingSnapshot(
-        exchange: String,
-        timeoutNanoseconds: UInt64 = WebSocketManager.snapshotTimeoutNs
-    ) async throws -> Any {
-        let timeoutTask = Task { [weak self] in
-            try await Task.sleep(nanoseconds: timeoutNanoseconds)
-            await self?.failSnapshotContinuations(channel: "mids")
-        }
-        do {
-            let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any, Error>) in
-                snapshotContinuations["mids", default: []].append(continuation)
-                acquireMids(exchange: exchange)
-            }
-            timeoutTask.cancel()
-            return result
-        } catch {
-            releaseMids()
-            throw error
-        }
-    }
-
-    private func failSnapshotContinuations(channel: String) {
-        guard let continuations = snapshotContinuations.removeValue(forKey: channel) else { return }
-        for continuation in continuations {
-            continuation.resume(throwing: ArcaError.snapshotTimeout(channel: channel))
+    /// Remove a previously registered snapshot handler.
+    public func removeSnapshotHandler(channel: String, id: UUID) {
+        snapshotHandlers[channel]?[id] = nil
+        if snapshotHandlers[channel]?.isEmpty == true {
+            snapshotHandlers.removeValue(forKey: channel)
         }
     }
 
     private func dispatchSnapshot(channel: String, data: Any) {
-        guard let continuations = snapshotContinuations.removeValue(forKey: channel) else { return }
-        for continuation in continuations {
-            continuation.resume(returning: data)
+        guard let handlers = snapshotHandlers[channel] else { return }
+        for (_, handler) in handlers {
+            handler(data)
         }
     }
 
