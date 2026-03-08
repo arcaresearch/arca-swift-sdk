@@ -121,15 +121,15 @@ extension Arca {
                 )
             }
 
-            // HTTP fallback: periodic polling as a safety net
+            // HTTP fallback: immediate first check, then periodic polling
             group.addTask {
                 while !Task.isCancelled {
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
                     let detail = try await self.getOperation(operationId: operationId)
                     if detail.operation.state.isTerminal {
                         try self.throwIfOperationFailed(detail.operation)
                         return detail.operation
                     }
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
                 }
                 throw CancellationError()
             }
