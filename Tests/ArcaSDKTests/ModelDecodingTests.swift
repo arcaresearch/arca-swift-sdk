@@ -184,6 +184,111 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(state.feeRates)
     }
 
+    func testExchangeStateDecodingWithPositions() throws {
+        let json = """
+        {
+            "account": {
+                "id": "act_01abc",
+                "realmId": "rlm_01def",
+                "name": "test-exchange",
+                "usdBalance": "10000",
+                "createdAt": "2026-03-07T10:00:00.000000Z",
+                "updatedAt": "2026-03-07T10:00:00.000000Z"
+            },
+            "marginSummary": {
+                "accountValue": "10000",
+                "totalNtlPos": "5000",
+                "totalMarginUsed": "500",
+                "withdrawable": "9500",
+                "totalUnrealizedPnl": "100"
+            },
+            "positions": [
+                {
+                    "id": "sps_01abc",
+                    "accountId": "act_01abc",
+                    "realmId": "rlm_01def",
+                    "coin": "BTC",
+                    "side": "LONG",
+                    "size": "0.1",
+                    "entryPrice": "65000",
+                    "leverage": 5,
+                    "marginUsed": "1300",
+                    "liquidationPrice": "52000",
+                    "unrealizedPnl": "150.50",
+                    "createdAt": "2026-03-07T10:00:00.000000Z",
+                    "updatedAt": "2026-03-07T10:05:00.000000Z"
+                }
+            ],
+            "openOrders": [],
+            "feeRates": null
+        }
+        """.data(using: .utf8)!
+
+        let state = try decoder.decode(ExchangeState.self, from: json)
+        XCTAssertEqual(state.positions.count, 1)
+        let pos = state.positions[0]
+        XCTAssertEqual(pos.id.rawValue, "sps_01abc")
+        XCTAssertEqual(pos.accountId?.rawValue, "act_01abc")
+        XCTAssertEqual(pos.realmId?.rawValue, "rlm_01def")
+        XCTAssertEqual(pos.coin, "BTC")
+        XCTAssertEqual(pos.side, .long)
+        XCTAssertEqual(pos.size, "0.1")
+        XCTAssertEqual(pos.entryPrice, "65000")
+        XCTAssertEqual(pos.leverage, 5)
+        XCTAssertEqual(pos.marginUsed, "1300")
+        XCTAssertEqual(pos.liquidationPrice, "52000")
+        XCTAssertEqual(pos.unrealizedPnl, "150.50")
+        XCTAssertEqual(pos.createdAt, "2026-03-07T10:00:00.000000Z")
+        XCTAssertEqual(pos.updatedAt, "2026-03-07T10:05:00.000000Z")
+    }
+
+    func testExchangeStateDecodingWithPositions_MissingOptionalFields() throws {
+        let json = """
+        {
+            "account": {
+                "id": "act_01abc",
+                "realmId": "rlm_01def",
+                "name": "test-exchange",
+                "usdBalance": "10000",
+                "createdAt": "2026-03-07T10:00:00.000000Z",
+                "updatedAt": "2026-03-07T10:00:00.000000Z"
+            },
+            "marginSummary": {
+                "accountValue": "10000",
+                "totalNtlPos": "5000",
+                "totalMarginUsed": "500",
+                "withdrawable": "9500",
+                "totalUnrealizedPnl": "100"
+            },
+            "positions": [
+                {
+                    "id": "sps_01abc",
+                    "coin": "BTC",
+                    "side": "LONG",
+                    "size": "0.1",
+                    "entryPrice": "65000",
+                    "leverage": 5,
+                    "marginUsed": "1300"
+                }
+            ],
+            "openOrders": [],
+            "feeRates": null
+        }
+        """.data(using: .utf8)!
+
+        let state = try decoder.decode(ExchangeState.self, from: json)
+        XCTAssertEqual(state.positions.count, 1)
+        let pos = state.positions[0]
+        XCTAssertEqual(pos.coin, "BTC")
+        XCTAssertEqual(pos.side, .long)
+        XCTAssertNil(pos.accountId)
+        XCTAssertNil(pos.realmId)
+        XCTAssertNil(pos.createdAt)
+        XCTAssertNil(pos.updatedAt)
+        XCTAssertNil(pos.liquidationPrice)
+        XCTAssertNil(pos.unrealizedPnl)
+    }
+
     // MARK: - Aggregation
 
     func testPathAggregationDecoding() throws {

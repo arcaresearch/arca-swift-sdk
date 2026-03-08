@@ -22,8 +22,8 @@ public struct SimMarginSummary: Codable, Sendable {
 
 public struct SimPosition: Codable, Sendable {
     public let id: SimPositionID
-    public let accountId: SimAccountID
-    public let realmId: RealmID
+    public let accountId: SimAccountID?
+    public let realmId: RealmID?
     public let coin: String
     public let side: PositionSide
     public let size: String
@@ -32,8 +32,8 @@ public struct SimPosition: Codable, Sendable {
     public let marginUsed: String
     public let liquidationPrice: String?
     public let unrealizedPnl: String?
-    public let createdAt: String
-    public let updatedAt: String
+    public let createdAt: String?
+    public let updatedAt: String?
 }
 
 public struct SimOrder: Codable, Sendable {
