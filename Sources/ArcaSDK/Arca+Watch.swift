@@ -3,8 +3,8 @@ import Foundation
 extension Arca {
 
     /// Subscribe to real-time operation events.
-    /// Returns immediately; the stream starts in `.loading` and transitions
-    /// to `.connected` when the first snapshot arrives.
+    /// Resolves once the server sends the initial snapshot, so `operations`
+    /// is populated on return. Reconnections are handled automatically.
     /// Call `stop()` when done.
     public func watchOperations() async throws -> OperationWatchStream {
         await ws.ensureConnected()
@@ -52,7 +52,7 @@ extension Arca {
             continuation.onTermination = { _ in task.cancel() }
         }
 
-        return OperationWatchStream(
+        let stream = OperationWatchStream(
             state: state,
             operations: box,
             updates: updates,
@@ -62,11 +62,13 @@ extension Arca {
                 await ws.releaseChannel(.operations)
             }
         )
+        await stream.ready()
+        return stream
     }
 
     /// Subscribe to real-time balance updates.
-    /// Returns immediately; the stream starts in `.loading` and transitions
-    /// to `.connected` when the first snapshot arrives.
+    /// Resolves once the server sends the initial snapshot, so `balances`
+    /// is populated on return. Reconnections are handled automatically.
     /// Optionally filter by an Arca path prefix.
     /// Call `stop()` when done.
     public func watchBalances(arcaRef: String? = nil) async throws -> BalanceWatchStream {
@@ -114,7 +116,7 @@ extension Arca {
             continuation.onTermination = { _ in task.cancel() }
         }
 
-        return BalanceWatchStream(
+        let stream = BalanceWatchStream(
             state: state,
             balances: box,
             updates: updates,
@@ -124,6 +126,8 @@ extension Arca {
                 await ws.releaseChannel(.balances)
             }
         )
+        await stream.ready()
+        return stream
     }
 
     /// Subscribe to real-time exchange state and fill events.

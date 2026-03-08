@@ -231,8 +231,8 @@ extension Arca {
     }
 
     /// Subscribe to real-time mid prices for all assets.
-    /// Returns immediately; the stream starts in `.loading` and transitions
-    /// to `.connected` when the first snapshot arrives.
+    /// Resolves once the server sends the initial snapshot, so `prices`
+    /// is populated on return. Reconnections are handled automatically.
     /// Call `stop()` when done.
     ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
@@ -275,7 +275,7 @@ extension Arca {
             continuation.onTermination = { _ in task.cancel() }
         }
 
-        return MarketPriceStream(
+        let stream = MarketPriceStream(
             state: state,
             prices: prices,
             updates: updates,
@@ -285,6 +285,8 @@ extension Arca {
                 await ws.releaseMids()
             }
         )
+        await stream.ready()
+        return stream
     }
 }
 
