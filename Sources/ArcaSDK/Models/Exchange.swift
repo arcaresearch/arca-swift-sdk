@@ -113,8 +113,10 @@ public struct LeverageInfo: Codable, Sendable {
 public struct ActiveAssetData: Codable, Sendable {
     public let coin: String
     public let leverage: LeverageInfo
-    public let maxTradeSzs: [String]
-    public let availableToTrade: [String]
+    public let maxBuySize: String
+    public let maxSellSize: String
+    public let maxBuyUsd: String
+    public let maxSellUsd: String
     public let markPx: String
     public let feeRate: String
 }
