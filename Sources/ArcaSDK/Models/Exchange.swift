@@ -56,6 +56,26 @@ public struct SimOrder: Codable, Sendable {
     public let updatedAt: String?
 }
 
+public extension SimOrder {
+    /// `true` when the order reached a terminal status and has at least one fill.
+    /// Covers both fully filled orders and IOC orders whose unfilled remainder was cancelled.
+    var isTerminalWithFills: Bool {
+        switch status {
+        case .filled:
+            return true
+        case .cancelled:
+            return filledSize != "0" && !filledSize.isEmpty
+        case .failed, .pending, .open, .partiallyFilled:
+            return false
+        }
+    }
+
+    /// `true` when the order was partially filled and the remainder cancelled (IOC semantics).
+    var isPartiallyFilled: Bool {
+        status == .cancelled && filledSize != "0" && !filledSize.isEmpty && filledSize != size
+    }
+}
+
 public struct SimFill: Codable, Sendable {
     public let id: SimFillID
     public let orderId: SimOrderID

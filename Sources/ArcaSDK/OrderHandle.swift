@@ -73,23 +73,14 @@ public final class OrderHandle: @unchecked Sendable {
         return try await withThrowingTaskGroup(of: SimOrderWithFills.self) { group in
             group.addTask {
                 let detail = try await self.deps.getOrder(self.objectId, orderId)
-                if detail.order.status == .filled { return detail }
+                if detail.order.isTerminalWithFills { return detail }
+                try Self.throwIfTerminalWithoutFills(detail.order, orderId: orderId)
 
                 let fillStream = await self.deps.fillEvents()
                 for await (_, _) in fillStream {
                     let detail = try await self.deps.getOrder(self.objectId, orderId)
-                    switch detail.order.status {
-                    case .filled:
-                        return detail
-                    case .failed, .cancelled:
-                        throw ArcaError.unknown(
-                            code: "ORDER_\(detail.order.status.rawValue)",
-                            message: "Order \(orderId) reached \(detail.order.status.rawValue)",
-                            errorId: nil
-                        )
-                    default:
-                        continue
-                    }
+                    if detail.order.isTerminalWithFills { return detail }
+                    try Self.throwIfTerminalWithoutFills(detail.order, orderId: orderId)
                 }
                 throw ArcaError.unknown(
                     code: "STREAM_ENDED",
@@ -241,6 +232,25 @@ public final class OrderHandle: @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    private static func throwIfTerminalWithoutFills(_ order: SimOrder, orderId: String) throws {
+        switch order.status {
+        case .failed:
+            throw ArcaError.unknown(
+                code: "ORDER_\(order.status.rawValue)",
+                message: "Order \(orderId) reached \(order.status.rawValue)",
+                errorId: nil
+            )
+        case .cancelled where order.filledSize == "0" || order.filledSize.isEmpty:
+            throw ArcaError.unknown(
+                code: "ORDER_\(order.status.rawValue)",
+                message: "Order \(orderId) was cancelled with no fills",
+                errorId: nil
+            )
+        default:
+            break
+        }
+    }
 
     private func resolveOrderId() async throws -> String {
         let response = try await inner.submitted

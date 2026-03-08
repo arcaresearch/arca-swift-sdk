@@ -51,6 +51,34 @@ private func makeFill(
     )
 }
 
+private func makeSimOrder(
+    id: String = "ord_abc",
+    status: OrderStatus = .filled,
+    size: String = "1.0",
+    filledSize: String = "1.0",
+    timeInForce: TimeInForce = .ioc
+) -> SimOrder {
+    SimOrder(
+        id: SimOrderID(id),
+        accountId: SimAccountID("acc_1"),
+        realmId: RealmID("rlm_test"),
+        coin: "ETH",
+        side: .sell,
+        orderType: .market,
+        price: nil,
+        size: size,
+        filledSize: filledSize,
+        avgFillPrice: "2000",
+        status: status,
+        reduceOnly: false,
+        timeInForce: timeInForce,
+        leverage: 5,
+        builderFeeBps: nil,
+        createdAt: "2026-03-08T00:00:00.000000Z",
+        updatedAt: "2026-03-08T00:00:00.000000Z"
+    )
+}
+
 // MARK: - OrderHandle Tests
 
 final class OrderHandleTests: XCTestCase {
@@ -256,5 +284,110 @@ final class OrderHandleTests: XCTestCase {
         _ = try await cancelHandle.settled
 
         XCTAssertEqual(capturedCancelPath, "/op/order/custom-cancel")
+    }
+
+    // MARK: - IOC Partial Fill Tests
+
+    func testFilledReturnsOnIOCPartialFill() async throws {
+        let op = makeOrderOperation(state: .completed, outcome: "ord_abc")
+        let response = OrderOperationResponse(operation: op)
+
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { _ in op }
+        )
+
+        let partialOrder = makeSimOrder(
+            status: .cancelled,
+            size: "1.372",
+            filledSize: "1.1932",
+            timeInForce: .ioc
+        )
+        let orderWithFills = SimOrderWithFills(
+            order: partialOrder,
+            fills: [makeFill(orderId: "ord_abc", size: "1.1932", price: "2000")]
+        )
+
+        let deps = OrderHandleDeps(
+            getOrder: { _, _ in orderWithFills },
+            fillEvents: { AsyncStream { $0.finish() } },
+            cancelOrder: { _, _, _ in fatalError("unexpected") },
+            waitForSettlement: { _ in fatalError("unexpected") }
+        )
+
+        let handle = OrderHandle(
+            inner: inner,
+            objectId: "obj_exchange",
+            placementPath: "/op/order/eth-sell-1",
+            deps: deps
+        )
+
+        let result = try await handle.filled(timeoutSeconds: 2)
+        XCTAssertEqual(result.order.status, .cancelled)
+        XCTAssertEqual(result.order.filledSize, "1.1932")
+        XCTAssertTrue(result.order.isPartiallyFilled)
+        XCTAssertTrue(result.order.isTerminalWithFills)
+    }
+
+    func testFilledThrowsOnCancelledWithNoFills() async throws {
+        let op = makeOrderOperation(state: .completed, outcome: "ord_abc")
+        let response = OrderOperationResponse(operation: op)
+
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { _ in op }
+        )
+
+        let cancelledOrder = makeSimOrder(
+            status: .cancelled,
+            size: "1.0",
+            filledSize: "0"
+        )
+        let orderWithFills = SimOrderWithFills(order: cancelledOrder, fills: [])
+
+        let deps = OrderHandleDeps(
+            getOrder: { _, _ in orderWithFills },
+            fillEvents: { AsyncStream { $0.finish() } },
+            cancelOrder: { _, _, _ in fatalError("unexpected") },
+            waitForSettlement: { _ in fatalError("unexpected") }
+        )
+
+        let handle = OrderHandle(
+            inner: inner,
+            objectId: "obj_exchange",
+            placementPath: "/op/order/eth-sell-2",
+            deps: deps
+        )
+
+        do {
+            _ = try await handle.filled(timeoutSeconds: 2)
+            XCTFail("Expected error for cancelled order with no fills")
+        } catch {
+            let arcaError = error as? ArcaError
+            switch arcaError {
+            case .unknown(let code, _, _):
+                XCTAssertEqual(code, "ORDER_CANCELLED")
+            default:
+                break
+            }
+        }
+    }
+
+    func testSimOrderIsPartiallyFilled() {
+        let partial = makeSimOrder(status: .cancelled, size: "1.372", filledSize: "1.1932")
+        XCTAssertTrue(partial.isPartiallyFilled)
+        XCTAssertTrue(partial.isTerminalWithFills)
+
+        let full = makeSimOrder(status: .filled, size: "1.0", filledSize: "1.0")
+        XCTAssertFalse(full.isPartiallyFilled)
+        XCTAssertTrue(full.isTerminalWithFills)
+
+        let noFill = makeSimOrder(status: .cancelled, size: "1.0", filledSize: "0")
+        XCTAssertFalse(noFill.isPartiallyFilled)
+        XCTAssertFalse(noFill.isTerminalWithFills)
+
+        let open = makeSimOrder(status: .open, size: "1.0", filledSize: "0")
+        XCTAssertFalse(open.isPartiallyFilled)
+        XCTAssertFalse(open.isTerminalWithFills)
     }
 }
