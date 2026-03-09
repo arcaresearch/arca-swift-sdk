@@ -190,6 +190,22 @@ public struct SimMidsResponse: Codable, Sendable {
     public let mids: [String: String]
 }
 
+public struct MarketTicker: Codable, Sendable {
+    public let coin: String
+    public let markPx: String
+    public let midPx: String
+    public let prevDayPx: String
+    public let dayNtlVlm: String
+    public let priceChange24hPct: String
+    public let openInterest: String
+    public let funding: String
+    public let isDelisted: Bool
+}
+
+public struct MarketTickersResponse: Codable, Sendable {
+    public let tickers: [MarketTicker]
+}
+
 public struct SimBookLevel: Codable, Sendable {
     public let price: String
     public let size: String

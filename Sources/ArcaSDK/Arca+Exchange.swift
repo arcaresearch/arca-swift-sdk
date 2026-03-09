@@ -206,6 +206,11 @@ extension Arca {
         try await client.get("/exchange/market/mids")
     }
 
+    /// Get 24h ticker data for all assets (volume, price change, funding, delisted status).
+    public func getMarketTickers() async throws -> MarketTickersResponse {
+        try await client.get("/exchange/market/tickers")
+    }
+
     /// Get L2 order book for a specific coin.
     public func getOrderBook(coin: String) async throws -> SimBookResponse {
         try await client.get("/exchange/market/book/\(coin)")
