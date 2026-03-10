@@ -99,7 +99,6 @@ extension Arca {
     ///   - side: Order side (`.buy` or `.sell`)
     ///   - orderType: Order type (`.market` or `.limit`)
     ///   - size: Order size as decimal string
-    ///   - szDenom: Size denomination (`.token` or `.usd`, defaults to `.token`)
     ///   - price: Limit price (required for limit orders)
     ///   - leverage: Optional leverage override. If omitted, uses the account's current per-coin leverage setting.
     ///   - reduceOnly: If true, only reduces an existing position
@@ -113,7 +112,6 @@ extension Arca {
         side: OrderSide,
         orderType: OrderType,
         size: String,
-        szDenom: SizeDenomination = .token,
         price: String? = nil,
         leverage: Int? = nil,
         reduceOnly: Bool = false,
@@ -129,7 +127,6 @@ extension Arca {
                 side: side.rawValue,
                 orderType: orderType.rawValue,
                 size: size,
-                szDenom: szDenom.rawValue,
                 price: price,
                 leverage: leverage,
                 reduceOnly: reduceOnly,
@@ -326,11 +323,6 @@ public enum LeverageType: String, Codable, Sendable {
     case isolated
 }
 
-public enum SizeDenomination: String, Sendable {
-    case token
-    case usd
-}
-
 public enum TimeInForce: String, Codable, Sendable {
     case gtc = "GTC"
     case ioc = "IOC"
@@ -355,7 +347,6 @@ private struct PlaceOrderRequest: Encodable {
     let side: String
     let orderType: String
     let size: String
-    let szDenom: String
     let price: String?
     let leverage: Int?
     let reduceOnly: Bool
