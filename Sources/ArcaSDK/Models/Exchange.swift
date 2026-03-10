@@ -132,9 +132,13 @@ public struct LeverageInfo: Codable, Sendable {
 public struct ActiveAssetData: Codable, Sendable {
     public let coin: String
     public let leverage: LeverageInfo
+    /// Max buy size in tokens (positive).
     public let maxBuySize: String
+    /// Max sell size in tokens (positive).
     public let maxSellSize: String
+    /// Max buy size in USD (positive).
     public let maxBuyUsd: String
+    /// Max sell size in USD (positive).
     public let maxSellUsd: String
     public let markPx: String
     public let feeRate: String
