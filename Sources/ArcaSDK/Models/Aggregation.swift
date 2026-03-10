@@ -119,6 +119,24 @@ public struct PnlResponse: Codable, Sendable {
     public let externalFlows: [ExternalFlowEntry]
 }
 
+// MARK: - P&L History
+
+public struct PnlPoint: Codable, Sendable {
+    public let timestamp: String
+    public let pnlUsd: String
+    public let equityUsd: String
+}
+
+public struct PnlHistoryResponse: Codable, Sendable {
+    public let prefix: String
+    public let from: String
+    public let to: String
+    public let points: Int
+    public let startingEquityUsd: String
+    public let pnlPoints: [PnlPoint]
+    public let externalFlows: [ExternalFlowEntry]
+}
+
 // MARK: - Equity History
 
 public struct EquityPoint: Codable, Sendable {

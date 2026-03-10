@@ -30,6 +30,29 @@ extension Arca {
         ])
     }
 
+    /// Get P&L history (time-series) for objects under a path prefix.
+    /// Returns P&L and equity values adjusted for external flows.
+    ///
+    /// - Parameters:
+    ///   - prefix: Path prefix
+    ///   - from: Start timestamp (RFC 3339)
+    ///   - to: End timestamp (RFC 3339)
+    ///   - points: Number of samples (default 200, max 1000)
+    public func getPnlHistory(
+        prefix: String,
+        from: String,
+        to: String,
+        points: Int = 200
+    ) async throws -> PnlHistoryResponse {
+        try await client.get("/objects/pnl/history", query: [
+            "realmId": realm,
+            "prefix": prefix,
+            "from": from,
+            "to": to,
+            "points": String(points),
+        ])
+    }
+
     /// Get equity history (time-series) for objects under a path prefix.
     ///
     /// - Parameters:
