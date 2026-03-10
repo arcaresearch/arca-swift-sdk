@@ -159,7 +159,6 @@ final class ModelDecodingTests: XCTestCase {
                 "id": "act_01abc",
                 "realmId": "rlm_01def",
                 "name": "test-exchange",
-                "usdBalance": "10000",
                 "createdAt": "2026-03-07T10:00:00.000000Z",
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },
@@ -177,7 +176,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let state = try decoder.decode(ExchangeState.self, from: json)
-        XCTAssertEqual(state.account.usdBalance, "10000")
+        XCTAssertEqual(state.account.id.rawValue, "act_01abc")
         XCTAssertEqual(state.marginSummary.accountValue, "10000")
         XCTAssertTrue(state.positions.isEmpty)
         XCTAssertTrue(state.openOrders.isEmpty)
@@ -191,7 +190,6 @@ final class ModelDecodingTests: XCTestCase {
                 "id": "act_01abc",
                 "realmId": "rlm_01def",
                 "name": "test-exchange",
-                "usdBalance": "10000",
                 "createdAt": "2026-03-07T10:00:00.000000Z",
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },
@@ -249,7 +247,6 @@ final class ModelDecodingTests: XCTestCase {
                 "id": "act_01abc",
                 "realmId": "rlm_01def",
                 "name": "test-exchange",
-                "usdBalance": "10000",
                 "createdAt": "2026-03-07T10:00:00.000000Z",
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },

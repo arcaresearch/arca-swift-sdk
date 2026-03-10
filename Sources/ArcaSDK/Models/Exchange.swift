@@ -6,7 +6,6 @@ public struct SimAccount: Codable, Sendable {
     public let id: SimAccountID
     public let realmId: RealmID
     public let name: String
-    public let usdBalance: String
     public let createdAt: String
     public let updatedAt: String
 }
