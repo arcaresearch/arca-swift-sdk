@@ -101,7 +101,7 @@ extension Arca {
     ///   - size: Order size as decimal string
     ///   - szDenom: Size denomination (`.token` or `.usd`, defaults to `.token`)
     ///   - price: Limit price (required for limit orders)
-    ///   - leverage: Leverage multiplier (default: 1)
+    ///   - leverage: Optional leverage override. If omitted, uses the account's current per-coin leverage setting.
     ///   - reduceOnly: If true, only reduces an existing position
     ///   - timeInForce: Time in force (default: `.gtc`)
     ///   - builderFeeBps: Builder fee in tenths of a basis point
@@ -115,7 +115,7 @@ extension Arca {
         size: String,
         szDenom: SizeDenomination = .token,
         price: String? = nil,
-        leverage: Int = 1,
+        leverage: Int? = nil,
         reduceOnly: Bool = false,
         timeInForce: TimeInForce = .gtc,
         builderFeeBps: Int? = nil,
@@ -357,7 +357,7 @@ private struct PlaceOrderRequest: Encodable {
     let size: String
     let szDenom: String
     let price: String?
-    let leverage: Int
+    let leverage: Int?
     let reduceOnly: Bool
     let timeInForce: String
     let builderFeeBps: Int?
