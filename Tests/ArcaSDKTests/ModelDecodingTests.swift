@@ -163,12 +163,24 @@ final class ModelDecodingTests: XCTestCase {
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },
             "marginSummary": {
-                "accountValue": "10000",
+                "equity": "10000",
+                "initialMarginUsed": "500",
+                "maintenanceMarginRequired": "100",
+                "availableToWithdraw": "9500",
                 "totalNtlPos": "5000",
-                "totalMarginUsed": "500",
-                "withdrawable": "9500",
-                "totalUnrealizedPnl": "100"
+                "totalUnrealizedPnl": "100",
+                "totalRawUsd": "9900"
             },
+            "crossMarginSummary": {
+                "equity": "10000",
+                "initialMarginUsed": "500",
+                "maintenanceMarginRequired": "100",
+                "availableToWithdraw": "9500",
+                "totalNtlPos": "5000",
+                "totalUnrealizedPnl": "100",
+                "totalRawUsd": "9900"
+            },
+            "crossMaintenanceMarginUsed": "100",
             "positions": [],
             "openOrders": [],
             "feeRates": null
@@ -177,7 +189,11 @@ final class ModelDecodingTests: XCTestCase {
 
         let state = try decoder.decode(ExchangeState.self, from: json)
         XCTAssertEqual(state.account.id.rawValue, "act_01abc")
-        XCTAssertEqual(state.marginSummary.accountValue, "10000")
+        XCTAssertEqual(state.marginSummary.equity, "10000")
+        XCTAssertEqual(state.marginSummary.initialMarginUsed, "500")
+        XCTAssertEqual(state.marginSummary.maintenanceMarginRequired, "100")
+        XCTAssertEqual(state.marginSummary.availableToWithdraw, "9500")
+        XCTAssertEqual(state.crossMaintenanceMarginUsed, "100")
         XCTAssertTrue(state.positions.isEmpty)
         XCTAssertTrue(state.openOrders.isEmpty)
         XCTAssertNil(state.feeRates)
@@ -194,11 +210,13 @@ final class ModelDecodingTests: XCTestCase {
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },
             "marginSummary": {
-                "accountValue": "10000",
+                "equity": "10000",
+                "initialMarginUsed": "500",
+                "maintenanceMarginRequired": "100",
+                "availableToWithdraw": "9500",
                 "totalNtlPos": "5000",
-                "totalMarginUsed": "500",
-                "withdrawable": "9500",
-                "totalUnrealizedPnl": "100"
+                "totalUnrealizedPnl": "100",
+                "totalRawUsd": "9900"
             },
             "positions": [
                 {
@@ -251,11 +269,13 @@ final class ModelDecodingTests: XCTestCase {
                 "updatedAt": "2026-03-07T10:00:00.000000Z"
             },
             "marginSummary": {
-                "accountValue": "10000",
+                "equity": "10000",
+                "initialMarginUsed": "0",
+                "maintenanceMarginRequired": "0",
+                "availableToWithdraw": "10000",
                 "totalNtlPos": "0",
-                "totalMarginUsed": "0",
-                "withdrawable": "10000",
-                "totalUnrealizedPnl": "0"
+                "totalUnrealizedPnl": "0",
+                "totalRawUsd": "10000"
             },
             "positions": [],
             "openOrders": [
@@ -303,6 +323,30 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(order.builderFeeBps)
         XCTAssertEqual(order.createdAt, "2026-03-07T10:00:00.000000Z")
         XCTAssertEqual(order.updatedAt, "2026-03-07T10:00:00.000000Z")
+    }
+
+    func testActiveAssetDataDecoding() throws {
+        let json = """
+        {
+            "coin": "BTC",
+            "leverage": { "type": "cross", "value": 5 },
+            "maxBuySize": "0.1538",
+            "maxSellSize": "-0.1538",
+            "maxBuyUsd": "10000",
+            "maxSellUsd": "-10000",
+            "availableToTrade": ["0.1538", "-0.1538"],
+            "markPx": "65000",
+            "feeRate": "0.00045"
+        }
+        """.data(using: .utf8)!
+
+        let data = try decoder.decode(ActiveAssetData.self, from: json)
+        XCTAssertEqual(data.coin, "BTC")
+        XCTAssertEqual(data.leverage.type, .cross)
+        XCTAssertEqual(data.leverage.value, 5)
+        XCTAssertEqual(data.maxBuySize, "0.1538")
+        XCTAssertEqual(data.availableToTrade?.first, "0.1538")
+        XCTAssertEqual(data.markPx, "65000")
     }
 
     // MARK: - Aggregation

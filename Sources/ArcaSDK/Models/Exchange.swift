@@ -11,10 +11,11 @@ public struct SimAccount: Codable, Sendable {
 }
 
 public struct SimMarginSummary: Codable, Sendable {
-    public let accountValue: String
+    public let equity: String
+    public let initialMarginUsed: String
+    public let maintenanceMarginRequired: String
+    public let availableToWithdraw: String
     public let totalNtlPos: String
-    public let totalMarginUsed: String
-    public let withdrawable: String
     public let totalUnrealizedPnl: String
     public let totalRawUsd: String?
 }
@@ -112,6 +113,8 @@ public struct SimFeeRates: Codable, Sendable {
 public struct ExchangeState: Codable, Sendable {
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
+    public let crossMarginSummary: SimMarginSummary?
+    public let crossMaintenanceMarginUsed: String?
     public let positions: [SimPosition]
     public let openOrders: [SimOrder]
     public let feeRates: SimFeeRates?
@@ -140,6 +143,8 @@ public struct ActiveAssetData: Codable, Sendable {
     public let maxBuyUsd: String
     /// Max sell size in USD (positive).
     public let maxSellUsd: String
+    /// Buy/sell token amounts currently available to trade [buy, sell].
+    public let availableToTrade: [String]?
     public let markPx: String
     public let feeRate: String
 }
