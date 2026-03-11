@@ -9,6 +9,7 @@ enum OutboundMessage: Encodable {
     case unsubscribeMids
     case subscribeCandles(coins: [String], intervals: [String])
     case unsubscribeCandles
+    case ping
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -35,6 +36,8 @@ enum OutboundMessage: Encodable {
             try container.encode(intervals, forKey: .intervals)
         case .unsubscribeCandles:
             try container.encode("unsubscribe_candles", forKey: .action)
+        case .ping:
+            try container.encode("ping", forKey: .action)
         }
     }
 

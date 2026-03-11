@@ -47,6 +47,12 @@ public actor WebSocketManager {
 
     private var snapshotHandlers: [String: [UUID: @Sendable (Any) -> Void]] = [:]
 
+    // Application-level heartbeat for half-open connection detection
+    private var pingTask: Task<Void, Never>?
+    private var lastMessageAt: Date = Date()
+    private static let pingIntervalNs: UInt64 = 30_000_000_000  // 30s
+    private static let staleThresholdS: TimeInterval = 45        // 45s
+
     public init(
         baseURL: URL,
         token: String,
@@ -92,6 +98,7 @@ public actor WebSocketManager {
         reconnectTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        stopHeartbeat()
         cancelIdleTimer()
         for task in unsubTasks.values { task.cancel() }
         unsubTasks.removeAll()
@@ -496,15 +503,21 @@ public actor WebSocketManager {
 
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
+        lastMessageAt = Date()
         let decoder = JSONDecoder()
 
         // Try to parse as a generic JSON dictionary first for snapshot handling
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let msgType = json["type"] as? String ?? ""
 
+            if msgType == "pong" {
+                return
+            }
+
             if msgType == "authenticated" {
                 reconnectAttempt = 0
                 setStatus(.connected)
+                startHeartbeat()
                 // Re-subscribe from raw subscription state
                 if !subscribedChannels.isEmpty {
                     sendMessage(.subscribe(channels: Array(subscribedChannels)))
@@ -569,6 +582,42 @@ public actor WebSocketManager {
     private func performReconnect() {
         reconnectTask = nil
         doConnect()
+    }
+
+    // MARK: - Private: Heartbeat
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        lastMessageAt = Date()
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: WebSocketManager.pingIntervalNs)
+                guard !Task.isCancelled else { return }
+                await self?.heartbeatTick()
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        pingTask?.cancel()
+        pingTask = nil
+    }
+
+    private func heartbeatTick() {
+        let elapsed = Date().timeIntervalSince(lastMessageAt)
+        if elapsed >= WebSocketManager.staleThresholdS {
+            stopHeartbeat()
+            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+            receiveTask?.cancel()
+            receiveTask = nil
+            setStatus(.disconnected)
+            if shouldReconnect {
+                scheduleReconnect()
+            }
+            return
+        }
+        sendMessage(.ping)
     }
 
     // MARK: - Private: Messaging
