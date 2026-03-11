@@ -54,7 +54,7 @@ public struct ObjectValuation: Codable, Sendable {
     public let denomination: String?
     public let valueUsd: String
     public let balances: [BalanceValue]
-    public let reservedBalances: [ReservedValue]
+    public let reservedBalances: [ReservedValue]?
     public let pendingInbound: [ReservedValue]?
     public let positions: [PositionValue]?
 }
