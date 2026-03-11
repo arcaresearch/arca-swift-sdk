@@ -325,6 +325,21 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(order.updatedAt, "2026-03-07T10:00:00.000000Z")
     }
 
+    func testUpdateLeverageRequestEncodesLeverageAsInt() throws {
+        struct LeverageBody: Encodable {
+            let coin: String
+            let leverage: Int
+        }
+        let body = LeverageBody(coin: "BTC", leverage: 40)
+        let data = try JSONEncoder().encode(body)
+        let json = String(data: data, encoding: .utf8)!
+
+        XCTAssertTrue(json.contains("\"leverage\":40") || json.contains("\"leverage\": 40"),
+                       "leverage must encode as a JSON integer, got: \(json)")
+        XCTAssertFalse(json.contains("\"leverage\":\"40\""),
+                        "leverage must NOT encode as a JSON string")
+    }
+
     func testActiveAssetDataDecoding() throws {
         let json = """
         {

@@ -63,10 +63,10 @@ extension Arca {
         coin: String,
         leverage: Int
     ) async throws -> UpdateLeverageResponse {
-        try await client.post("/objects/\(objectId)/exchange/leverage", body: [
-            "coin": coin,
-            "leverage": String(leverage),
-        ])
+        try await client.post("/objects/\(objectId)/exchange/leverage", body: UpdateLeverageRequest(
+            coin: coin,
+            leverage: leverage
+        ))
     }
 
     /// Get leverage settings for a coin (or all coins) on an exchange object.
@@ -338,6 +338,11 @@ private struct CreateExchangeRequest: Encodable {
     let denomination: String
     let metadata: String?
     let operationPath: String?
+}
+
+private struct UpdateLeverageRequest: Encodable {
+    let coin: String
+    let leverage: Int
 }
 
 private struct PlaceOrderRequest: Encodable {
