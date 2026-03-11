@@ -68,6 +68,16 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
         get async throws { try await _settled.value }
     }
 
+    /// Wait for full operation settlement (discardable).
+    ///
+    /// Same as ``settled`` but marked `@discardableResult` so callers that
+    /// only need to wait — without inspecting the response — avoid an
+    /// "unused result" warning.
+    @discardableResult
+    public func settle() async throws -> Response {
+        try await _settled.value
+    }
+
     /// Wait for settlement with an explicit timeout.
     ///
     /// - Parameter timeoutSeconds: Maximum time to wait for settlement, in seconds.

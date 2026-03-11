@@ -53,6 +53,16 @@ public final class OrderHandle: @unchecked Sendable {
         get async throws { try await inner.settled }
     }
 
+    /// Wait for full operation settlement (discardable).
+    ///
+    /// Same as ``settled`` but marked `@discardableResult` so callers that
+    /// only need to wait — without inspecting the response — avoid an
+    /// "unused result" warning.
+    @discardableResult
+    public func settle() async throws -> OrderOperationResponse {
+        try await inner.settle()
+    }
+
     /// Wait for settlement with an explicit timeout.
     public func settled(timeoutSeconds: TimeInterval) async throws -> OrderOperationResponse {
         try await inner.settled(timeoutSeconds: timeoutSeconds)
