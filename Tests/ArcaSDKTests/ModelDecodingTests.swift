@@ -393,6 +393,62 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(agg.asOf)
     }
 
+    func testObjectValuationDecoding_MissingReservedBalances() throws {
+        let json = """
+        {
+            "objectId": "obj_01abc",
+            "path": "/users/u1/wallet",
+            "type": "denominated",
+            "denomination": "USD",
+            "valueUsd": "1000",
+            "balances": [
+                {"denomination": "USD", "amount": "1000", "price": "1.0", "valueUsd": "1000"}
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let val = try decoder.decode(ObjectValuation.self, from: json)
+        XCTAssertEqual(val.objectId.rawValue, "obj_01abc")
+        XCTAssertEqual(val.valueUsd, "1000")
+        XCTAssertEqual(val.balances.count, 1)
+        XCTAssertNil(val.reservedBalances)
+        XCTAssertNil(val.pendingInbound)
+        XCTAssertNil(val.positions)
+    }
+
+    func testCreateWatchResponseDecoding_NoReservedBalances() throws {
+        let json = """
+        {
+            "watchId": "req_01abc",
+            "aggregation": {
+                "prefix": "/users/u1/",
+                "totalEquityUsd": "1000",
+                "totalReservedUsd": "0",
+                "totalInTransitUsd": "0",
+                "breakdown": [],
+                "objects": [
+                    {
+                        "objectId": "obj_01abc",
+                        "path": "/users/u1/wallet",
+                        "type": "denominated",
+                        "denomination": "USD",
+                        "valueUsd": "1000",
+                        "balances": [
+                            {"denomination": "USD", "amount": "1000", "price": "1.0", "valueUsd": "1000"}
+                        ]
+                    }
+                ]
+            }
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(CreateWatchResponse.self, from: json)
+        XCTAssertEqual(resp.watchId.rawValue, "req_01abc")
+        XCTAssertEqual(resp.aggregation.totalEquityUsd, "1000")
+        XCTAssertEqual(resp.aggregation.objects.count, 1)
+        XCTAssertNil(resp.aggregation.objects[0].reservedBalances)
+    }
+
     // MARK: - Summary
 
     func testSummaryDecoding() throws {
