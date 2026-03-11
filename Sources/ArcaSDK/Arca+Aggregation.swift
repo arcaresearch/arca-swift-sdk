@@ -90,7 +90,8 @@ extension Arca {
 
     /// Get the current aggregation for an existing watch.
     public func getWatchAggregation(watchId: String) async throws -> PathAggregation {
-        try await client.get("/aggregations/watch/\(watchId)")
+        let response: GetWatchAggregationResponse = try await client.get("/aggregations/watch/\(watchId)")
+        return response.aggregation
     }
 
     /// Destroy an aggregation watch.
@@ -104,6 +105,11 @@ extension Arca {
 private struct CreateWatchRequest: Encodable {
     let realmId: String
     let sources: [AggregationSource]
+}
+
+private struct GetWatchAggregationResponse: Decodable {
+    let watchId: String
+    let aggregation: PathAggregation
 }
 
 private struct EmptyResponse: Decodable {}
