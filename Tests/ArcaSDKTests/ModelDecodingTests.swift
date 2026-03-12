@@ -371,7 +371,7 @@ final class ModelDecodingTests: XCTestCase {
         {
             "prefix": "/",
             "totalEquityUsd": "50000",
-            "totalReservedUsd": "1000",
+            "departingUsd": "1000",
             "breakdown": [
                 {
                     "asset": "USD",
@@ -389,7 +389,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(agg.totalEquityUsd, "50000")
         XCTAssertEqual(agg.breakdown.count, 1)
         XCTAssertEqual(agg.breakdown[0].category, .spot)
-        XCTAssertNil(agg.totalInTransitUsd)
+        XCTAssertNil(agg.arrivingUsd)
         XCTAssertNil(agg.asOf)
     }
 
@@ -423,8 +423,8 @@ final class ModelDecodingTests: XCTestCase {
             "aggregation": {
                 "prefix": "/users/u1/",
                 "totalEquityUsd": "1000",
-                "totalReservedUsd": "0",
-                "totalInTransitUsd": "0",
+                "departingUsd": "0",
+                "arrivingUsd": "0",
                 "breakdown": [],
                 "objects": [
                     {

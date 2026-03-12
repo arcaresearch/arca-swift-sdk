@@ -62,8 +62,8 @@ public struct ObjectValuation: Codable, Sendable {
 public struct PathAggregation: Codable, Sendable {
     public let prefix: String
     public let totalEquityUsd: String
-    public let totalReservedUsd: String
-    public let totalInTransitUsd: String?
+    public let departingUsd: String
+    public let arrivingUsd: String?
     public let breakdown: [AssetBreakdown]
     public let objects: [ObjectValuation]
     public let asOf: String?
