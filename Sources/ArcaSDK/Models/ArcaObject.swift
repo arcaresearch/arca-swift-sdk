@@ -37,6 +37,10 @@ public struct ArcaBalance: Codable, Sendable {
     public let arcaId: ObjectID
     public let denomination: String
     public let amount: String
+    public let arriving: String
+    public let settled: String
+    public let departing: String
+    public let total: String
 }
 
 public struct ArcaBalanceListResponse: Codable, Sendable {

@@ -2,11 +2,17 @@ import Foundation
 
 // MARK: - Transfer
 
+public struct TransferFee: Codable, Sendable {
+    public let amount: String
+    public let denomination: String
+}
+
 public struct TransferResponse: Codable, Sendable, OperationResponse {
     public let operation: Operation
+    public let fee: TransferFee?
 
     public func withOperation(_ op: Operation) -> Self {
-        .init(operation: op)
+        .init(operation: op, fee: fee)
     }
 }
 
