@@ -221,7 +221,7 @@ final class OperationHandleTests: XCTestCase {
 final class OperationResponseConformanceTests: XCTestCase {
 
     func testTransferResponseConformance() {
-        let original = TransferResponse(operation: makeOperation(state: .pending))
+        let original = TransferResponse(operation: makeOperation(state: .pending), fee: nil)
         let updated = original.withOperation(makeOperation(state: .completed))
         XCTAssertEqual(updated.operation.state, .completed)
     }

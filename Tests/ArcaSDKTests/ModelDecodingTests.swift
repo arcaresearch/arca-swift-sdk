@@ -119,13 +119,21 @@ final class ModelDecodingTests: XCTestCase {
             "id": "bal_01abc",
             "arcaId": "obj_01def",
             "denomination": "USD",
-            "amount": "1000.50"
+            "amount": "1000.50",
+            "arriving": "200.00",
+            "settled": "800.50",
+            "departing": "0.00",
+            "total": "1000.50"
         }
         """.data(using: .utf8)!
 
         let balance = try decoder.decode(ArcaBalance.self, from: json)
         XCTAssertEqual(balance.denomination, "USD")
         XCTAssertEqual(balance.amount, "1000.50")
+        XCTAssertEqual(balance.arriving, "200.00")
+        XCTAssertEqual(balance.settled, "800.50")
+        XCTAssertEqual(balance.departing, "0.00")
+        XCTAssertEqual(balance.total, "1000.50")
     }
 
     // MARK: - StateDelta
