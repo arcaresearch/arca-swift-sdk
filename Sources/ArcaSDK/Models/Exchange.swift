@@ -259,3 +259,58 @@ public struct CandleEvent: Sendable {
     public let interval: CandleInterval
     public let candle: Candle
 }
+
+// MARK: - Fill / Trade History (Platform-Side)
+
+public struct FillResultingPosition: Codable, Sendable {
+    public let side: PositionSide
+    public let size: String
+    public let entryPx: String?
+    public let leverage: Int
+}
+
+public struct Fill: Codable, Sendable {
+    public let id: String
+    public let operationId: String
+    public let orderId: String?
+    public let market: String
+    public let side: OrderSide?
+    public let size: String?
+    public let price: String?
+    public let dir: String?
+    public let startPosition: String?
+    public let fee: String?
+    public let exchangeFee: String?
+    public let platformFee: String?
+    public let builderFee: String?
+    public let realizedPnl: String?
+    public let resultingPosition: FillResultingPosition?
+    public let isLiquidation: Bool?
+    public let createdAt: String
+}
+
+public struct FillListResponse: Codable, Sendable {
+    public let fills: [Fill]
+    public let total: Int
+    public let cursor: String?
+}
+
+public struct MarketTradeSummaryItem: Codable, Sendable {
+    public let market: String
+    public let totalRealizedPnl: String
+    public let totalFees: String
+    public let tradeCount: Int
+    public let totalVolume: String
+}
+
+public struct TradeSummaryTotals: Codable, Sendable {
+    public let totalRealizedPnl: String
+    public let totalFees: String
+    public let tradeCount: Int
+    public let totalVolume: String
+}
+
+public struct TradeSummaryResponse: Codable, Sendable {
+    public let markets: [MarketTradeSummaryItem]
+    public let totals: TradeSummaryTotals
+}

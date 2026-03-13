@@ -193,6 +193,51 @@ extension Arca {
         try await client.get("/objects/\(objectId)/exchange/positions")
     }
 
+    /// List historical fills (trades) for an exchange Arca object.
+    /// Returns paginated fill data with P&L, fees, and resulting position state.
+    ///
+    /// - Parameters:
+    ///   - objectId: Exchange Arca object ID
+    ///   - market: Filter by market (e.g. `"BTC-PERP"`)
+    ///   - startTime: Filter fills on or after this timestamp (RFC 3339)
+    ///   - endTime: Filter fills on or before this timestamp (RFC 3339)
+    ///   - limit: Max fills to return (default 100, max 500)
+    ///   - cursor: Cursor for pagination (createdAt of last fill)
+    public func listFills(
+        objectId: String,
+        market: String? = nil,
+        startTime: String? = nil,
+        endTime: String? = nil,
+        limit: Int? = nil,
+        cursor: String? = nil
+    ) async throws -> FillListResponse {
+        var query: [String: String] = [:]
+        if let market = market { query["market"] = market }
+        if let startTime = startTime { query["startTime"] = startTime }
+        if let endTime = endTime { query["endTime"] = endTime }
+        if let limit = limit { query["limit"] = String(limit) }
+        if let cursor = cursor { query["cursor"] = cursor }
+        return try await client.get("/objects/\(objectId)/exchange/fills", query: query)
+    }
+
+    /// Get per-market P&L aggregation for an exchange Arca object.
+    /// Summarizes realized P&L, total fees, trade count, and volume by market.
+    ///
+    /// - Parameters:
+    ///   - objectId: Exchange Arca object ID
+    ///   - startTime: Filter fills on or after this timestamp (RFC 3339)
+    ///   - endTime: Filter fills on or before this timestamp (RFC 3339)
+    public func tradeSummary(
+        objectId: String,
+        startTime: String? = nil,
+        endTime: String? = nil
+    ) async throws -> TradeSummaryResponse {
+        var query: [String: String] = [:]
+        if let startTime = startTime { query["startTime"] = startTime }
+        if let endTime = endTime { query["endTime"] = endTime }
+        return try await client.get("/objects/\(objectId)/exchange/trade-summary", query: query)
+    }
+
     /// Get market metadata (supported assets).
     public func getMarketMeta() async throws -> SimMetaResponse {
         try await client.get("/exchange/market/meta")
