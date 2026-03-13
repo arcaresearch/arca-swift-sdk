@@ -284,7 +284,7 @@ public struct Fill: Codable, Sendable {
     public let platformFee: String?
     public let builderFee: String?
     public let realizedPnl: String?
-    public let resultingPosition: FillResultingPosition?
+    public let resultingPosition: FillResultingPosition
     public let isLiquidation: Bool?
     public let createdAt: String
 }
