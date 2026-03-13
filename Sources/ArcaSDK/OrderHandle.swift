@@ -15,7 +15,7 @@ public struct OrderHandleDeps: Sendable {
 ///
 /// ```swift
 /// let order = arca.placeOrder(path: "/op/order/btc-1", objectId: id, ...)
-/// try await order.settled  // wait for placement
+/// try await order.settle()  // wait for placement
 ///
 /// let filled = try await order.filled(timeoutSeconds: 30)
 ///
@@ -23,7 +23,7 @@ public struct OrderHandleDeps: Sendable {
 ///     print("Filled \(fill.size) @ \(fill.price)")
 /// }
 ///
-/// try await order.cancel().settled
+/// try await order.cancel().settle()
 /// ```
 public final class OrderHandle: @unchecked Sendable {
     private let inner: OperationHandle<OrderOperationResponse>

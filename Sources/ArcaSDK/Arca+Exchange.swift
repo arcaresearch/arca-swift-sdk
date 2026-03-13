@@ -7,7 +7,7 @@ extension Arca {
     /// Create a Perps Exchange Arca object.
     /// Automatically sets type=exchange and denomination=USD.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
@@ -86,11 +86,11 @@ extension Arca {
     /// Place an order on an exchange Arca object.
     ///
     /// Returns an ``OrderHandle`` with order lifecycle methods:
-    /// - `try await order.settled` — wait for placement
+    /// - `try await order.settle()` — wait for placement
     /// - `try await order.filled()` — wait for fill
     /// - `for try await fill in order.fills()` — stream fills
     /// - `order.onFill { fill in ... }` — callback per fill
-    /// - `try await order.cancel().settled` — cancel the order
+    /// - `try await order.cancel().settle()` — cancel the order
     ///
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
@@ -173,7 +173,7 @@ extension Arca {
 
     /// Cancel an order on an exchange Arca object.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement.
     public func cancelOrder(
         path: String,

@@ -6,7 +6,7 @@ extension Arca {
 
     /// Create a payment link for deposit or withdrawal.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:

@@ -6,7 +6,7 @@ extension Arca {
 
     /// Create a denominated Arca object at the given path (idempotent).
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
@@ -34,7 +34,7 @@ extension Arca {
 
     /// Create an Arca object of any type at the given path (idempotent).
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
@@ -64,7 +64,7 @@ extension Arca {
 
     /// Delete an Arca object by path.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:

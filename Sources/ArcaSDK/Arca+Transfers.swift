@@ -9,7 +9,7 @@ extension Arca {
     /// Settlement is immediate for denominated targets, or async for
     /// targets that require a receiver workflow (e.g. exchange objects).
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
@@ -38,7 +38,7 @@ extension Arca {
     /// non-production use (testing, competitions, programmatic account seeding).
     /// For production deposit flows, use ``createPaymentLink(type:arcaRef:amount:)``.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
@@ -67,7 +67,7 @@ extension Arca {
     /// for non-production use. For production withdrawal flows, use
     /// ``createPaymentLink(type:arcaRef:amount:)``.
     ///
-    /// Returns an ``OperationHandle`` — use `try await handle.settled` to wait
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:

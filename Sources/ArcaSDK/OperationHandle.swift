@@ -20,12 +20,12 @@ public protocol OperationResponse: Codable, Sendable {
 ///
 /// ```swift
 /// // Simple: one-liner await to settlement
-/// try await arca.deposit(arcaRef: "/wallets/main", amount: "1000").settled
+/// try await arca.deposit(arcaRef: "/wallets/main", amount: "1000").settle()
 ///
 /// // Progressive disclosure
 /// let deposit = arca.deposit(arcaRef: "/wallets/main", amount: "1000")
 /// let response = try await deposit.submitted   // before settlement
-/// try await deposit.settled                     // full settlement
+/// try await deposit.settle()                    // full settlement
 /// try await deposit.settled(timeoutSeconds: 15)
 ///
 /// // Batching
