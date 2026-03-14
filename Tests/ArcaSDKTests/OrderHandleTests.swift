@@ -20,6 +20,7 @@ private func makeOrderOperation(
         targetArcaPath: nil,
         input: nil,
         outcome: outcome,
+        failureMessage: nil,
         actorType: "user",
         actorId: nil,
         tokenJti: nil,
