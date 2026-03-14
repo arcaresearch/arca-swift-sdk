@@ -4,7 +4,7 @@ import Foundation
 
 extension Arca {
 
-    /// Create a denominated Arca object at the given path (idempotent).
+    /// Ensure a denominated Arca object exists at the given path (idempotent).
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
@@ -14,7 +14,7 @@ extension Arca {
     ///   - denomination: Currency denomination (e.g. `USD`, `BTC`)
     ///   - metadata: Optional metadata string
     ///   - operationPath: Optional idempotency key (use nonce API with separator `:`)
-    public func createDenominatedArca(
+    public func ensureDenominatedArca(
         ref: String,
         denomination: String,
         metadata: String? = nil,
@@ -32,7 +32,7 @@ extension Arca {
         }
     }
 
-    /// Create an Arca object of any type at the given path (idempotent).
+    /// Ensure an Arca object of any type exists at the given path (idempotent).
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
@@ -43,7 +43,7 @@ extension Arca {
     ///   - denomination: Denomination (required for `denominated` type)
     ///   - metadata: Optional metadata string
     ///   - operationPath: Optional idempotency key
-    public func createArca(
+    public func ensureArca(
         ref: String,
         type: ArcaObjectType,
         denomination: String? = nil,

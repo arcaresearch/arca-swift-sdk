@@ -4,7 +4,7 @@ import Foundation
 
 extension Arca {
 
-    /// Create a Perps Exchange Arca object.
+    /// Ensure a Perps Exchange Arca object exists.
     /// Automatically sets type=exchange and denomination=USD.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
@@ -14,7 +14,7 @@ extension Arca {
     ///   - ref: Full Arca path (e.g. `/exchanges/hl1`)
     ///   - exchangeType: Exchange provider (defaults to `hyperliquid`)
     ///   - operationPath: Optional idempotency key
-    public func createPerpsExchange(
+    public func ensurePerpsExchange(
         ref: String,
         exchangeType: String = "hyperliquid",
         operationPath: String? = nil

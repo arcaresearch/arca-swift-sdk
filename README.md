@@ -43,8 +43,8 @@ import ArcaSDK
 // Initialize from a scoped token (minted by your backend)
 let arca = try Arca(token: scopedJwt)
 
-// Create a denominated wallet
-let response = try await arca.createDenominatedArca(
+// Ensure a denominated wallet exists
+let response = try await arca.ensureDenominatedArca(
     ref: "/wallets/main",
     denomination: "USD"
 )
