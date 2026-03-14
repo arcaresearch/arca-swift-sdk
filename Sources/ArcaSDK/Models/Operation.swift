@@ -38,6 +38,7 @@ public struct Operation: Codable, Sendable {
     public let targetArcaPath: String?
     public let input: String?
     public let outcome: String?
+    public let failureMessage: String?
     public let actorType: String?
     public let actorId: UserID?
     public let tokenJti: String?

@@ -104,6 +104,57 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(op.targetArcaPath, "/wallets/b")
     }
 
+    func testOperationDecodingWithFailureMessage() throws {
+        let json = """
+        {
+            "id": "op_01abc",
+            "realmId": "rlm_01def",
+            "path": "/op/transfer/1",
+            "type": "transfer",
+            "state": "failed",
+            "sourceArcaPath": "/wallets/a",
+            "targetArcaPath": "/wallets/b",
+            "input": null,
+            "outcome": "{\\"reason\\":\\"CHAIN_SEND_FAILED\\"}",
+            "failureMessage": "CHAIN_SEND_FAILED",
+            "actorType": "BUILDER",
+            "actorId": "usr_01xyz",
+            "tokenJti": null,
+            "createdAt": "2026-03-07T10:00:00.000000Z",
+            "updatedAt": "2026-03-07T10:01:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertEqual(op.state, .failed)
+        XCTAssertEqual(op.failureMessage, "CHAIN_SEND_FAILED")
+    }
+
+    func testOperationDecodingWithoutFailureMessage() throws {
+        let json = """
+        {
+            "id": "op_01abc",
+            "realmId": "rlm_01def",
+            "path": "/op/transfer/1",
+            "type": "transfer",
+            "state": "completed",
+            "sourceArcaPath": "/wallets/a",
+            "targetArcaPath": "/wallets/b",
+            "input": null,
+            "outcome": null,
+            "actorType": "BUILDER",
+            "actorId": "usr_01xyz",
+            "tokenJti": null,
+            "createdAt": "2026-03-07T10:00:00.000000Z",
+            "updatedAt": "2026-03-07T10:01:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertEqual(op.state, .completed)
+        XCTAssertNil(op.failureMessage)
+    }
+
     func testOperationStateTerminal() {
         XCTAssertTrue(OperationState.completed.isTerminal)
         XCTAssertTrue(OperationState.failed.isTerminal)
