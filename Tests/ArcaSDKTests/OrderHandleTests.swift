@@ -20,6 +20,7 @@ private func makeOrderOperation(
         targetArcaPath: nil,
         input: nil,
         outcome: outcome,
+        parsedOutcome: nil,
         failureMessage: nil,
         actorType: "user",
         actorId: nil,
@@ -97,7 +98,8 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in fatalError("unexpected") },
             fillEvents: { fatalError("unexpected") },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
-            waitForSettlement: { _ in fatalError("unexpected") }
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -127,7 +129,8 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in fatalError("unexpected") },
             fillEvents: { fatalError("unexpected") },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
-            waitForSettlement: { _ in fatalError("unexpected") }
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -179,7 +182,8 @@ final class OrderHandleTests: XCTestCase {
                 }
             },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
-            waitForSettlement: { _ in fatalError("unexpected") }
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -229,7 +233,8 @@ final class OrderHandleTests: XCTestCase {
                     waitForSettlement: { _ in cancelOp }
                 )
             },
-            waitForSettlement: { _ in cancelOp }
+            waitForSettlement: { _ in cancelOp },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -271,7 +276,8 @@ final class OrderHandleTests: XCTestCase {
                     waitForSettlement: { _ in cancelOp }
                 )
             },
-            waitForSettlement: { _ in cancelOp }
+            waitForSettlement: { _ in cancelOp },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -313,7 +319,8 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in orderWithFills },
             fillEvents: { AsyncStream { $0.finish() } },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
-            waitForSettlement: { _ in fatalError("unexpected") }
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(
@@ -350,7 +357,8 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in orderWithFills },
             fillEvents: { AsyncStream { $0.finish() } },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
-            waitForSettlement: { _ in fatalError("unexpected") }
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
         )
 
         let handle = OrderHandle(

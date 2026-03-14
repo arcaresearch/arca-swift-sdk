@@ -38,6 +38,7 @@ public struct Operation: Codable, Sendable {
     public let targetArcaPath: String?
     public let input: String?
     public let outcome: String?
+    public let parsedOutcome: [String: String]?
     public let failureMessage: String?
     public let actorType: String?
     public let actorId: UserID?
@@ -53,8 +54,82 @@ public struct OperationListResponse: Codable, Sendable {
 
 public struct OperationDetailResponse: Codable, Sendable {
     public let operation: Operation
+    public let context: OperationContext?
     public let events: [ArcaEvent]
     public let deltas: [StateDelta]
+}
+
+// MARK: - Operation Context
+
+public struct OperationContext: Codable, Sendable {
+    public let type: String
+    public let fill: FillContext?
+    public let transfer: TransferContext?
+    public let deposit: DepositContext?
+    public let withdrawal: WithdrawalContext?
+    public let order: OrderPlacedContext?
+    public let cancel: CancelContext?
+    public let delete: DeleteContext?
+}
+
+public struct FeeBreakdown: Codable, Sendable {
+    public let exchange: String
+    public let platform: String
+    public let builder: String
+}
+
+public struct FillContext: Codable, Sendable {
+    public let coin: String
+    public let side: String
+    public let size: String
+    public let price: String
+    public let market: String
+    public let dir: String?
+    public let orderId: String?
+    public let realizedPnl: String
+    public let fee: String
+    public let feeBreakdown: FeeBreakdown?
+    public let netBalanceChange: String
+    public let startPosition: String?
+    public let resultingPosition: FillResultingPosition?
+    public let isLiquidation: Bool
+}
+
+public struct TransferContext: Codable, Sendable {
+    public let amount: String
+    public let denomination: String
+    public let sourceArcaPath: String
+    public let targetArcaPath: String
+    public let feeAmount: String?
+}
+
+public struct DepositContext: Codable, Sendable {
+    public let amount: String
+    public let denomination: String
+    public let destination: String?
+}
+
+public struct WithdrawalContext: Codable, Sendable {
+    public let amount: String
+    public let denomination: String
+    public let txHash: String?
+}
+
+public struct OrderPlacedContext: Codable, Sendable {
+    public let orderId: String
+    public let coin: String
+    public let side: String
+    public let orderType: String
+    public let size: String
+    public let leverage: String?
+}
+
+public struct CancelContext: Codable, Sendable {
+    public let orderId: String
+}
+
+public struct DeleteContext: Codable, Sendable {
+    public let objectPath: String
 }
 
 // MARK: - Event
@@ -101,6 +176,7 @@ public struct StateDelta: Codable, Sendable {
     public let deltaType: DeltaType
     public let beforeValue: String?
     public let afterValue: String?
+    public let `internal`: Bool?
     public let createdAt: String
 }
 

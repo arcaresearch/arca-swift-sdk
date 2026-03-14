@@ -148,6 +148,9 @@ extension Arca {
             },
             waitForSettlement: { [self] operationId in
                 try await self.waitForSettlement(operationId)
+            },
+            listFills: { [self] objId in
+                try await self.listFills(objectId: objId)
             }
         )
 

@@ -6,6 +6,7 @@ public struct OrderHandleDeps: Sendable {
     let fillEvents: @Sendable () async -> AsyncStream<(SimFill, RealmEvent)>
     let cancelOrder: @Sendable (String, String, String) -> OperationHandle<OrderOperationResponse>
     let waitForSettlement: @Sendable (String) async throws -> Operation
+    let listFills: @Sendable (String) async throws -> FillListResponse
 }
 
 /// Handle for exchange order lifecycle.
@@ -176,6 +177,22 @@ public final class OrderHandle: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Get the platform-side fill record for this order with P&L, fee breakdown,
+    /// direction, and resulting position. Waits for the order to be filled first.
+    ///
+    /// ```swift
+    /// let summary = try await order.fillSummary()
+    /// print("Realized P&L: \(summary?.realizedPnl ?? "N/A")")
+    /// print("Direction: \(summary?.dir ?? "N/A")")
+    /// ```
+    public func fillSummary(timeoutSeconds: TimeInterval = 30) async throws -> Fill? {
+        let result = try await filled(timeoutSeconds: timeoutSeconds)
+        let response = try await inner.submitted
+        let opId = response.operation.id
+        let fills = try await deps.listFills(objectId)
+        return fills.fills.first { $0.operationId == opId.rawValue || $0.orderId == result.order.id.rawValue }
     }
 
     /// Callback-based fill listener. Returns a cancellation closure.

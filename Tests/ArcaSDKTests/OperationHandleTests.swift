@@ -20,6 +20,7 @@ private func makeOperation(
         targetArcaPath: "/wallets/b",
         input: nil,
         outcome: nil,
+        parsedOutcome: nil,
         failureMessage: nil,
         actorType: "user",
         actorId: nil,

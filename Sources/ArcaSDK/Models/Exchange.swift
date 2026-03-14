@@ -32,6 +32,8 @@ public struct SimPosition: Codable, Sendable {
     public let marginUsed: String
     public let liquidationPrice: String?
     public let unrealizedPnl: String?
+    public let returnOnEquity: String?
+    public let positionValue: String?
     public let createdAt: String?
     public let updatedAt: String?
 }
