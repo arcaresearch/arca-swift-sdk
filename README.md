@@ -40,8 +40,13 @@ File → Add Package Dependencies → Add Local... → sdk/swift/
 ```swift
 import ArcaSDK
 
-// Initialize from a scoped token (minted by your backend)
-let arca = try Arca(token: scopedJwt)
+// Initialize with automatic token refresh (recommended)
+let arca = try Arca(
+    token: scopedJwt,
+    tokenProvider: {
+        try await myBackend.getArcaToken()
+    }
+)
 
 // Ensure a denominated wallet exists
 let response = try await arca.ensureDenominatedArca(
@@ -68,15 +73,45 @@ let balances = try await arca.getBalancesByPath(path: "/wallets/main")
 
 The Swift SDK is designed for frontend/mobile apps. It authenticates exclusively with **scoped JWT tokens** minted by your backend via `POST /auth/token`. The realm is extracted from the token claims automatically.
 
-```swift
-// Standard initialization
-let arca = try Arca(token: scopedJwt)
+### Token Provider (recommended)
 
+Pass a `tokenProvider` closure so the SDK handles refresh automatically:
+- **Proactive refresh** — ~30 seconds before token expiry
+- **401 retry** — retries the failed request with a fresh token
+- **WebSocket** — fetches a fresh token on reconnect
+
+```swift
+let arca = try Arca(
+    token: scopedJwt,
+    tokenProvider: {
+        try await myBackend.getArcaToken()
+    }
+)
+
+// Or provider-only (fetches the first token automatically)
+let arca = try await Arca.withTokenProvider {
+    try await myBackend.getArcaToken()
+}
+
+// Listen for unrecoverable auth failures
+await arca.onAuthError { error in
+    showSessionExpiredUI()
+}
+```
+
+### Manual Token Refresh
+
+If you prefer full control, use `updateToken()` to swap the token yourself:
+
+```swift
+await arca.updateToken(newScopedJwt)
+```
+
+### Configuration
+
+```swift
 // Explicit realm override
 let arca = try Arca(token: scopedJwt, realmId: "rlm_01abc")
-
-// Token refresh
-await arca.updateToken(newScopedJwt)
 ```
 
 No API key auth or admin operations are supported — those are the responsibility of your backend.

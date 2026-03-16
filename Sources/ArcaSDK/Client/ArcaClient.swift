@@ -6,6 +6,7 @@ import Foundation
 /// - Bearer token injection on every request
 /// - Standard `{ success, data, error }` envelope unwrapping
 /// - Automatic retries for transient errors (502/503/504 and network failures)
+/// - Single 401 retry via `onUnauthorized` (token provider refresh)
 ///
 /// This is an actor to ensure thread-safe token updates from any concurrency context.
 public actor ArcaClient {
@@ -14,15 +15,25 @@ public actor ArcaClient {
     private let session: URLSession
     private let decoder: JSONDecoder
 
+    private let onUnauthorized: (@Sendable () async throws -> String)?
+    private let onAuthError: (@Sendable (Error) -> Void)?
+
     private static let transientStatuses: Set<Int> = [502, 503, 504]
     private static let maxRetries = 2
     private static let retryDelay: UInt64 = 1_000_000_000 // 1 second in nanoseconds
 
-    public init(token: String, baseURL: URL) {
+    public init(
+        token: String,
+        baseURL: URL,
+        onUnauthorized: (@Sendable () async throws -> String)? = nil,
+        onAuthError: (@Sendable (Error) -> Void)? = nil
+    ) {
         self.token = token
         self.baseURL = baseURL.appendingPathComponent("api/v1")
         self.session = URLSession(configuration: .default)
         self.decoder = JSONDecoder()
+        self.onUnauthorized = onUnauthorized
+        self.onAuthError = onAuthError
     }
 
     /// Update the bearer token (e.g., after a token refresh).
@@ -33,15 +44,48 @@ public actor ArcaClient {
     // MARK: - Public HTTP Methods
 
     public func get<T: Decodable>(_ path: String, query: [String: String]? = nil) async throws -> T {
-        try await requestWithRetry(method: "GET", path: path, query: query)
+        try await executeWithAuthRetry(method: "GET", path: path, query: query)
     }
 
     public func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
-        try await requestWithRetry(method: "POST", path: path, body: body)
+        try await executeWithAuthRetry(method: "POST", path: path, body: body)
     }
 
     public func delete<T: Decodable>(_ path: String, query: [String: String]? = nil) async throws -> T {
-        try await requestWithRetry(method: "DELETE", path: path, query: query)
+        try await executeWithAuthRetry(method: "DELETE", path: path, query: query)
+    }
+
+    // MARK: - Auth Retry Wrapper
+
+    private func executeWithAuthRetry<T: Decodable>(
+        method: String,
+        path: String,
+        query: [String: String]? = nil,
+        body: (any Encodable)? = nil
+    ) async throws -> T {
+        do {
+            return try await requestWithRetry(method: method, path: path, query: query, body: body)
+        } catch {
+            guard Self.isUnauthorized(error), let onUnauthorized else {
+                if Self.isUnauthorized(error) {
+                    onAuthError?(error)
+                }
+                throw error
+            }
+            do {
+                let newToken = try await onUnauthorized()
+                self.token = newToken
+                return try await requestWithRetry(method: method, path: path, query: query, body: body)
+            } catch {
+                onAuthError?(error)
+                throw error
+            }
+        }
+    }
+
+    private static func isUnauthorized(_ error: Error) -> Bool {
+        if case ArcaError.unauthorized = error { return true }
+        return false
     }
 
     // MARK: - Retry Logic

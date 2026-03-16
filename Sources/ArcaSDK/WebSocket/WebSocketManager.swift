@@ -53,22 +53,35 @@ public actor WebSocketManager {
     private static let pingIntervalNs: UInt64 = 30_000_000_000  // 30s
     private static let staleThresholdS: TimeInterval = 45        // 45s
 
+    /// If set, called on each reconnect to obtain a fresh token.
+    private let getToken: (@Sendable () async throws -> String)?
+
     public init(
         baseURL: URL,
         token: String,
         realmId: String,
+        getToken: (@Sendable () async throws -> String)? = nil,
         maxReconnectDelay: TimeInterval = 30
     ) {
         self.baseURL = baseURL
         self.token = token
         self.realmId = realmId
+        self.getToken = getToken
         self.maxReconnectDelay = maxReconnectDelay
         self.session = URLSession(configuration: .default)
     }
 
-    /// Update the bearer token (e.g., after refresh). Takes effect on next reconnect.
+    /// Update the bearer token. If disconnected and should reconnect,
+    /// triggers an immediate reconnect with the new token.
     public func updateToken(_ newToken: String) {
         self.token = newToken
+
+        if shouldReconnect && webSocketTask == nil {
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            reconnectAttempt = 0
+            doConnect()
+        }
     }
 
     /// Current connection status.
@@ -466,11 +479,31 @@ public actor WebSocketManager {
         self.webSocketTask = task
         task.resume()
 
-        sendMessage(.auth(token: token, realmId: realmId))
+        if let getToken {
+            Task { [weak self] in
+                do {
+                    let freshToken = try await getToken()
+                    await self?.applyTokenAndAuth(freshToken)
+                } catch {
+                    await self?.sendAuthWithCurrentToken()
+                }
+            }
+        } else {
+            sendMessage(.auth(token: token, realmId: realmId))
+        }
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+    }
+
+    private func applyTokenAndAuth(_ freshToken: String) {
+        self.token = freshToken
+        sendMessage(.auth(token: freshToken, realmId: realmId))
+    }
+
+    private func sendAuthWithCurrentToken() {
+        sendMessage(.auth(token: token, realmId: realmId))
     }
 
     private func receiveLoop() async {
@@ -544,6 +577,13 @@ public actor WebSocketManager {
             }
 
             if msgType == "error" {
+                let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
+                setStatus(.disconnected)
+                webSocketTask?.cancel(with: .goingAway, reason: errorMessage.data(using: .utf8))
+                webSocketTask = nil
+                if shouldReconnect {
+                    scheduleReconnect()
+                }
                 return
             }
 
