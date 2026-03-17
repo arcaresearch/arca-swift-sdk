@@ -155,6 +155,37 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(op.failureMessage)
     }
 
+    func testOperationTypeIncludesFill() throws {
+        let json = Data(#""fill""#.utf8)
+        let decoded = try decoder.decode(OperationType.self, from: json)
+        XCTAssertEqual(decoded, .fill)
+    }
+
+    func testFillOperationDecoding() throws {
+        let json = """
+        {
+            "id": "op_fill01",
+            "realmId": "rlm_01def",
+            "path": "/op/fill/exchanges/main/ord_01/op_fill01",
+            "type": "fill",
+            "state": "completed",
+            "sourceArcaPath": null,
+            "targetArcaPath": "/exchanges/main",
+            "input": null,
+            "outcome": null,
+            "actorType": "system",
+            "actorId": "sim-exchange",
+            "tokenJti": null,
+            "createdAt": "2026-03-16T12:00:00.000000Z",
+            "updatedAt": "2026-03-16T12:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertEqual(op.type, .fill)
+        XCTAssertEqual(op.state, .completed)
+    }
+
     func testOperationStateTerminal() {
         XCTAssertTrue(OperationState.completed.isTerminal)
         XCTAssertTrue(OperationState.failed.isTerminal)
@@ -597,6 +628,49 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     // MARK: - Market Data
+
+    func testFillDecodingWithOrderOperationId() throws {
+        let json = """
+        {
+            "id": "pl_01abc",
+            "operationId": "op_fill_01",
+            "orderOperationId": "op_order_01",
+            "orderId": "ord_01",
+            "market": "BTC-PERP",
+            "side": "BUY",
+            "size": "0.5",
+            "price": "65000",
+            "fee": "1.5",
+            "realizedPnl": "0",
+            "resultingPosition": { "side": "LONG", "size": "0.5", "entryPx": "65000", "leverage": 5 },
+            "isLiquidation": false,
+            "createdAt": "2026-03-16T12:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let fill = try decoder.decode(Fill.self, from: json)
+        XCTAssertEqual(fill.operationId, "op_fill_01")
+        XCTAssertEqual(fill.orderOperationId, "op_order_01")
+        XCTAssertEqual(fill.orderId, "ord_01")
+        XCTAssertEqual(fill.market, "BTC-PERP")
+    }
+
+    func testFillDecodingWithoutOrderOperationId() throws {
+        let json = """
+        {
+            "id": "pl_02abc",
+            "operationId": "op_fill_02",
+            "market": "ETH-PERP",
+            "resultingPosition": { "side": "SHORT", "size": "1.0", "leverage": 3 },
+            "createdAt": "2026-03-16T12:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let fill = try decoder.decode(Fill.self, from: json)
+        XCTAssertEqual(fill.operationId, "op_fill_02")
+        XCTAssertNil(fill.orderOperationId)
+        XCTAssertNil(fill.orderId)
+    }
 
     func testSimBookResponseDecoding() throws {
         let json = """

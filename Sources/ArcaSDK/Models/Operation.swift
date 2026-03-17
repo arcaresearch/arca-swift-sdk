@@ -10,6 +10,7 @@ public enum OperationType: String, Codable, Sendable {
     case withdrawal
     case swap
     case order
+    case fill
     case cancel
     case feeDistribution = "fee_distribution"
 }
@@ -86,6 +87,7 @@ public struct FillContext: Codable, Sendable {
     public let market: String
     public let dir: String?
     public let orderId: String?
+    public let orderOperationId: String?
     public let realizedPnl: String
     public let fee: String
     public let feeBreakdown: FeeBreakdown?

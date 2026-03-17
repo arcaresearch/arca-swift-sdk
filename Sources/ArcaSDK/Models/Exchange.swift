@@ -274,6 +274,7 @@ public struct FillResultingPosition: Codable, Sendable {
 public struct Fill: Codable, Sendable {
     public let id: String
     public let operationId: String
+    public let orderOperationId: String?
     public let orderId: String?
     public let market: String
     public let side: OrderSide?
