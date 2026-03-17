@@ -186,6 +186,9 @@ public struct FeeTarget: Codable, Sendable {
 
 public struct SimMetaAsset: Codable, Sendable {
     public let name: String
+    public let dex: String?
+    public let symbol: String
+    public let exchange: String
     public let index: Int
     public let szDecimals: Int
     public let maxLeverage: Int
@@ -202,6 +205,9 @@ public struct SimMidsResponse: Codable, Sendable {
 
 public struct MarketTicker: Codable, Sendable {
     public let coin: String
+    public let dex: String?
+    public let symbol: String
+    public let exchange: String
     public let markPx: String
     public let midPx: String
     public let prevDayPx: String
