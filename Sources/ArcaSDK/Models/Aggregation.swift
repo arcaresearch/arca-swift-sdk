@@ -57,6 +57,7 @@ public struct ObjectValuation: Codable, Sendable {
     public let reservedBalances: [ReservedValue]?
     public let pendingInbound: [ReservedValue]?
     public let positions: [PositionValue]?
+    public let computed: Bool?
 }
 
 public struct PathAggregation: Codable, Sendable {
