@@ -4,6 +4,14 @@ import Foundation
 
 extension Arca {
 
+    /// Get the valuation for a single Arca object.
+    /// Uses the same computation path as aggregation (Axiom 10: Observational Consistency).
+    ///
+    /// - Parameter path: Path of the Arca object
+    public func getObjectValuation(path: String) async throws -> ObjectValuation {
+        try await client.get("/objects/valuation", query: ["realmId": realm, "path": path])
+    }
+
     /// Get aggregated valuation for all objects under a path prefix.
     ///
     /// - Parameters:

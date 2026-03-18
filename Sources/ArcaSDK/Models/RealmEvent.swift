@@ -13,6 +13,9 @@ public struct RealmEvent: Codable, Sendable {
     public let object: ArcaObject?
     public let mids: [String: String]?
     public let exchangeState: ExchangeState?
+    public let valuation: ObjectValuation?
+    public let path: String?
+    public let watchId: String?
     public let aggregation: PathAggregation?
     public let coin: String?
     public let interval: String?

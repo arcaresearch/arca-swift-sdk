@@ -436,6 +436,27 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of object valuation events (valuation + path + watchId).
+    public func objectValuationEvents() -> AsyncStream<(ObjectValuation, String, String)> {
+        filteredStream { event in
+            guard event.type == EventType.objectValuation.rawValue,
+                  let valuation = event.valuation,
+                  let path = event.path,
+                  let watchId = event.watchId else { return nil }
+            return (valuation, path, watchId)
+        }
+    }
+
+    /// Send a watch_object message to the server.
+    public func sendWatchObject(path: String) {
+        sendMessage(.watchObject(path: path))
+    }
+
+    /// Send an unwatch_object message to the server.
+    public func sendUnwatchObject(watchId: String) {
+        sendMessage(.unwatchObject(watchId: watchId))
+    }
+
     /// Stream of exchange fill events (fill data + originating event).
     public func fillEvents() -> AsyncStream<(SimFill, RealmEvent)> {
         filteredStream { event in

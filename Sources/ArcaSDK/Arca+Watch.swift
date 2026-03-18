@@ -130,56 +130,58 @@ extension Arca {
         return stream
     }
 
-    /// Subscribe to real-time exchange state and fill events.
-    /// Returns immediately in `.connected` state (exchange has no snapshot).
+    /// Subscribe to real-time valuation updates for a single Arca object.
+    /// Uses the same computation path as aggregation (Axiom 10: Observational Consistency).
     /// Call `stop()` when done.
-    public func watchExchange() async throws -> ExchangeWatchStream {
+    ///
+    /// - Parameter path: Path of the Arca object to watch
+    public func watchObject(path: String) async throws -> ObjectWatchStream {
         await ws.ensureConnected()
 
-        let state = SendableBox<WatchStreamState>(.connected)
-        let box = SendableBox<ExchangeState?>(nil)
+        let state = SendableBox<WatchStreamState>(.loading)
+        let valBox = SendableBox<ObjectValuation?>(nil)
+        let watchIdBox = SendableBox<String?>(nil)
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
             for await s in statusStream {
-                if s == .disconnected {
+                if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
-                } else if s == .connected {
+                } else if s == .connected && watchIdBox.value != nil {
                     state.update { $0 = .connected }
                 }
             }
         }
 
-        await ws.acquireChannel(.exchange)
+        let valEvents = await ws.objectValuationEvents()
 
-        let stateEvents = await ws.exchangeEvents()
-        let fillEvents = await ws.fillEvents()
-
-        let updates = AsyncStream<ExchangeUpdate> { continuation in
-            let stateTask = Task {
-                for await (exchangeState, event) in stateEvents {
-                    box.update { $0 = exchangeState }
-                    continuation.yield(.stateUpdate(exchangeState, event))
+        let updates = AsyncStream<ObjectValuation> { continuation in
+            let task = Task {
+                for await (valuation, eventPath, wid) in valEvents {
+                    guard eventPath == path else { continue }
+                    watchIdBox.update { $0 = wid }
+                    valBox.update { $0 = valuation }
+                    state.update { $0 = .connected }
+                    continuation.yield(valuation)
                 }
+                continuation.finish()
             }
-            let fillTask = Task {
-                for await (fill, event) in fillEvents {
-                    continuation.yield(.fill(fill, event))
-                }
-            }
-            continuation.onTermination = { _ in
-                stateTask.cancel()
-                fillTask.cancel()
-            }
+            continuation.onTermination = { _ in task.cancel() }
         }
 
-        return ExchangeWatchStream(
+        await ws.sendWatchObject(path: path)
+
+        return ObjectWatchStream(
             state: state,
-            exchangeState: box,
+            path: path,
+            watchId: watchIdBox,
+            valuation: valBox,
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                await ws.releaseChannel(.exchange)
+                if let wid = watchIdBox.value {
+                    await ws.sendUnwatchObject(watchId: wid)
+                }
             }
         )
     }

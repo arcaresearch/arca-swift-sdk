@@ -80,31 +80,30 @@ public struct BalanceWatchStream: Sendable {
     }
 }
 
-// MARK: - ExchangeWatchStream
+// MARK: - ObjectWatchStream
 
-/// A stream of real-time exchange state and fill events.
-public struct ExchangeWatchStream: Sendable {
+/// A stream of real-time valuation updates for a single Arca object.
+/// Uses the same computation path as aggregation (Axiom 10: Observational Consistency).
+public struct ObjectWatchStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
-    /// Current exchange state (updated on each `exchange.updated` event).
-    public let exchangeState: SendableBox<ExchangeState?>
-    /// Async stream of exchange state updates and fills.
-    public let updates: AsyncStream<ExchangeUpdate>
-    /// Stop listening and unsubscribe from exchange updates.
+    /// Path of the watched object.
+    public let path: String
+    /// Watch ID assigned by the server (used for unsubscribe).
+    public let watchId: SendableBox<String?>
+    /// Current valuation (updated on each server push).
+    public let valuation: SendableBox<ObjectValuation?>
+    /// Async stream of valuation updates.
+    public let updates: AsyncStream<ObjectValuation>
+    /// Stop listening and unsubscribe.
     public let stop: @Sendable () async -> Void
 
-    /// Returns when the stream is connected. Never throws.
+    /// Returns when the first valuation has been received. Never throws.
     public func ready() async {
         while state.value == .loading {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
-}
-
-/// An exchange update — either a state change or a fill.
-public enum ExchangeUpdate: Sendable {
-    case stateUpdate(ExchangeState, RealmEvent)
-    case fill(SimFill, RealmEvent)
 }
 
 // MARK: - MarketPriceStream
