@@ -218,6 +218,98 @@ extension Arca {
         )
     }
 
+    /// Subscribe to real-time aggregation updates for a set of sources.
+    /// Automatically handles server-side watch creation, structural change events,
+    /// and client-side revaluation from mid prices. Call `stop()` when done.
+    ///
+    /// - Parameters:
+    ///   - sources: Aggregation sources to track
+    ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
+    public func watchAggregation(sources: [AggregationSource], exchange: String = "sim") async throws -> AggregationWatchStream {
+        await ws.ensureConnected()
+
+        let watchResponse = try await createAggregationWatch(sources: sources)
+        let wid = watchResponse.watchId
+        let initialAgg = watchResponse.aggregation
+
+        let state = SendableBox<WatchStreamState>(.loading)
+        let aggBox = SendableBox<PathAggregation?>(initialAgg)
+        let structuralBox = SendableBox<PathAggregation?>(initialAgg)
+        let midsBox = SendableBox<[String: String]>([:])
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && state.value != .loading {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected && aggBox.value != nil {
+                    state.update { $0 = .connected }
+                }
+            }
+        }
+
+        let midsSnapshotId = await ws.onSnapshot(channel: "mids") { data in
+            let mids = data as? [String: String] ?? [:]
+            midsBox.update { $0 = mids }
+        }
+
+        await ws.acquireMids(exchange: exchange)
+        await ws.acquireChannel(.aggregation)
+
+        let aggEvents = await ws.aggregationEvents()
+        let midsStream = await ws.midsEvents()
+
+        let updates = AsyncStream<PathAggregation> { continuation in
+            let aggTask = Task {
+                for await (eventWatchId, agg, _) in aggEvents {
+                    guard eventWatchId == wid, let agg = agg else { continue }
+                    structuralBox.update { $0 = agg }
+                    let currentMids = midsBox.value
+                    let revalued = currentMids.isEmpty ? agg : agg.revalued(with: currentMids)
+                    aggBox.update { $0 = revalued }
+                    state.update { $0 = .connected }
+                    continuation.yield(revalued)
+                }
+                continuation.finish()
+            }
+
+            let midsTask = Task {
+                for await mids in midsStream {
+                    midsBox.update { current in
+                        for (key, value) in mids { current[key] = value }
+                    }
+                    guard let base = structuralBox.value else { continue }
+                    let revalued = base.revalued(with: midsBox.value)
+                    aggBox.update { $0 = revalued }
+                    continuation.yield(revalued)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                aggTask.cancel()
+                midsTask.cancel()
+            }
+        }
+
+        state.update { $0 = .connected }
+
+        let stream = AggregationWatchStream(
+            state: state,
+            watchId: wid,
+            aggregation: aggBox,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
+                await ws.releaseMids()
+                await ws.releaseChannel(.aggregation)
+                try? await self.destroyAggregationWatch(watchId: wid)
+            }
+        )
+
+        return stream
+    }
+
     /// Subscribe to real-time candle updates.
     /// Returns immediately in `.connected` state (candles have no snapshot).
     /// Call `stop()` when done.

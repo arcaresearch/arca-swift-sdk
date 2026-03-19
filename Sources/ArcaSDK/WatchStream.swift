@@ -106,6 +106,31 @@ public struct ObjectWatchStream: Sendable {
     }
 }
 
+// MARK: - AggregationWatchStream
+
+/// A stream of real-time aggregation updates with client-side revaluation.
+/// Structural changes come from the server; mid-price revaluation is performed
+/// client-side so updates reflect live prices without extra server bandwidth.
+public struct AggregationWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Server-assigned watch ID.
+    public let watchId: String
+    /// Current aggregation (updated on structural changes and price ticks).
+    public let aggregation: SendableBox<PathAggregation?>
+    /// Async stream of revalued aggregation updates.
+    public let updates: AsyncStream<PathAggregation>
+    /// Stop listening, unsubscribe from updates, and destroy the server-side watch.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first aggregation has been received. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - MarketPriceStream
 
 /// A stream of real-time mid prices.
