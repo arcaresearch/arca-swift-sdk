@@ -70,6 +70,107 @@ public struct PathAggregation: Codable, Sendable {
     public let asOf: String?
 }
 
+// MARK: - Client-Side Revaluation
+
+extension BalanceValue {
+    /// Returns a copy with `valueUsd` and `price` recomputed from current mid prices.
+    public func revalued(with mids: [String: String]) -> BalanceValue {
+        let mid = mids[denomination] ?? "1"
+        let amountDec = Decimal(string: amount) ?? 0
+        let priceDec = Decimal(string: mid) ?? 1
+        let value = amountDec * priceDec
+        return BalanceValue(denomination: denomination, amount: amount,
+                            price: mid, valueUsd: "\(value)")
+    }
+}
+
+extension PositionValue {
+    /// Returns a copy with `markPrice`, `unrealizedPnl`, and `valueUsd` recomputed.
+    public func revalued(with mids: [String: String]) -> PositionValue {
+        guard let mid = mids[coin], let markDec = Decimal(string: mid) else { return self }
+        let sizeDec = Decimal(string: size) ?? 0
+        let entryDec = Decimal(string: entryPrice) ?? 0
+        let signedSize: Decimal = (side == "SHORT") ? -sizeDec : sizeDec
+        let pnl = signedSize * (markDec - entryDec)
+        return PositionValue(coin: coin, side: side, size: size, entryPrice: entryPrice,
+                             markPrice: mid, unrealizedPnl: "\(pnl)", valueUsd: "\(pnl)")
+    }
+}
+
+extension ReservedValue {
+    /// Returns a copy with `valueUsd` and `price` recomputed from current mid prices.
+    public func revalued(with mids: [String: String]) -> ReservedValue {
+        let mid = mids[denomination] ?? "1"
+        let amountDec = Decimal(string: amount) ?? 0
+        let priceDec = Decimal(string: mid) ?? 1
+        let value = amountDec * priceDec
+        return ReservedValue(denomination: denomination, amount: amount, price: mid,
+                             valueUsd: "\(value)", operationId: operationId,
+                             sourceArcaPath: sourceArcaPath, destinationArcaPath: destinationArcaPath,
+                             startedAt: startedAt, inTransit: inTransit)
+    }
+}
+
+extension ObjectValuation {
+    /// Returns a copy with all price-derived fields recomputed from mid prices.
+    /// Static data (amounts, sizes, entry prices, paths) is preserved.
+    public func revalued(with mids: [String: String]) -> ObjectValuation {
+        if type == "exchange" {
+            let newPositions = positions?.map { $0.revalued(with: mids) }
+            let cashStr = balances.first?.amount ?? "0"
+            let cashDec = Decimal(string: cashStr) ?? 0
+            let totalPnl = newPositions?.reduce(Decimal(0)) { sum, pos in
+                sum + (Decimal(string: pos.unrealizedPnl) ?? 0)
+            } ?? 0
+            let equity = cashDec + totalPnl
+            let newReserved = reservedBalances?.map { $0.revalued(with: mids) }
+            let newInbound = pendingInbound?.map { $0.revalued(with: mids) }
+            return ObjectValuation(objectId: objectId, path: path, type: type,
+                                   denomination: denomination, valueUsd: "\(equity)",
+                                   balances: balances, reservedBalances: newReserved,
+                                   pendingInbound: newInbound, positions: newPositions,
+                                   computed: computed)
+        }
+
+        let newBalances = balances.map { $0.revalued(with: mids) }
+        let newReserved = reservedBalances?.map { $0.revalued(with: mids) }
+        let newInbound = pendingInbound?.map { $0.revalued(with: mids) }
+        let objValue = newBalances.reduce(Decimal(0)) { sum, b in
+            sum + (Decimal(string: b.valueUsd) ?? 0)
+        } + (newReserved?.reduce(Decimal(0)) { sum, r in
+            sum + (Decimal(string: r.valueUsd) ?? 0)
+        } ?? 0)
+        return ObjectValuation(objectId: objectId, path: path, type: type,
+                               denomination: denomination, valueUsd: "\(objValue)",
+                               balances: newBalances, reservedBalances: newReserved,
+                               pendingInbound: newInbound, positions: positions,
+                               computed: computed)
+    }
+}
+
+extension PathAggregation {
+    /// Returns a copy with all objects revalued and totals recomputed.
+    public func revalued(with mids: [String: String]) -> PathAggregation {
+        let newObjects = objects.map { $0.revalued(with: mids) }
+        let totalEquity = newObjects.reduce(Decimal(0)) { sum, obj in
+            sum + (Decimal(string: obj.valueUsd) ?? 0)
+        }
+        let departing = newObjects.reduce(Decimal(0)) { sum, obj in
+            sum + (obj.reservedBalances?.reduce(Decimal(0)) { s, r in
+                s + (Decimal(string: r.valueUsd) ?? 0)
+            } ?? 0)
+        }
+        let arriving = newObjects.reduce(Decimal(0)) { sum, obj in
+            sum + (obj.pendingInbound?.reduce(Decimal(0)) { s, r in
+                s + (Decimal(string: r.valueUsd) ?? 0)
+            } ?? 0)
+        }
+        return PathAggregation(prefix: prefix, totalEquityUsd: "\(totalEquity)",
+                               departingUsd: "\(departing)", arrivingUsd: "\(arriving)",
+                               breakdown: breakdown, objects: newObjects, asOf: asOf)
+    }
+}
+
 // MARK: - Aggregation Source
 
 public enum AggregationSourceType: String, Codable, Sendable {

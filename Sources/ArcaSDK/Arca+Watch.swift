@@ -131,16 +131,20 @@ extension Arca {
     }
 
     /// Subscribe to real-time valuation updates for a single Arca object.
-    /// Uses the same computation path as aggregation (Axiom 10: Observational Consistency).
+    /// The server pushes structural changes (fills, balance updates, object CRUD).
+    /// Mid-price revaluation is performed client-side so valuations update in
+    /// real time without consuming server bandwidth on every tick.
     /// Call `stop()` when done.
     ///
     /// - Parameter path: Path of the Arca object to watch
-    public func watchObject(path: String) async throws -> ObjectWatchStream {
+    /// - Parameter exchange: Exchange identifier for mid prices (default: `"sim"`)
+    public func watchObject(path: String, exchange: String = "sim") async throws -> ObjectWatchStream {
         await ws.ensureConnected()
 
         let state = SendableBox<WatchStreamState>(.loading)
         let valBox = SendableBox<ObjectValuation?>(nil)
         let watchIdBox = SendableBox<String?>(nil)
+        let midsBox = SendableBox<[String: String]>([:])
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
@@ -153,20 +157,46 @@ extension Arca {
             }
         }
 
+        let midsSnapshotId = await ws.onSnapshot(channel: "mids") { data in
+            let mids = data as? [String: String] ?? [:]
+            midsBox.update { $0 = mids }
+        }
+
+        await ws.acquireMids(exchange: exchange)
+
         let valEvents = await ws.objectValuationEvents()
+        let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<ObjectValuation> { continuation in
-            let task = Task {
+            let valTask = Task {
                 for await (valuation, eventPath, wid) in valEvents {
                     guard eventPath == path else { continue }
                     watchIdBox.update { $0 = wid }
-                    valBox.update { $0 = valuation }
+                    let currentMids = midsBox.value
+                    let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
+                    valBox.update { $0 = revalued }
                     state.update { $0 = .connected }
-                    continuation.yield(valuation)
+                    continuation.yield(revalued)
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+
+            let midsTask = Task {
+                for await mids in midsStream {
+                    midsBox.update { current in
+                        for (key, value) in mids { current[key] = value }
+                    }
+                    guard let base = valBox.value else { continue }
+                    let revalued = base.revalued(with: midsBox.value)
+                    valBox.update { $0 = revalued }
+                    continuation.yield(revalued)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                valTask.cancel()
+                midsTask.cancel()
+            }
         }
 
         await ws.sendWatchObject(path: path)
@@ -179,6 +209,8 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
+                await ws.releaseMids()
                 if let wid = watchIdBox.value {
                     await ws.sendUnwatchObject(watchId: wid)
                 }
