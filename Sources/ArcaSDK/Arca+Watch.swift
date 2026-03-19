@@ -262,7 +262,7 @@ extension Arca {
         let updates = AsyncStream<PathAggregation> { continuation in
             let aggTask = Task {
                 for await (eventWatchId, agg, _) in aggEvents {
-                    guard eventWatchId == wid, let agg = agg else { continue }
+                    guard eventWatchId == wid.rawValue, let agg = agg else { continue }
                     structuralBox.update { $0 = agg }
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? agg : agg.revalued(with: currentMids)
@@ -295,7 +295,7 @@ extension Arca {
 
         let stream = AggregationWatchStream(
             state: state,
-            watchId: wid,
+            watchId: wid.rawValue,
             aggregation: aggBox,
             updates: updates,
             stop: { [ws] in
@@ -303,7 +303,7 @@ extension Arca {
                 await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
                 await ws.releaseMids()
                 await ws.releaseChannel(.aggregation)
-                try? await self.destroyAggregationWatch(watchId: wid)
+                try? await self.destroyAggregationWatch(watchId: wid.rawValue)
             }
         )
 
