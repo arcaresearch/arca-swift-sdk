@@ -23,6 +23,7 @@ public enum EventType: String, Sendable {
     case agentStepUpdated = "agent.step_updated"
     case agentExecutionDone = "agent.execution_done"
     case exchangeFill = "exchange.fill"
+    case exchangeFunding = "exchange.funding"
     case objectValuation = "object.valuation"
 }
 

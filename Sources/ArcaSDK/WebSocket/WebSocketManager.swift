@@ -466,6 +466,15 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of exchange funding payment events.
+    public func fundingEvents() -> AsyncStream<(FundingPayment, RealmEvent)> {
+        filteredStream { event in
+            guard event.type == EventType.exchangeFunding.rawValue,
+                  let funding = event.funding else { return nil }
+            return (funding, event)
+        }
+    }
+
     /// Stream of closed candle events only (finalized candles).
     public func candleClosedEvents() -> AsyncStream<CandleEvent> {
         filteredStream { event in
