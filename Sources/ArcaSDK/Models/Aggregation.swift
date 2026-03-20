@@ -253,3 +253,9 @@ public struct EquityHistoryResponse: Codable, Sendable {
     public let points: Int
     public let equityPoints: [EquityPoint]
 }
+
+/// Emitted by `EquityChartStream` on each update.
+/// Contains the full point array (historical + live tail).
+public struct EquityChartUpdate: Sendable {
+    public let points: [EquityPoint]
+}

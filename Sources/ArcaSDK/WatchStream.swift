@@ -152,6 +152,30 @@ public struct MarketPriceStream: Sendable {
     }
 }
 
+// MARK: - EquityChartStream
+
+/// Merges historical equity data with a live aggregation stream.
+/// The rightmost point updates on each aggregation event. When the hour
+/// boundary is crossed, the current point is promoted to historical and
+/// a new live point starts.
+public struct EquityChartStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Current chart points (historical + live tail), updated on each aggregation event.
+    public let chart: SendableBox<[EquityPoint]>
+    /// Async stream of chart updates.
+    public let updates: AsyncStream<EquityChartUpdate>
+    /// Stop listening, unsubscribe, and destroy the underlying aggregation watch.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first update has been emitted. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - CandleWatchStream
 
 /// A stream of real-time candle updates.

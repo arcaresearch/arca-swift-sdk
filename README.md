@@ -135,6 +135,32 @@ for await (operation, event) in await arca.ws.operationEvents() {
 }
 ```
 
+## Equity Chart (Historical + Live)
+
+`watchEquityChart` merges historical equity data with a live aggregation stream into a single continuously-updating point array:
+
+```swift
+let chart = try await arca.watchEquityChart(
+    prefix: "/",
+    from: "2026-03-19T00:00:00Z",
+    to: "2026-03-20T00:00:00Z",
+    points: 200
+)
+
+// Iterate over updates — each contains the full point array
+for await update in chart.updates {
+    renderChart(update.points)
+}
+
+// Or read the current snapshot at any time
+let currentPoints = chart.chart.value
+
+// Clean up
+await chart.stop()
+```
+
+The rightmost point reflects the current live equity. When the hour boundary crosses, the live point is promoted to historical and a new one starts — no manual stitching required.
+
 ## Build & Test
 
 ```bash
