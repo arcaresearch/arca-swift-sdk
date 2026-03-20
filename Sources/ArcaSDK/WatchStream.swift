@@ -176,6 +176,29 @@ public struct EquityChartStream: Sendable {
     }
 }
 
+// MARK: - PnlChartStream
+
+/// Merges historical P&L data with a live aggregation stream and operation
+/// events. The rightmost point updates on each aggregation event. Operation
+/// events update cumulative flows client-side (zero additional server reads).
+public struct PnlChartStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Current P&L chart points (historical + live tail).
+    public let chart: SendableBox<[PnlPoint]>
+    /// Async stream of P&L chart updates.
+    public let updates: AsyncStream<PnlChartUpdate>
+    /// Stop listening, unsubscribe, and destroy the underlying streams.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first update has been emitted. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - CandleWatchStream
 
 /// A stream of real-time candle updates.

@@ -159,6 +159,162 @@ extension Arca {
         )
     }
 
+    /// Create a live P&L chart that merges historical data with real-time
+    /// aggregation updates and operation events. The last point reflects
+    /// current live P&L. Operation events update cumulative flows client-side.
+    ///
+    /// - Parameters:
+    ///   - prefix: Path prefix to chart
+    ///   - from: Start timestamp (RFC 3339)
+    ///   - to: End timestamp (RFC 3339)
+    ///   - points: Number of historical samples (default 200, max 1000)
+    ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
+    public func watchPnlChart(
+        prefix: String,
+        from: String,
+        to: String,
+        points: Int = 200,
+        exchange: String = "sim"
+    ) async throws -> PnlChartStream {
+        let history = try await getPnlHistory(prefix: prefix, from: from, to: to, points: points)
+        let aggStream = try await watchAggregation(
+            sources: [AggregationSource(type: .prefix, value: prefix)],
+            exchange: exchange
+        )
+        let opStream = await ws.operationEvents()
+
+        let cachedMids = history.midPrices ?? [:]
+        let startingEquity = Double(history.startingEquityUsd) ?? 0
+
+        var initCumInflows = 0.0
+        var initCumOutflows = 0.0
+        for flow in history.externalFlows {
+            let val = Double(flow.valueUsd) ?? 0
+            if flow.direction == "inflow" { initCumInflows += val }
+            else { initCumOutflows += val }
+        }
+
+        let state = SendableBox<WatchStreamState>(.connected)
+        let historicalBox = SendableBox<[PnlPoint]>(history.pnlPoints)
+        let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows)
+        let chartBox = SendableBox<[PnlPoint]>(history.pnlPoints)
+        let hourBoundaryBox = SendableBox<Int64>(Int64(Date().timeIntervalSince1970 / 3600) * 3600)
+        let cumInflowsBox = SendableBox<Double>(initCumInflows)
+        let cumOutflowsBox = SendableBox<Double>(initCumOutflows)
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let updates = AsyncStream<PnlChartUpdate> { continuation in
+            let aggTask = Task {
+                for await agg in aggStream.updates {
+                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
+                    let nowEpoch = Int64(Date().timeIntervalSince1970)
+                    let currentHourBoundary = (nowEpoch / 3600) * 3600
+                    let lastBoundary = hourBoundaryBox.value
+
+                    if currentHourBoundary > lastBoundary {
+                        historicalBox.update { pts in
+                            guard !pts.isEmpty else { return }
+                            let last = pts[pts.count - 1]
+                            let boundaryDate = Date(timeIntervalSince1970: TimeInterval(lastBoundary))
+                            pts.append(PnlPoint(
+                                timestamp: iso.string(from: boundaryDate),
+                                pnlUsd: last.pnlUsd,
+                                equityUsd: last.equityUsd
+                            ))
+                        }
+                        hourBoundaryBox.update { $0 = currentHourBoundary }
+                    }
+
+                    let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
+                    let livePoint = PnlPoint(
+                        timestamp: iso.string(from: Date()),
+                        pnlUsd: String(format: "%.2f", pnl),
+                        equityUsd: agg.totalEquityUsd
+                    )
+                    var allPoints = historicalBox.value
+                    allPoints.append(livePoint)
+                    chartBox.update { $0 = allPoints }
+
+                    continuation.yield(PnlChartUpdate(
+                        points: allPoints,
+                        externalFlows: flowsBox.value
+                    ))
+                }
+            }
+
+            let opTask = Task {
+                for await (op, _) in opStream {
+                    guard op.state == .completed else { continue }
+                    guard op.type == .deposit || op.type == .transfer else { continue }
+                    guard let inputStr = op.input,
+                          let inputData = inputStr.data(using: .utf8),
+                          let inputJSON = try? JSONSerialization.jsonObject(with: inputData) as? [String: Any],
+                          let amountStr = inputJSON["amount"] as? String,
+                          let amount = Double(amountStr), amount > 0 else { continue }
+
+                    let denomination = (inputJSON["denomination"] as? String) ?? "USD"
+                    var price = 1.0
+                    if denomination != "USD" {
+                        guard let midStr = cachedMids[denomination],
+                              let mid = Double(midStr), mid > 0 else { continue }
+                        price = mid
+                    }
+                    let valueUsd = amount * price
+
+                    let prefixMode = prefix.hasSuffix("/")
+                    let sourceIn = op.sourceArcaPath.map {
+                        prefixMode ? $0.hasPrefix(prefix) : $0 == prefix
+                    } ?? false
+                    let targetIn = op.targetArcaPath.map {
+                        prefixMode ? $0.hasPrefix(prefix) : $0 == prefix
+                    } ?? false
+
+                    var direction: String?
+                    if op.type == .deposit && targetIn {
+                        direction = "inflow"
+                    } else if op.type == .transfer {
+                        if sourceIn && !targetIn { direction = "outflow" }
+                        else if !sourceIn && targetIn { direction = "inflow" }
+                    }
+                    guard let dir = direction else { continue }
+
+                    if dir == "inflow" {
+                        cumInflowsBox.update { $0 += valueUsd }
+                    } else {
+                        cumOutflowsBox.update { $0 += valueUsd }
+                    }
+
+                    let flow = ExternalFlowEntry(
+                        operationId: op.id,
+                        type: op.type.rawValue,
+                        direction: dir,
+                        amount: amountStr,
+                        denomination: denomination,
+                        valueUsd: String(format: "%.2f", valueUsd),
+                        sourceArcaPath: op.sourceArcaPath,
+                        targetArcaPath: op.targetArcaPath,
+                        timestamp: op.updatedAt
+                    )
+                    flowsBox.update { $0.append(flow) }
+                }
+            }
+
+            continuation.onTermination = { _ in
+                aggTask.cancel()
+                opTask.cancel()
+            }
+        }
+
+        return PnlChartStream(
+            state: state,
+            chart: chartBox,
+            updates: updates,
+            stop: { await aggStream.stop() }
+        )
+    }
+
     /// Create an aggregation watch that tracks a set of sources.
     ///
     /// When the underlying data changes, `aggregation.updated` events

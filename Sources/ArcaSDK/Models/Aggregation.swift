@@ -237,6 +237,7 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let startingEquityUsd: String
     public let pnlPoints: [PnlPoint]
     public let externalFlows: [ExternalFlowEntry]
+    public let midPrices: [String: String]?
 }
 
 // MARK: - Equity History
@@ -258,4 +259,11 @@ public struct EquityHistoryResponse: Codable, Sendable {
 /// Contains the full point array (historical + live tail).
 public struct EquityChartUpdate: Sendable {
     public let points: [EquityPoint]
+}
+
+/// Emitted by `PnlChartStream` on each update.
+/// Contains the full P&L point array (historical + live tail) and all flows.
+public struct PnlChartUpdate: Sendable {
+    public let points: [PnlPoint]
+    public let externalFlows: [ExternalFlowEntry]
 }
