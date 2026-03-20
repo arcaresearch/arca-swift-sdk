@@ -1,6 +1,8 @@
 import XCTest
 @testable import ArcaSDK
 
+private typealias ArcaOperation = ArcaSDK.Operation
+
 final class OperationDisplayTests: XCTestCase {
 
     // MARK: - transferDirection
@@ -87,12 +89,12 @@ final class OperationDisplayTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeTransfer(source: String, target: String) -> Operation {
+    private func makeTransfer(source: String, target: String) -> ArcaOperation {
         makeOperation(type: .transfer, source: source, target: target)
     }
 
-    private func makeOperation(type: OperationType, source: String?, target: String?) -> Operation {
-        Operation(
+    private func makeOperation(type: OperationType, source: String?, target: String?) -> ArcaOperation {
+        ArcaOperation(
             id: "op_test",
             realmId: "realm_test",
             path: "/op/test/1",
