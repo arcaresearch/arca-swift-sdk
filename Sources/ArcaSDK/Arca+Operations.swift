@@ -12,18 +12,28 @@ extension Arca {
     /// List operations in the realm.
     ///
     /// - Parameters:
-    ///   - type: Filter by operation type
+    ///   - type: Filter by a single operation type
+    ///   - types: Filter by multiple operation types (takes precedence over `type`)
     ///   - arcaPath: Filter by source or target arca path
     ///   - path: Filter by operation path prefix
+    ///   - includeContext: When true, each operation includes its typed context
+    ///     (transfer amount/fee, fill details, etc.) inline
     public func listOperations(
         type: OperationType? = nil,
+        types: [OperationType]? = nil,
         arcaPath: String? = nil,
-        path: String? = nil
+        path: String? = nil,
+        includeContext: Bool = false
     ) async throws -> OperationListResponse {
         var query: [String: String] = ["realmId": realm]
-        if let type = type { query["type"] = type.rawValue }
+        if let types = types, !types.isEmpty {
+            query["types"] = types.map(\.rawValue).joined(separator: ",")
+        } else if let type = type {
+            query["type"] = type.rawValue
+        }
         if let arcaPath = arcaPath { query["arcaPath"] = arcaPath }
         if let path = path { query["path"] = path }
+        if includeContext { query["includeContext"] = "true" }
         return try await client.get("/operations", query: query)
     }
 

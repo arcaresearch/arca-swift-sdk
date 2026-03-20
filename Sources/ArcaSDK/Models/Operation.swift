@@ -46,6 +46,7 @@ public struct Operation: Codable, Sendable {
     public let tokenJti: String?
     public let createdAt: String
     public let updatedAt: String
+    public let context: OperationContext?
 }
 
 public struct OperationListResponse: Codable, Sendable {
