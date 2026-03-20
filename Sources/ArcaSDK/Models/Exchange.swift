@@ -96,6 +96,16 @@ public struct SimFill: Codable, Sendable {
     public let createdAt: String
 }
 
+public struct FundingPayment: Codable, Sendable {
+    public let accountId: String
+    public let coin: String
+    public let side: String
+    public let size: String
+    public let price: String
+    public let fundingRate: String
+    public let payment: String
+}
+
 public struct SimFeeTierEntry: Codable, Sendable {
     public let tier: Int
     public let label: String
@@ -217,6 +227,8 @@ public struct MarketTicker: Codable, Sendable {
     public let priceChange24hPct: String
     public let openInterest: String
     public let funding: String
+    /// Unix timestamp in milliseconds of the next funding event.
+    public let nextFundingTime: Int64?
     public let isDelisted: Bool
 }
 

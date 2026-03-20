@@ -178,7 +178,8 @@ final class OrderHandleTests: XCTestCase {
                         coin: nil,
                         interval: nil,
                         candle: nil,
-                        fill: matchingFill
+                        fill: matchingFill,
+                        funding: nil
                     )
                     continuation.yield((matchingFill, event))
                     continuation.finish()
