@@ -34,6 +34,8 @@ public struct SimPosition: Codable, Sendable {
     public let unrealizedPnl: String?
     public let returnOnEquity: String?
     public let positionValue: String?
+    /// Present when computed fields (unrealizedPnl, positionValue, returnOnEquity) could not be calculated.
+    public let error: String?
     public let createdAt: String?
     public let updatedAt: String?
 }
