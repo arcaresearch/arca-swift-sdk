@@ -161,6 +161,28 @@ await chart.stop()
 
 The rightmost point reflects the current live equity. When the hour boundary crosses, the live point is promoted to historical and a new one starts — no manual stitching required.
 
+## P&L chart (historical + live)
+
+`watchPnlChart` uses the **same** historical endpoint and live aggregation stream as the equity chart, and subscribes to **operation** events so completed deposits and transfers update cumulative inflows/outflows **on the client** (no extra `getPnlHistory` call per operation). Non-USD flows use `midPrices` from the initial `getPnlHistory` response.
+
+```swift
+let chart = try await arca.watchPnlChart(
+    prefix: "/",
+    from: "2026-03-19T00:00:00Z",
+    to: "2026-03-20T00:00:00Z",
+    points: 200
+)
+
+for await update in chart.updates {
+    renderPnlChart(update.points)
+    // update.externalFlows — all flows seen so far (historical + live)
+}
+
+await chart.stop()
+```
+
+`watchPnlChart` acquires the **operations** WebSocket channel for you and releases it in `stop()`.
+
 ## Build & Test
 
 ```bash

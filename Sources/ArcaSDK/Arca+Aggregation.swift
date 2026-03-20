@@ -177,6 +177,7 @@ extension Arca {
         exchange: String = "sim"
     ) async throws -> PnlChartStream {
         let history = try await getPnlHistory(prefix: prefix, from: from, to: to, points: points)
+        await ws.acquireChannel(.operations)
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: prefix)],
             exchange: exchange
@@ -311,7 +312,10 @@ extension Arca {
             state: state,
             chart: chartBox,
             updates: updates,
-            stop: { await aggStream.stop() }
+            stop: {
+                await self.ws.releaseChannel(.operations)
+                await aggStream.stop()
+            }
         )
     }
 
