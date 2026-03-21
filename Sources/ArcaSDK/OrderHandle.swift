@@ -133,15 +133,7 @@ public final class OrderHandle: @unchecked Sendable {
             let task = Task {
                 do {
                     let response = try await inner.submitted
-                    let orderId = response.operation.outcome ?? ""
-                    guard !orderId.isEmpty else {
-                        continuation.finish(throwing: ArcaError.unknown(
-                            code: "NO_ORDER_ID",
-                            message: "Operation outcome does not contain an order ID",
-                            errorId: nil
-                        ))
-                        return
-                    }
+                    let orderId = try Self.extractOrderId(from: response.operation.outcome)
 
                     let fillStream = await deps.fillEvents()
                     for await (fill, _) in fillStream {
@@ -212,8 +204,7 @@ public final class OrderHandle: @unchecked Sendable {
         let task = Task {
             do {
                 let response = try await inner.submitted
-                let orderId = response.operation.outcome ?? ""
-                guard !orderId.isEmpty else { return }
+                let orderId = try Self.extractOrderId(from: response.operation.outcome)
 
                 let fillStream = await deps.fillEvents()
                 for await (fill, _) in fillStream {
@@ -243,14 +234,7 @@ public final class OrderHandle: @unchecked Sendable {
         return OperationHandle(
             submit: {
                 let response = try await inner.submitted
-                let orderId = response.operation.outcome ?? ""
-                guard !orderId.isEmpty else {
-                    throw ArcaError.unknown(
-                        code: "NO_ORDER_ID",
-                        message: "Cannot cancel: operation outcome does not contain an order ID",
-                        errorId: nil
-                    )
-                }
+                let orderId = try Self.extractOrderId(from: response.operation.outcome)
                 let cancelHandle = deps.cancelOrder(cancelPath, objectId, orderId)
                 return try await cancelHandle.submitted
             },
@@ -281,18 +265,22 @@ public final class OrderHandle: @unchecked Sendable {
 
     private func resolveOrderId() async throws -> String {
         let response = try await inner.settled
-        guard let outcomeJson = response.operation.outcome, !outcomeJson.isEmpty else {
+        return try Self.extractOrderId(from: response.operation.outcome)
+    }
+
+    private static func extractOrderId(from outcome: String?) throws -> String {
+        guard let raw = outcome, !raw.isEmpty else {
             throw ArcaError.unknown(
                 code: "NO_ORDER_ID",
                 message: "Operation outcome does not contain an order ID",
                 errorId: nil
             )
         }
-        if let data = outcomeJson.data(using: .utf8),
+        if let data = raw.data(using: .utf8),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let orderId = parsed["orderId"] as? String, !orderId.isEmpty {
             return orderId
         }
-        return outcomeJson
+        return raw
     }
 }
