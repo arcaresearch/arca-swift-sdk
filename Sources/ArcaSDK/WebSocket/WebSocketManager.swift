@@ -46,6 +46,7 @@ public actor WebSocketManager {
     private static let idleDisconnectNs: UInt64 = 60_000_000_000 // 60s
 
     private var snapshotHandlers: [String: [UUID: @Sendable (Any) -> Void]] = [:]
+    private var snapshotCache: [String: Any] = [:]
 
     // Application-level heartbeat for half-open connection detection
     private var pingTask: Task<Void, Never>?
@@ -115,6 +116,7 @@ public actor WebSocketManager {
         cancelIdleTimer()
         for task in unsubTasks.values { task.cancel() }
         unsubTasks.removeAll()
+        snapshotCache.removeAll()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         setStatus(.disconnected)
@@ -130,7 +132,10 @@ public actor WebSocketManager {
 
     /// Unsubscribe from channels.
     public func unsubscribe(channels: [Channel]) {
-        for ch in channels { subscribedChannels.remove(ch.rawValue) }
+        for ch in channels {
+            subscribedChannels.remove(ch.rawValue)
+            snapshotCache.removeValue(forKey: ch.rawValue)
+        }
         sendMessage(.unsubscribe(channels: channels.map(\.rawValue)))
     }
 
@@ -303,6 +308,9 @@ public actor WebSocketManager {
     public func onSnapshot(channel: String, handler: @escaping @Sendable (Any) -> Void) -> UUID {
         let id = UUID()
         snapshotHandlers[channel, default: [:]][id] = handler
+        if let cached = snapshotCache[channel] {
+            handler(cached)
+        }
         return id
     }
 
@@ -315,6 +323,7 @@ public actor WebSocketManager {
     }
 
     private func dispatchSnapshot(channel: String, data: Any) {
+        snapshotCache[channel] = data
         guard let handlers = snapshotHandlers[channel] else { return }
         for (_, handler) in handlers {
             handler(data)
@@ -554,6 +563,7 @@ public actor WebSocketManager {
                 }
             } catch {
                 if !Task.isCancelled {
+                    snapshotCache.removeAll()
                     setStatus(.disconnected)
                     if shouldReconnect {
                         scheduleReconnect()
@@ -677,6 +687,7 @@ public actor WebSocketManager {
         let elapsed = Date().timeIntervalSince(lastMessageAt)
         if elapsed >= WebSocketManager.staleThresholdS {
             stopHeartbeat()
+            snapshotCache.removeAll()
             webSocketTask?.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
             receiveTask?.cancel()

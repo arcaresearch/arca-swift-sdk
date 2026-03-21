@@ -280,15 +280,19 @@ public final class OrderHandle: @unchecked Sendable {
     }
 
     private func resolveOrderId() async throws -> String {
-        let response = try await inner.submitted
-        let orderId = response.operation.outcome ?? ""
-        guard !orderId.isEmpty else {
+        let response = try await inner.settled
+        guard let outcomeJson = response.operation.outcome, !outcomeJson.isEmpty else {
             throw ArcaError.unknown(
                 code: "NO_ORDER_ID",
                 message: "Operation outcome does not contain an order ID",
                 errorId: nil
             )
         }
-        return orderId
+        if let data = outcomeJson.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let orderId = parsed["orderId"] as? String, !orderId.isEmpty {
+            return orderId
+        }
+        return outcomeJson
     }
 }
