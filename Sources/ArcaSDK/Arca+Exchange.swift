@@ -201,7 +201,7 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
-    ///   - market: Filter by market (e.g. `"BTC-PERP"`)
+    ///   - market: Filter by market coin (e.g. `"hl:BTC"`)
     ///   - startTime: Filter fills on or after this timestamp (RFC 3339)
     ///   - endTime: Filter fills on or before this timestamp (RFC 3339)
     ///   - limit: Max fills to return (default 100, max 500)

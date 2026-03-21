@@ -636,7 +636,7 @@ final class ModelDecodingTests: XCTestCase {
             "operationId": "op_fill_01",
             "orderOperationId": "op_order_01",
             "orderId": "ord_01",
-            "market": "BTC-PERP",
+            "market": "BTC",
             "side": "BUY",
             "size": "0.5",
             "price": "65000",
@@ -652,7 +652,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(fill.operationId, "op_fill_01")
         XCTAssertEqual(fill.orderOperationId, "op_order_01")
         XCTAssertEqual(fill.orderId, "ord_01")
-        XCTAssertEqual(fill.market, "BTC-PERP")
+        XCTAssertEqual(fill.market, "BTC")
     }
 
     func testFillDecodingWithoutOrderOperationId() throws {
@@ -660,7 +660,7 @@ final class ModelDecodingTests: XCTestCase {
         {
             "id": "pl_02abc",
             "operationId": "op_fill_02",
-            "market": "ETH-PERP",
+            "market": "ETH",
             "resultingPosition": { "side": "SHORT", "size": "1.0", "leverage": 3 },
             "createdAt": "2026-03-16T12:00:00.000000Z"
         }
