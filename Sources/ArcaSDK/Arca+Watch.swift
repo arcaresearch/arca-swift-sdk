@@ -229,20 +229,33 @@ extension Arca {
         await ws.ensureConnected()
 
         let watchResponse = try await createAggregationWatch(sources: sources)
-        let wid = watchResponse.watchId
         let initialAgg = watchResponse.aggregation
 
         let state = SendableBox<WatchStreamState>(.loading)
         let aggBox = SendableBox<PathAggregation?>(initialAgg)
         let structuralBox = SendableBox<PathAggregation?>(initialAgg)
         let midsBox = SendableBox<[String: String]>([:])
+        let widBox = SendableBox<String>(watchResponse.watchId.rawValue)
+        let continuationBox = SendableBox<AsyncStream<PathAggregation>.Continuation?>(nil)
 
         let statusStream = await ws.statusStream
-        let statusTask = Task {
+        let statusTask = Task { [weak self] in
             for await s in statusStream {
                 if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
-                } else if s == .connected && aggBox.value != nil {
+                } else if s == .connected && state.value == .reconnecting {
+                    guard let self = self else { continue }
+                    do {
+                        let newWatch = try await self.createAggregationWatch(sources: sources)
+                        widBox.update { $0 = newWatch.watchId.rawValue }
+                        structuralBox.update { $0 = newWatch.aggregation }
+                        let currentMids = midsBox.value
+                        let revalued = currentMids.isEmpty ? newWatch.aggregation : newWatch.aggregation.revalued(with: currentMids)
+                        aggBox.update { $0 = revalued }
+                        continuationBox.value?.yield(revalued)
+                    } catch {
+                        // Best effort — keep existing data
+                    }
                     state.update { $0 = .connected }
                 }
             }
@@ -260,9 +273,11 @@ extension Arca {
         let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<PathAggregation> { continuation in
+            continuationBox.update { $0 = continuation }
+
             let aggTask = Task {
                 for await (eventWatchId, agg, _) in aggEvents {
-                    guard eventWatchId == wid.rawValue, let agg = agg else { continue }
+                    guard eventWatchId == widBox.value, let agg = agg else { continue }
                     structuralBox.update { $0 = agg }
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? agg : agg.revalued(with: currentMids)
@@ -295,7 +310,7 @@ extension Arca {
 
         let stream = AggregationWatchStream(
             state: state,
-            watchId: wid.rawValue,
+            watchId: widBox.value,
             aggregation: aggBox,
             updates: updates,
             stop: { [ws] in
@@ -303,7 +318,7 @@ extension Arca {
                 await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
                 await ws.releaseMids()
                 await ws.releaseChannel(.aggregation)
-                try? await self.destroyAggregationWatch(watchId: wid.rawValue)
+                try? await self.destroyAggregationWatch(watchId: widBox.value)
             }
         )
 
