@@ -217,3 +217,51 @@ public struct CandleWatchStream: Sendable {
         }
     }
 }
+
+// MARK: - MaxOrderSizeWatchStream
+
+/// Options for ``Arca/watchMaxOrderSize(options:)``.
+public struct MaxOrderSizeWatchOptions: Sendable {
+    public let objectId: String
+    public let coin: String
+    public let side: OrderSide
+    public let leverage: Int
+    public let builderFeeBps: Int
+    public let szDecimals: Int
+
+    public init(
+        objectId: String,
+        coin: String,
+        side: OrderSide,
+        leverage: Int,
+        builderFeeBps: Int = 0,
+        szDecimals: Int = 5
+    ) {
+        self.objectId = objectId
+        self.coin = coin
+        self.side = side
+        self.leverage = leverage
+        self.builderFeeBps = builderFeeBps
+        self.szDecimals = szDecimals
+    }
+}
+
+/// A stream that recomputes ``ActiveAssetData`` whenever exchange state
+/// or mid prices change. Matches the TypeScript SDK's `MaxOrderSizeWatchStream`.
+public struct MaxOrderSizeWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Latest derived active asset data (nil until first computation).
+    public let activeAssetData: SendableBox<ActiveAssetData?>
+    /// Async stream of recomputed active asset data.
+    public let updates: AsyncStream<ActiveAssetData>
+    /// Stop listening and unsubscribe from all underlying streams.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first computation has completed. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}

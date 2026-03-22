@@ -338,6 +338,105 @@ extension Arca {
         await stream.ready()
         return stream
     }
+
+    /// Subscribe to a live, SDK-derived max order size stream for a coin/side.
+    /// Uses ``getExchangeState(_:)`` + ``watchPrices()`` and recomputes on
+    /// price or exchange state changes.
+    /// Call `stop()` when done.
+    ///
+    /// - Parameter options: Trading parameters (object, coin, side, leverage, fees).
+    public func watchMaxOrderSize(options opts: MaxOrderSizeWatchOptions) async throws -> MaxOrderSizeWatchStream {
+        await ws.ensureConnected()
+
+        let streamState = SendableBox<WatchStreamState>(.loading)
+        let activeAssetBox = SendableBox<ActiveAssetData?>(nil)
+
+        let priceStream = try await watchPrices()
+
+        let initialExchangeState: ExchangeState
+        do {
+            initialExchangeState = try await getExchangeState(objectId: opts.objectId)
+        } catch {
+            await priceStream.stop()
+            throw error
+        }
+
+        let exchangeStateBox = SendableBox<ExchangeState?>(initialExchangeState)
+
+        func recompute() -> ActiveAssetData? {
+            guard let exState = exchangeStateBox.value else { return nil }
+            let markStr = priceStream.prices.value[opts.coin]
+            let markPx = markStr.flatMap(Double.init) ?? 0
+            return deriveActiveAssetData(
+                from: exState,
+                coin: opts.coin,
+                markPx: markPx,
+                leverage: opts.leverage,
+                side: opts.side,
+                builderFeeBps: opts.builderFeeBps,
+                szDecimals: opts.szDecimals
+            )
+        }
+
+        if let initial = recompute() {
+            activeAssetBox.update { $0 = initial }
+        }
+
+        await ws.acquireChannel(.exchange)
+
+        let exchangeStream = await ws.exchangeEvents()
+        let midsUpdates = priceStream.updates
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && streamState.value != .loading {
+                    streamState.update { $0 = .reconnecting }
+                }
+            }
+        }
+
+        let updates = AsyncStream<ActiveAssetData> { continuation in
+            let exchangeTask = Task {
+                for await (state, event) in exchangeStream {
+                    guard event.entityId == opts.objectId else { continue }
+                    exchangeStateBox.update { $0 = state }
+                    if let data = recompute() {
+                        activeAssetBox.update { $0 = data }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(data)
+                    }
+                }
+            }
+            let midsTask = Task {
+                for await _ in midsUpdates {
+                    if let data = recompute() {
+                        activeAssetBox.update { $0 = data }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(data)
+                    }
+                }
+            }
+            continuation.onTermination = { _ in
+                exchangeTask.cancel()
+                midsTask.cancel()
+            }
+        }
+
+        streamState.update { $0 = .connected }
+
+        let stream = MaxOrderSizeWatchStream(
+            state: streamState,
+            activeAssetData: activeAssetBox,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await priceStream.stop()
+                await ws.releaseChannel(.exchange)
+            }
+        )
+        return stream
+    }
 }
 
 // MARK: - Exchange Enums
