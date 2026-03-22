@@ -246,8 +246,10 @@ extension Arca {
                 } else if s == .connected && state.value == .reconnecting {
                     guard let self = self else { continue }
                     do {
+                        let oldWatchId = widBox.value
                         let newWatch = try await self.createAggregationWatch(sources: sources)
                         widBox.update { $0 = newWatch.watchId.rawValue }
+                        try? await self.destroyAggregationWatch(watchId: oldWatchId)
                         structuralBox.update { $0 = newWatch.aggregation }
                         let currentMids = midsBox.value
                         let revalued = currentMids.isEmpty ? newWatch.aggregation : newWatch.aggregation.revalued(with: currentMids)
