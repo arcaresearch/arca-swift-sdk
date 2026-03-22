@@ -1,6 +1,6 @@
 import Foundation
 
-private let extraNotionalBufferRate: Double = 0.00005 // 0.5 bps
+private let safetyMarginFactor: Double = 1.001 // 10 bps multiplicative buffer on total cost
 private let defaultPlatformFeeRate: Double = 0.0001   // 1 bps
 
 private func parsePositiveDouble(_ value: String?) -> Double {
@@ -11,7 +11,10 @@ private func parsePositiveDouble(_ value: String?) -> Double {
 private func floorToDecimals(_ value: Double, _ decimals: Int) -> Double {
     guard value.isFinite, value > 0 else { return 0 }
     let factor = pow(10.0, Double(decimals))
-    return (value * factor).rounded(.down) / factor
+    // IEEE 754: division can land epsilon above a tick boundary, e.g.
+    // 0.004099... becomes 0.00410000000000001, making floor(x * 10000) = 41
+    // instead of 40. Nudge down by 1e-9 before flooring to prevent overshoot.
+    return max(0, (value * factor - 1e-9).rounded(.down)) / factor
 }
 
 private func toDecimalString(_ value: Double, decimals: Int = 8) -> String {
@@ -46,8 +49,7 @@ public func deriveActiveAssetData(
     }()
     let builderRate = builderFeeBps > 0 ? Double(builderFeeBps) / 100_000 : 0
     let feeRate = takerRate + platformRate + builderRate
-    let calcFeeRate = feeRate + extraNotionalBufferRate
-    let costPerToken = markPx / Double(leverage) + markPx * calcFeeRate
+    let costPerToken = (markPx / Double(leverage) + markPx * feeRate) * safetyMarginFactor
     guard costPerToken > 0 else { return nil }
 
     func maxTokensForDir(_ avail: Double) -> Double {
@@ -62,7 +64,7 @@ public func deriveActiveAssetData(
     if let pos = currentPosition {
         let posSize = parsePositiveDouble(pos.size)
         let posMargin = parsePositiveDouble(pos.marginUsed)
-        let closeFees = posSize * markPx * calcFeeRate
+        let closeFees = posSize * markPx * feeRate * safetyMarginFactor
         let availableAfterClose = max(0, available + posMargin - closeFees)
 
         switch pos.side {

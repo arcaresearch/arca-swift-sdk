@@ -156,6 +156,34 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertTrue(Double(a.maxBuySize)! > Double(b.maxBuySize)!, "builder fee should reduce max size")
     }
 
+    func testMaxNotional_NeverExceedsAvailable() {
+        let state = makeState(availableToWithdraw: "282.51")
+        let result = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 68995, leverage: 1, side: .sell, szDecimals: 4
+        )
+        guard let data = result else { XCTFail("expected non-nil"); return }
+        let sellMax = Double(data.maxSellSize)!
+        let notional = sellMax * 68995
+        XCTAssertTrue(notional <= 282.51, "max notional (\(notional)) must not exceed available (282.51)")
+        XCTAssertTrue(sellMax > 0, "max should be positive")
+    }
+
+    func testFloorToDecimals_NoFloatingPointOvershoot() {
+        // Craft an input where available / costPerToken is epsilon above a tick
+        // boundary in IEEE 754. Without the floor fix, this overshoots by one tick.
+        let state = makeState(availableToWithdraw: "1000")
+        for markPx in stride(from: 50000.0, to: 70000.0, by: 137.0) {
+            let result = deriveActiveAssetData(
+                from: state, coin: "hl:BTC", markPx: markPx, leverage: 1, side: .buy, szDecimals: 4
+            )
+            guard let data = result else { continue }
+            let buyMax = Double(data.maxBuySize)!
+            let notional = buyMax * markPx
+            XCTAssertTrue(notional <= 1000,
+                "max notional (\(notional)) must not exceed available (1000) at markPx=\(markPx)")
+        }
+    }
+
     func testDefaultPlatformFee_UsedWhenMissing() {
         let state = makeState(availableToWithdraw: "1000", platformFee: nil)
         let result = deriveActiveAssetData(
