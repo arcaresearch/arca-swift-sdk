@@ -193,7 +193,8 @@ extension Arca {
 
     /// List positions for an exchange Arca object.
     public func listPositions(objectId: String) async throws -> [SimPosition] {
-        try await client.get("/objects/\(objectId)/exchange/positions")
+        let response: PositionListResponse = try await client.get("/objects/\(objectId)/exchange/positions")
+        return response.positions
     }
 
     /// Close an open position (fully or partially) with `reduceOnly` enforced.

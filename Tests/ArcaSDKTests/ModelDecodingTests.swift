@@ -348,6 +348,69 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(pos.updatedAt, "2026-03-07T10:05:00.000000Z")
     }
 
+    func testPositionListResponseDecoding() throws {
+        let json = """
+        {
+            "positions": [
+                {
+                    "id": "sps_01kme4wd4wft3sz9cjaj7vedmb",
+                    "accountId": "act_01kmb3yn78ff3vrcseym39hqjv",
+                    "realmId": "rlm_01kmb3gpdde24vxnppyc77j08y",
+                    "coin": "hl:BTC",
+                    "side": "LONG",
+                    "size": "0.1",
+                    "entryPrice": "65000",
+                    "leverage": 5,
+                    "marginUsed": "1300",
+                    "liquidationPrice": "52000",
+                    "unrealizedPnl": "150.50",
+                    "createdAt": "2026-03-07T10:00:00.000000Z",
+                    "updatedAt": "2026-03-07T10:05:00.000000Z"
+                }
+            ],
+            "total": 1
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(PositionListResponse.self, from: json)
+        XCTAssertEqual(response.positions.count, 1)
+        XCTAssertEqual(response.total, 1)
+        let pos = response.positions[0]
+        XCTAssertEqual(pos.id.rawValue, "sps_01kme4wd4wft3sz9cjaj7vedmb")
+        XCTAssertEqual(pos.coin, "hl:BTC")
+        XCTAssertEqual(pos.side, .long)
+        XCTAssertEqual(pos.size, "0.1")
+    }
+
+    func testPositionListResponseDecodingViaAPIEnvelope() throws {
+        let json = """
+        {
+            "success": true,
+            "data": {
+                "positions": [
+                    {
+                        "id": "sps_01abc",
+                        "accountId": "act_01abc",
+                        "realmId": "rlm_01def",
+                        "coin": "hl:BTC",
+                        "side": "LONG",
+                        "size": "0.5",
+                        "entryPrice": "50000",
+                        "leverage": 5,
+                        "marginUsed": "5000"
+                    }
+                ],
+                "total": 1
+            }
+        }
+        """.data(using: .utf8)!
+
+        let envelope = try decoder.decode(APIResponse<PositionListResponse>.self, from: json)
+        XCTAssertTrue(envelope.success)
+        XCTAssertEqual(envelope.data?.positions.count, 1)
+        XCTAssertEqual(envelope.data?.positions[0].coin, "hl:BTC")
+    }
+
     func testExchangeStateDecodingWithOpenOrders() throws {
         let json = """
         {
