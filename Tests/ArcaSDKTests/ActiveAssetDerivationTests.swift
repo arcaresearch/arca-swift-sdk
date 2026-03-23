@@ -39,7 +39,8 @@ final class ActiveAssetDerivationTests: XCTestCase {
                 tierLabel: nil,
                 volume14d: nil,
                 schedule: nil
-            )
+            ),
+            pendingIntents: nil
         )
     }
 
