@@ -124,6 +124,20 @@ public struct SimFeeRates: Codable, Sendable {
     public let schedule: [SimFeeTierEntry]?
 }
 
+/// A pending order operation projected as a structured intent.
+/// Analogous to a transfer hold: "we intend to place this order
+/// but haven't heard back from the venue yet."
+public struct ExchangeIntent: Codable, Sendable {
+    public let operationId: String
+    public let operationPath: String
+    public let coin: String
+    public let side: String
+    public let size: String
+    public let orderType: String
+    public let reduceOnly: Bool
+    public let createdAt: String
+}
+
 public struct ExchangeState: Codable, Sendable {
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
@@ -132,6 +146,8 @@ public struct ExchangeState: Codable, Sendable {
     public let positions: [SimPosition]
     public let openOrders: [SimOrder]
     public let feeRates: SimFeeRates?
+    /// Pending order operations that haven't settled yet.
+    public let pendingIntents: [ExchangeIntent]?
 }
 
 public struct SimOrderWithFills: Codable, Sendable {

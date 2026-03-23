@@ -196,6 +196,91 @@ extension Arca {
         try await client.get("/objects/\(objectId)/exchange/positions")
     }
 
+    /// Close an open position (fully or partially) with `reduceOnly` enforced.
+    ///
+    /// Looks up the current position for the given coin, infers the closing side,
+    /// and places a market order sized to close the full position (or the specified
+    /// `size` for a partial close). Always sets `reduceOnly: true` so the order
+    /// can never accidentally open or increase a position.
+    ///
+    /// - Parameters:
+    ///   - path: Operation path (idempotency key)
+    ///   - objectId: Exchange Arca object ID
+    ///   - coin: Coin in canonical format (e.g. "hl:BTC")
+    ///   - size: Partial close size. If nil, closes the full position.
+    ///   - timeInForce: Time in force (default: .ioc)
+    ///   - builderFeeBps: Builder fee in tenths of a basis point
+    ///   - feeTargets: Fee routing targets
+    public func closePosition(
+        path: String,
+        objectId: String,
+        coin: String,
+        size: String? = nil,
+        timeInForce: TimeInForce = .ioc,
+        builderFeeBps: Int? = nil,
+        feeTargets: [FeeTarget]? = nil
+    ) -> OrderHandle {
+        let positionFetch = Task { [self] in
+            let positions = try await listPositions(objectId: objectId)
+            guard let position = positions.first(where: { $0.coin == coin }) else {
+                throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(coin)", errorId: nil)
+            }
+            return position
+        }
+
+        let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
+            let position = try await positionFetch.value
+            let closingSide: OrderSide = position.side == .long ? .sell : .buy
+            let closeSize: String
+            if let requested = size {
+                let requestedVal = Double(requested) ?? 0
+                let availableVal = Double(position.size) ?? 0
+                closeSize = requestedVal > availableVal ? position.size : requested
+            } else {
+                closeSize = position.size
+            }
+            return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
+                realmId: realm,
+                path: path,
+                coin: coin,
+                side: closingSide.rawValue,
+                orderType: OrderType.market.rawValue,
+                size: closeSize,
+                price: nil,
+                leverage: nil,
+                reduceOnly: true,
+                timeInForce: timeInForce.rawValue,
+                builderFeeBps: builderFeeBps,
+                feeTargets: feeTargets
+            ))
+        }
+
+        let deps = OrderHandleDeps(
+            getOrder: { [self] objId, orderId in
+                try await self.getOrder(objectId: objId, orderId: orderId)
+            },
+            fillEvents: { [self] in
+                await self.ws.fillEvents()
+            },
+            cancelOrder: { [self] cancelPath, objId, orderId in
+                self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
+            },
+            waitForSettlement: { [self] operationId in
+                try await self.waitForSettlement(operationId)
+            },
+            listFills: { [self] objId in
+                try await self.listFills(objectId: objId)
+            }
+        )
+
+        return OrderHandle(
+            inner: inner,
+            objectId: objectId,
+            placementPath: path,
+            deps: deps
+        )
+    }
+
     /// List historical fills (trades) for an exchange Arca object.
     /// Returns paginated fill data with P&L, fees, and resulting position state.
     ///
