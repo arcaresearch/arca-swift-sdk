@@ -360,10 +360,21 @@ extension Arca {
         startTime: Int? = nil,
         endTime: Int? = nil
     ) async throws -> CandlesResponse {
+        let key = buildCacheKey("candles", [
+            "coin": coin,
+            "interval": interval.rawValue,
+            "startTime": startTime.map(String.init),
+            "endTime": endTime.map(String.init),
+        ])
+        if let cached: CandlesResponse = await historyCache.get(key) {
+            return cached
+        }
         var query: [String: String] = ["interval": interval.rawValue]
         if let startTime = startTime { query["startTime"] = String(startTime) }
         if let endTime = endTime { query["endTime"] = String(endTime) }
-        return try await client.get("/exchange/market/candles/\(coin)", query: query)
+        let result: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: query)
+        await historyCache.set(key, value: result)
+        return result
     }
 
     /// Subscribe to real-time mid prices for all assets.

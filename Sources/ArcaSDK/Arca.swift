@@ -29,6 +29,7 @@ public final class Arca: Sendable {
     public let client: ArcaClient
     public let ws: WebSocketManager
     public let tokenManager: TokenManager
+    public let historyCache: HistoryCache
 
     private let realmId: String
 
@@ -45,12 +46,14 @@ public final class Arca: Sendable {
         token: String,
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
         realmId: String? = nil,
-        tokenProvider: TokenProvider? = nil
+        tokenProvider: TokenProvider? = nil,
+        cache: CacheConfig = CacheConfig()
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
         self.realmId = resolved
         self.tokenManager = TokenManager(provider: tokenProvider)
+        self.historyCache = HistoryCache(config: cache)
 
         let mgr = self.tokenManager
         var onUnauthorized: (@Sendable () async throws -> String)?
@@ -98,12 +101,14 @@ public final class Arca: Sendable {
         baseURL: URL,
         tokenManager: TokenManager,
         client: ArcaClient,
-        ws: WebSocketManager
+        ws: WebSocketManager,
+        historyCache: HistoryCache
     ) {
         self.realmId = realmId
         self.tokenManager = tokenManager
         self.client = client
         self.ws = ws
+        self.historyCache = historyCache
     }
 
     /// Create an Arca instance using only a token provider (no initial token).
@@ -116,14 +121,16 @@ public final class Arca: Sendable {
     public static func withTokenProvider(
         _ tokenProvider: @escaping TokenProvider,
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
-        realmId: String? = nil
+        realmId: String? = nil,
+        cache: CacheConfig = CacheConfig()
     ) async throws -> Arca {
         let token = try await tokenProvider()
         return try Arca(
             token: token,
             baseURL: baseURL,
             realmId: realmId,
-            tokenProvider: tokenProvider
+            tokenProvider: tokenProvider,
+            cache: cache
         )
     }
 
@@ -152,6 +159,12 @@ public final class Arca: Sendable {
     /// Remove a previously registered auth error handler.
     public func removeAuthErrorHandler(_ id: UUID) async {
         await tokenManager.removeAuthErrorHandler(id)
+    }
+
+    /// Clear the in-memory cache of historical data responses
+    /// (equity history, PnL history, candles).
+    public func clearHistoryCache() async {
+        await historyCache.clear()
     }
 
     /// The resolved realm ID for this SDK instance.

@@ -52,13 +52,21 @@ extension Arca {
         to: String,
         points: Int = 200
     ) async throws -> PnlHistoryResponse {
-        try await client.get("/objects/pnl/history", query: [
+        let key = buildCacheKey("pnlHistory", [
+            "prefix": prefix, "from": from, "to": to, "points": String(points),
+        ])
+        if let cached: PnlHistoryResponse = await historyCache.get(key) {
+            return cached
+        }
+        let result: PnlHistoryResponse = try await client.get("/objects/pnl/history", query: [
             "realmId": realm,
             "prefix": prefix,
             "from": from,
             "to": to,
             "points": String(points),
         ])
+        await historyCache.set(key, value: result)
+        return result
     }
 
     /// Get equity history (time-series) for objects under a path prefix.
@@ -74,13 +82,21 @@ extension Arca {
         to: String,
         points: Int = 200
     ) async throws -> EquityHistoryResponse {
-        try await client.get("/objects/aggregate/history", query: [
+        let key = buildCacheKey("equityHistory", [
+            "prefix": prefix, "from": from, "to": to, "points": String(points),
+        ])
+        if let cached: EquityHistoryResponse = await historyCache.get(key) {
+            return cached
+        }
+        let result: EquityHistoryResponse = try await client.get("/objects/aggregate/history", query: [
             "realmId": realm,
             "prefix": prefix,
             "from": from,
             "to": to,
             "points": String(points),
         ])
+        await historyCache.set(key, value: result)
+        return result
     }
 
     /// Create a live equity chart that merges historical data with real-time
