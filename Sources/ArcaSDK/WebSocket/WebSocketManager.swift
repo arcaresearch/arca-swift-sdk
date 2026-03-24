@@ -48,6 +48,10 @@ public actor WebSocketManager {
     private var snapshotHandlers: [String: [UUID: @Sendable (Any) -> Void]] = [:]
     private var snapshotCache: [String: Any] = [:]
 
+    // Object watch tracking for reconnect replay
+    private var objectWatches: [String: String] = [:]  // watchId → path
+    private var pendingObjectWatchPaths: Set<String> = []
+
     // Application-level heartbeat for half-open connection detection
     private var pingTask: Task<Void, Never>?
     private var lastMessageAt: Date = Date()
@@ -458,11 +462,21 @@ public actor WebSocketManager {
 
     /// Send a watch_object message to the server.
     public func sendWatchObject(path: String) {
+        cancelIdleTimer()
+        pendingObjectWatchPaths.insert(path)
+        ensureConnected()
         sendMessage(.watchObject(path: path))
+    }
+
+    /// Called internally when the server responds with a watchId for an object watch.
+    public func trackObjectWatch(watchId: String, path: String) {
+        pendingObjectWatchPaths.remove(path)
+        objectWatches[watchId] = path
     }
 
     /// Send an unwatch_object message to the server.
     public func sendUnwatchObject(watchId: String) {
+        objectWatches.removeValue(forKey: watchId)
         sendMessage(.unwatchObject(watchId: watchId))
     }
 
@@ -612,6 +626,15 @@ public actor WebSocketManager {
                 }
                 if !candleRefCoins.isEmpty && subscribedCandles == nil {
                     syncCandleSubscription()
+                }
+                // Re-subscribe object watches — collect all unique paths from
+                // both tracked watches (have a watchId) and pending watches (sent
+                // but never got a response before disconnect).
+                var objectPaths = pendingObjectWatchPaths
+                for path in objectWatches.values { objectPaths.insert(path) }
+                objectWatches.removeAll()
+                for path in objectPaths {
+                    sendMessage(.watchObject(path: path))
                 }
                 return
             }

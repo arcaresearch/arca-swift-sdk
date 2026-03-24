@@ -145,12 +145,17 @@ extension Arca {
         let valBox = SendableBox<ObjectValuation?>(nil)
         let watchIdBox = SendableBox<String?>(nil)
         let midsBox = SendableBox<[String: String]>([:])
+        let retryAttemptBox = SendableBox<Int>(0)
+        let retryTaskBox = SendableBox<Task<Void, Never>?>(nil)
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
             for await s in statusStream {
                 if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
+                    retryTaskBox.value?.cancel()
+                    retryTaskBox.update { $0 = nil }
+                    retryAttemptBox.update { $0 = 0 }
                 } else if s == .connected && watchIdBox.value != nil {
                     state.update { $0 = .connected }
                 }
@@ -168,15 +173,32 @@ extension Arca {
         let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<ObjectValuation> { continuation in
-            let valTask = Task {
+            let valTask = Task { [ws] in
                 for await (valuation, eventPath, wid) in valEvents {
                     guard eventPath == path else { continue }
                     watchIdBox.update { $0 = wid }
+                    await ws.trackObjectWatch(watchId: wid, path: path)
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                     valBox.update { $0 = revalued }
                     state.update { $0 = .connected }
                     continuation.yield(revalued)
+
+                    if valuation.computed == false {
+                        let attempt = retryAttemptBox.value
+                        let delay = min(1.0 * pow(2.0, Double(attempt)), 30.0)
+                        retryTaskBox.value?.cancel()
+                        retryTaskBox.update { $0 = Task { [ws] in
+                            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            guard !Task.isCancelled else { return }
+                            retryAttemptBox.update { $0 += 1 }
+                            await ws.sendWatchObject(path: path)
+                        }}
+                    } else {
+                        retryTaskBox.value?.cancel()
+                        retryTaskBox.update { $0 = nil }
+                        retryAttemptBox.update { $0 = 0 }
+                    }
                 }
                 continuation.finish()
             }
@@ -196,6 +218,7 @@ extension Arca {
             continuation.onTermination = { _ in
                 valTask.cancel()
                 midsTask.cancel()
+                retryTaskBox.value?.cancel()
             }
         }
 
@@ -209,6 +232,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                retryTaskBox.value?.cancel()
                 await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
                 await ws.releaseMids()
                 if let wid = watchIdBox.value {
@@ -237,6 +261,7 @@ extension Arca {
         let midsBox = SendableBox<[String: String]>([:])
         let widBox = SendableBox<String>(watchResponse.watchId.rawValue)
         let continuationBox = SendableBox<AsyncStream<PathAggregation>.Continuation?>(nil)
+        let refreshingBox = SendableBox<Bool>(false)
 
         let statusStream = await ws.statusStream
         let statusTask = Task { [weak self] in
@@ -245,6 +270,8 @@ extension Arca {
                     state.update { $0 = .reconnecting }
                 } else if s == .connected && state.value == .reconnecting {
                     guard let self = self else { continue }
+                    guard !refreshingBox.value else { continue }
+                    refreshingBox.update { $0 = true }
                     do {
                         let oldWatchId = widBox.value
                         let newWatch = try await self.createAggregationWatch(sources: sources)
@@ -258,6 +285,7 @@ extension Arca {
                     } catch {
                         // Best effort — keep existing data
                     }
+                    refreshingBox.update { $0 = false }
                     state.update { $0 = .connected }
                 }
             }
