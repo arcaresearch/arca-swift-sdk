@@ -117,7 +117,12 @@ extension Arca {
         points: Int = 200,
         exchange: String = "sim"
     ) async throws -> EquityChartStream {
-        let history = try await getEquityHistory(prefix: prefix, from: from, to: to, points: points)
+        let history: EquityHistoryResponse
+        do {
+            history = try await getEquityHistory(prefix: prefix, from: from, to: to, points: points)
+        } catch {
+            history = EquityHistoryResponse(prefix: prefix, from: from, to: to, points: 0, equityPoints: [])
+        }
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: prefix)],
             exchange: exchange
