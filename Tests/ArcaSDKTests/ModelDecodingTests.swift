@@ -735,6 +735,22 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(fill.orderId)
     }
 
+    func testSparklinesResponseDecoding() throws {
+        let json = """
+        {
+            "sparklines": {
+                "hl:BTC": [60000, 60100, 60050, 60200, 60150],
+                "hl:ETH": [3000, 3010, 3005]
+            }
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(SparklinesResponse.self, from: json)
+        XCTAssertEqual(response.sparklines.count, 2)
+        XCTAssertEqual(response.sparklines["hl:BTC"]?.count, 5)
+        XCTAssertEqual(response.sparklines["hl:ETH"]?.first, 3000)
+    }
+
     func testSimBookResponseDecoding() throws {
         let json = """
         {

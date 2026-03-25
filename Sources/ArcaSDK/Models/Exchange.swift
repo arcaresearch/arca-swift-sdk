@@ -303,6 +303,12 @@ public struct CandleEvent: Sendable {
     public let candle: Candle
 }
 
+// MARK: - Sparklines
+
+public struct SparklinesResponse: Codable, Sendable {
+    public let sparklines: [String: [Double]]
+}
+
 // MARK: - Fill / Trade History (Platform-Side)
 
 public struct FillResultingPosition: Codable, Sendable {
