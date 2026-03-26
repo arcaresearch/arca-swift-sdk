@@ -355,12 +355,18 @@ extension Arca {
         return stream
     }
 
-    /// Subscribe to real-time candle updates.
-    /// Returns immediately in `.connected` state (candles have no snapshot).
+    /// Subscribe to raw real-time candle events (no history blending).
+    ///
+    /// **For candlestick charts, use ``watchCandleChart(coin:interval:count:)``
+    /// instead** — it loads historical candles, merges live events, and handles
+    /// reconnection gaps automatically.
+    ///
+    /// This method returns a raw event stream. Each `CandleEvent` contains a
+    /// single candle; your app is responsible for maintaining the chart array.
     /// Call `stop()` when done.
     ///
     /// - Parameters:
-    ///   - coins: Coins to watch (e.g. `["BTC", "ETH"]`)
+    ///   - coins: Canonical coin IDs to watch (e.g. `["hl:BTC", "hl:ETH"]`)
     ///   - intervals: Candle intervals (e.g. `[.oneMinute, .fiveMinutes]`)
     public func watchCandles(coins: [String], intervals: [CandleInterval]) async throws -> CandleWatchStream {
         await ws.ensureConnected()

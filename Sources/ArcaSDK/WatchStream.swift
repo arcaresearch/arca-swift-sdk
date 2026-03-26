@@ -231,6 +231,11 @@ public struct CandleChartStream: Sendable {
     public let candles: SendableBox<[Candle]>
     /// Async stream of chart updates.
     public let updates: AsyncStream<CandleChartUpdate>
+    /// Fetch older candles and prepend them to the array. Returns `true`
+    /// if older candles were loaded, `false` if no more history is available.
+    /// Call this when the user scrolls to the left edge of the chart or
+    /// switches to a wider time range.
+    public let loadMore: @Sendable () async -> Bool
     /// Stop listening, unsubscribe, and clean up.
     public let stop: @Sendable () async -> Void
 

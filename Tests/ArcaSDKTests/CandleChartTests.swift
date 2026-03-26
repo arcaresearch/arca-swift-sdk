@@ -141,6 +141,59 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(arr[1].c, "210")
     }
 
+    // MARK: - loadMore merge pattern
+
+    func testPrependOlderCandlesAndDedup() {
+        var existing = [
+            makeCandle(t: 4000, c: "400"),
+            makeCandle(t: 5000, c: "500"),
+            makeCandle(t: 6000, c: "600"),
+        ]
+        let older = [
+            makeCandle(t: 1000, c: "100"),
+            makeCandle(t: 2000, c: "200"),
+            makeCandle(t: 3000, c: "300"),
+        ]
+        existing.insert(contentsOf: older, at: 0)
+        existing = dedupCandles(existing)
+
+        XCTAssertEqual(existing.count, 6)
+        XCTAssertEqual(existing[0].t, 1000)
+        XCTAssertEqual(existing[5].t, 6000)
+    }
+
+    func testPrependOlderCandlesWithOverlap() {
+        var existing = [
+            makeCandle(t: 3000, c: "300"),
+            makeCandle(t: 4000, c: "400"),
+        ]
+        let older = [
+            makeCandle(t: 2000, c: "200"),
+            makeCandle(t: 3000, c: "OLD_300"),
+        ]
+        existing.insert(contentsOf: older, at: 0)
+        existing = dedupCandles(existing)
+
+        XCTAssertEqual(existing.count, 3)
+        XCTAssertEqual(existing[0].t, 2000)
+        // dedupCandles keeps the last occurrence — existing data wins
+        // because it comes after the prepended older data in the array
+        XCTAssertEqual(existing[1].c, "300")
+    }
+
+    func testPrependEmptyOlderCandles() {
+        var existing = [
+            makeCandle(t: 3000, c: "300"),
+            makeCandle(t: 4000, c: "400"),
+        ]
+        let older: [Candle] = []
+        existing.insert(contentsOf: older, at: 0)
+        existing = dedupCandles(existing)
+
+        XCTAssertEqual(existing.count, 2)
+        XCTAssertEqual(existing[0].t, 3000)
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

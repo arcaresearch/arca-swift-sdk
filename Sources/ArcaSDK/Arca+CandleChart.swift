@@ -1,6 +1,7 @@
 import Foundation
 
 private let gapRecoveryCandles = 50
+private let loadMoreBatchSize = 300
 
 extension Arca {
 
@@ -10,8 +11,12 @@ extension Arca {
     ///
     /// On WebSocket reconnection, recent candles are refetched to fill any gap.
     ///
+    /// Call ``CandleChartStream/loadMore`` when the user scrolls to the left
+    /// edge of the chart — it fetches the next batch of older candles, merges
+    /// them, and emits an update through the same `updates` stream.
+    ///
     /// - Parameters:
-    ///   - coin: Asset name (e.g. `"BTC"`, `"BRENTOIL"`)
+    ///   - coin: Canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
     ///   - interval: Candle interval (e.g. `.oneMinute`)
     ///   - count: Number of historical candles to load (default 300)
     public func watchCandleChart(
@@ -23,6 +28,8 @@ extension Arca {
 
         let state = SendableBox<WatchStreamState>(.loading)
         let candlesBox = SendableBox<[Candle]>([])
+        let continuationBox = SendableBox<AsyncStream<CandleChartUpdate>.Continuation?>(nil)
+        let loadingMore = SendableBox<Bool>(false)
 
         // Subscribe to WS candles BEFORE fetching history so we don't miss
         // events that arrive between the HTTP snapshot and subscription.
@@ -49,6 +56,17 @@ extension Arca {
         state.update { $0 = .connected }
 
         let updates = AsyncStream<CandleChartUpdate> { continuation in
+            continuationBox.update { $0 = continuation }
+
+            // Emit the historical snapshot immediately so `for await` renders
+            // the chart on the very first iteration — no waiting for a WS event.
+            if let last = candlesBox.value.last {
+                continuation.yield(CandleChartUpdate(
+                    candles: candlesBox.value,
+                    latestCandle: last
+                ))
+            }
+
             let candleTask = Task { [weak ws] in
                 for await event in candleStream {
                     guard event.coin == coin,
@@ -105,10 +123,55 @@ extension Arca {
             }
         }
 
+        let loadMore: @Sendable () async -> Bool = { [weak self] in
+            var alreadyLoading = false
+            loadingMore.update { val in
+                alreadyLoading = val
+                val = true
+            }
+            if alreadyLoading { return false }
+            defer { loadingMore.update { $0 = false } }
+
+            guard let self = self else { return false }
+
+            let earliest = candlesBox.value.first?.t
+            guard let earliest = earliest, earliest > 0 else { return false }
+
+            let endTime = earliest - 1
+            let fetchStart = max(0, endTime - interval.milliseconds * loadMoreBatchSize)
+
+            guard let res = try? await self.getCandles(
+                coin: coin,
+                interval: interval,
+                startTime: fetchStart,
+                endTime: endTime
+            ), !res.candles.isEmpty else {
+                return false
+            }
+
+            candlesBox.update { arr in
+                arr.insert(contentsOf: res.candles, at: 0)
+                arr = dedupCandles(arr)
+            }
+
+            if let cont = continuationBox.value {
+                let snapshot = candlesBox.value
+                if let first = snapshot.first {
+                    cont.yield(CandleChartUpdate(
+                        candles: snapshot,
+                        latestCandle: first
+                    ))
+                }
+            }
+
+            return true
+        }
+
         return CandleChartStream(
             state: state,
             candles: candlesBox,
             updates: updates,
+            loadMore: loadMore,
             stop: { [ws] in
                 await ws.releaseCandles(coins: [coin], intervals: [interval])
             }

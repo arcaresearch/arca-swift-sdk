@@ -189,7 +189,7 @@ await chart.stop()
 
 ```swift
 let chart = try await arca.watchCandleChart(
-    coin: "BRENTOIL",
+    coin: "hl:1:BRENTOIL",
     interval: .oneMinute,
     count: 300  // historical candles to load
 )
@@ -201,6 +201,18 @@ for await update in chart.updates {
 }
 
 await chart.stop()
+```
+
+### Loading older candles
+
+When the user scrolls to the left edge of the chart (or switches to a wider time range), call `loadMore()` to fetch the next batch of older candles. It merges them into the array and emits an update through the same `updates` stream — no manual stitching required.
+
+```swift
+// In your chart's scroll handler:
+if visibleRange.lowerBound < 10 {
+    let loaded = await chart.loadMore()
+    // loaded == false means no more history is available
+}
 ```
 
 For raw candle events without blending, use `watchCandles()` instead.

@@ -350,7 +350,7 @@ extension Arca {
     /// Get OHLCV candle data for a specific coin.
     ///
     /// - Parameters:
-    ///   - coin: Asset name (e.g. `BTC`, `ETH`)
+    ///   - coin: Canonical coin ID (e.g. `hl:BTC`, `hl:ETH`)
     ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
     ///   - startTime: Optional start time in epoch milliseconds
     ///   - endTime: Optional end time in epoch milliseconds
