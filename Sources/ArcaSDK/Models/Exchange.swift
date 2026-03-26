@@ -277,6 +277,7 @@ public struct SimBookResponse: Codable, Sendable {
 // MARK: - Candle Data
 
 public enum CandleInterval: String, Codable, Sendable, CaseIterable {
+    case fifteenSeconds = "15s"
     case oneMinute = "1m"
     case fiveMinutes = "5m"
     case fifteenMinutes = "15m"
@@ -287,6 +288,7 @@ public enum CandleInterval: String, Codable, Sendable, CaseIterable {
     /// Duration of one interval in milliseconds.
     public var milliseconds: Int {
         switch self {
+        case .fifteenSeconds: return 15_000
         case .oneMinute: return 60_000
         case .fiveMinutes: return 300_000
         case .fifteenMinutes: return 900_000

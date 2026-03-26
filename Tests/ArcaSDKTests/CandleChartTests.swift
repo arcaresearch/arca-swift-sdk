@@ -6,6 +6,7 @@ final class CandleChartTests: XCTestCase {
     // MARK: - CandleInterval.milliseconds
 
     func testIntervalMilliseconds() {
+        XCTAssertEqual(CandleInterval.fifteenSeconds.milliseconds, 15_000)
         XCTAssertEqual(CandleInterval.oneMinute.milliseconds, 60_000)
         XCTAssertEqual(CandleInterval.fiveMinutes.milliseconds, 300_000)
         XCTAssertEqual(CandleInterval.fifteenMinutes.milliseconds, 900_000)
