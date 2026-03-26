@@ -183,6 +183,28 @@ await chart.stop()
 
 `watchPnlChart` acquires the **operations** WebSocket channel for you and releases it in `stop()`.
 
+## Candle chart (historical + live)
+
+`watchCandleChart` merges historical OHLCV candles from the REST API with real-time WebSocket candle events into a single continuously-updating array. It handles subscribe-before-fetch ordering, deduplication, in-place updates for open candles, and automatic gap recovery on reconnection.
+
+```swift
+let chart = try await arca.watchCandleChart(
+    coin: "BRENTOIL",
+    interval: .oneMinute,
+    count: 300  // historical candles to load
+)
+
+for await update in chart.updates {
+    // update.candles — full sorted array (historical + live)
+    // update.latestCandle — the candle that triggered this update
+    renderCandleChart(update.candles)
+}
+
+await chart.stop()
+```
+
+For raw candle events without blending, use `watchCandles()` instead.
+
 ## Build & Test
 
 ```bash
