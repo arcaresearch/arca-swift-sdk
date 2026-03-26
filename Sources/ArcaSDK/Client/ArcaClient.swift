@@ -156,6 +156,12 @@ public actor ArcaClient {
         let envelope: APIResponse<T>
         do {
             envelope = try decoder.decode(APIResponse<T>.self, from: data)
+        } catch let decodingError as DecodingError {
+            if data.first == UInt8(ascii: "{") || data.first == UInt8(ascii: "[") {
+                throw ArcaError.decodingError(underlying: decodingError)
+            }
+            let body = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
+            throw ArcaError.nonJsonResponse(statusCode: statusCode, body: body)
         } catch {
             let body = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
             throw ArcaError.nonJsonResponse(statusCode: statusCode, body: body)
