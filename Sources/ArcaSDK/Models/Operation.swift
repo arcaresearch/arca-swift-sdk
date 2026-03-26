@@ -13,6 +13,8 @@ public enum OperationType: String, Codable, Sendable {
     case fill
     case cancel
     case feeDistribution = "fee_distribution"
+    case adjustment
+    case funding
 }
 
 public enum OperationState: String, Codable, Sendable {

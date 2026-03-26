@@ -161,6 +161,43 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(decoded, .fill)
     }
 
+    func testOperationTypeIncludesFunding() throws {
+        let json = Data(#""funding""#.utf8)
+        let decoded = try decoder.decode(OperationType.self, from: json)
+        XCTAssertEqual(decoded, .funding)
+    }
+
+    func testOperationTypeIncludesAdjustment() throws {
+        let json = Data(#""adjustment""#.utf8)
+        let decoded = try decoder.decode(OperationType.self, from: json)
+        XCTAssertEqual(decoded, .adjustment)
+    }
+
+    func testFundingOperationDecoding() throws {
+        let json = """
+        {
+            "id": "op_fund01",
+            "realmId": "rlm_01def",
+            "path": "/op/funding/exchanges/main/BTC/op_fund01",
+            "type": "funding",
+            "state": "completed",
+            "sourceArcaPath": "/exchanges/main",
+            "targetArcaPath": null,
+            "input": null,
+            "outcome": "{\\"status\\":\\"completed\\"}",
+            "actorType": "system",
+            "actorId": "sim-exchange",
+            "tokenJti": null,
+            "createdAt": "2026-03-25T12:00:00.000000Z",
+            "updatedAt": "2026-03-25T12:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertEqual(op.type, .funding)
+        XCTAssertEqual(op.state, .completed)
+    }
+
     func testFillOperationDecoding() throws {
         let json = """
         {
