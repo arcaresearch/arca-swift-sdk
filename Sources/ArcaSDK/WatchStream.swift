@@ -218,6 +218,30 @@ public struct CandleWatchStream: Sendable {
     }
 }
 
+// MARK: - CandleChartStream
+
+/// Merges historical candle data with real-time WebSocket candle events.
+/// Maintains a deduped, sorted candle array that updates on every
+/// `candle.updated` and `candle.closed` event. Automatically recovers
+/// gaps on WebSocket reconnection by refetching recent candles.
+public struct CandleChartStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Current candle array (historical + live), sorted by `t`, deduped.
+    public let candles: SendableBox<[Candle]>
+    /// Async stream of chart updates.
+    public let updates: AsyncStream<CandleChartUpdate>
+    /// Stop listening, unsubscribe, and clean up.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first historical data has loaded. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - MaxOrderSizeWatchStream
 
 /// Options for ``Arca/watchMaxOrderSize(options:)``.

@@ -283,6 +283,18 @@ public enum CandleInterval: String, Codable, Sendable, CaseIterable {
     case oneHour = "1h"
     case fourHours = "4h"
     case oneDay = "1d"
+
+    /// Duration of one interval in milliseconds.
+    public var milliseconds: Int {
+        switch self {
+        case .oneMinute: return 60_000
+        case .fiveMinutes: return 300_000
+        case .fifteenMinutes: return 900_000
+        case .oneHour: return 3_600_000
+        case .fourHours: return 14_400_000
+        case .oneDay: return 86_400_000
+        }
+    }
 }
 
 public struct Candle: Codable, Sendable {
@@ -305,6 +317,14 @@ public struct CandleEvent: Sendable {
     public let coin: String
     public let interval: CandleInterval
     public let candle: Candle
+}
+
+/// Emitted by ``CandleChartStream`` on every chart change.
+public struct CandleChartUpdate: Sendable {
+    /// Full candle array (historical + live), sorted by `t`, deduped.
+    public let candles: [Candle]
+    /// The candle that triggered this update.
+    public let latestCandle: Candle
 }
 
 // MARK: - Sparklines
