@@ -37,18 +37,20 @@ public func deriveActiveAssetData(
     leverage: Int,
     side: OrderSide,
     builderFeeBps: Int = 0,
-    szDecimals: Int = 5
+    szDecimals: Int = 5,
+    feeScale: Double = 1
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
     let available = parsePositiveDouble(exchangeState.marginSummary.availableToWithdraw)
     let takerRate = parsePositiveDouble(exchangeState.feeRates?.taker)
+    let effectiveScale = feeScale.isFinite && feeScale > 0 ? feeScale : 1
     let platformRate: Double = {
         let parsed = parsePositiveDouble(exchangeState.feeRates?.platformFee)
         return parsed > 0 ? parsed : defaultPlatformFeeRate
     }()
     let builderRate = builderFeeBps > 0 ? Double(builderFeeBps) / 100_000 : 0
-    let feeRate = takerRate + platformRate + builderRate
+    let feeRate = takerRate * effectiveScale + platformRate + builderRate
     let costPerToken = (markPx / Double(leverage) + markPx * feeRate) * safetyMarginFactor
     guard costPerToken > 0 else { return nil }
 

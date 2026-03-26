@@ -751,6 +751,58 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(response.sparklines["hl:ETH"]?.first, 3000)
     }
 
+    func testMarketTickerDecoding() throws {
+        let json = """
+        {
+            "coin": "hl:1:TSLA",
+            "dex": "xyz",
+            "symbol": "TSLA",
+            "exchange": "hl",
+            "markPx": "250",
+            "midPx": "250",
+            "prevDayPx": "248",
+            "dayNtlVlm": "500000",
+            "priceChange24hPct": "0.8",
+            "openInterest": "1000",
+            "funding": "0.0001",
+            "nextFundingTime": 1711900800000,
+            "feeScale": 2.0,
+            "isDelisted": false
+        }
+        """.data(using: .utf8)!
+
+        let ticker = try decoder.decode(MarketTicker.self, from: json)
+        XCTAssertEqual(ticker.coin, "hl:1:TSLA")
+        XCTAssertEqual(ticker.dex, "xyz")
+        XCTAssertEqual(ticker.feeScale, 2.0)
+        XCTAssertFalse(ticker.isDelisted)
+    }
+
+    func testMarketTickerDecoding_StandardPerp() throws {
+        let json = """
+        {
+            "coin": "hl:BTC",
+            "symbol": "BTC",
+            "exchange": "hl",
+            "markPx": "64000",
+            "midPx": "64000",
+            "prevDayPx": "63000",
+            "dayNtlVlm": "5000000",
+            "priceChange24hPct": "1.5",
+            "openInterest": "10000",
+            "funding": "0.0001",
+            "feeScale": 1.0,
+            "isDelisted": false
+        }
+        """.data(using: .utf8)!
+
+        let ticker = try decoder.decode(MarketTicker.self, from: json)
+        XCTAssertEqual(ticker.coin, "hl:BTC")
+        XCTAssertEqual(ticker.feeScale, 1.0)
+        XCTAssertNil(ticker.dex)
+        XCTAssertNil(ticker.nextFundingTime)
+    }
+
     func testSimBookResponseDecoding() throws {
         let json = """
         {

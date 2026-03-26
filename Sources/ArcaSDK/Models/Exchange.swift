@@ -226,6 +226,8 @@ public struct SimMetaAsset: Codable, Sendable {
     public let szDecimals: Int
     public let maxLeverage: Int
     public let onlyIsolated: Bool
+    /// HIP-3 fee multiplier. Nil or absent for standard perps (defaults to 1.0).
+    public let feeScale: Double?
 }
 
 public struct SimMetaResponse: Codable, Sendable {
@@ -250,6 +252,8 @@ public struct MarketTicker: Codable, Sendable {
     public let funding: String
     /// Unix timestamp in milliseconds of the next funding event.
     public let nextFundingTime: Int64?
+    /// HIP-3 fee multiplier. 1.0 for standard perps; >1 for builder-deployed perps.
+    public let feeScale: Double
     public let isDelisted: Bool
 }
 

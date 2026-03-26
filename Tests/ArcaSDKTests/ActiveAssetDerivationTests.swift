@@ -193,4 +193,31 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertNotNil(result)
         XCTAssertTrue(Double(result!.maxBuySize)! > 0)
     }
+
+    func testFeeScale_ReducesMaxSize() {
+        let state = makeState(availableToWithdraw: "1000")
+        let withoutScale = deriveActiveAssetData(
+            from: state, coin: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 1
+        )
+        let withScale = deriveActiveAssetData(
+            from: state, coin: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 2
+        )
+
+        guard let a = withoutScale, let b = withScale else { XCTFail("expected non-nil"); return }
+        XCTAssertTrue(Double(a.maxBuySize)! > Double(b.maxBuySize)!,
+                       "higher feeScale should reduce max size")
+    }
+
+    func testFeeScale_DefaultsToOne() {
+        let state = makeState(availableToWithdraw: "1000")
+        let explicit = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, feeScale: 1
+        )
+        let implicit = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
+        )
+
+        guard let a = explicit, let b = implicit else { XCTFail("expected non-nil"); return }
+        XCTAssertEqual(a.maxBuySize, b.maxBuySize, "omitting feeScale should behave like feeScale=1")
+    }
 }

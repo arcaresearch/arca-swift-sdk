@@ -476,6 +476,15 @@ extension Arca {
             throw error
         }
 
+        var resolvedFeeScale = opts.feeScale ?? 1.0
+        if opts.feeScale == nil {
+            if let tickers = try? await getMarketTickers(),
+               let ticker = tickers.tickers.first(where: { $0.coin == opts.coin }),
+               ticker.feeScale > 0 {
+                resolvedFeeScale = ticker.feeScale
+            }
+        }
+
         let exchangeStateBox = SendableBox<ExchangeState?>(initialExchangeState)
 
         func recompute() -> ActiveAssetData? {
@@ -489,7 +498,8 @@ extension Arca {
                 leverage: opts.leverage,
                 side: opts.side,
                 builderFeeBps: opts.builderFeeBps,
-                szDecimals: opts.szDecimals
+                szDecimals: opts.szDecimals,
+                feeScale: resolvedFeeScale
             )
         }
 

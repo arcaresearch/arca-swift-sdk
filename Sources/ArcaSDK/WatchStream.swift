@@ -228,6 +228,9 @@ public struct MaxOrderSizeWatchOptions: Sendable {
     public let leverage: Int
     public let builderFeeBps: Int
     public let szDecimals: Int
+    /// HIP-3 fee multiplier for this asset. Defaults to 1 (standard perps).
+    /// When nil, ``Arca/watchMaxOrderSize(options:)`` auto-fetches from tickers.
+    public let feeScale: Double?
 
     public init(
         objectId: String,
@@ -235,7 +238,8 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         side: OrderSide,
         leverage: Int,
         builderFeeBps: Int = 0,
-        szDecimals: Int = 5
+        szDecimals: Int = 5,
+        feeScale: Double? = nil
     ) {
         self.objectId = objectId
         self.coin = coin
@@ -243,6 +247,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         self.leverage = leverage
         self.builderFeeBps = builderFeeBps
         self.szDecimals = szDecimals
+        self.feeScale = feeScale
     }
 }
 
