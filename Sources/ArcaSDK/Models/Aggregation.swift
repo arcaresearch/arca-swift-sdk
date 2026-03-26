@@ -137,9 +137,7 @@ extension ObjectValuation {
         let newInbound = pendingInbound?.map { $0.revalued(with: mids) }
         let objValue = newBalances.reduce(Decimal(0)) { sum, b in
             sum + (Decimal(string: b.valueUsd) ?? 0)
-        } + (newReserved?.reduce(Decimal(0)) { sum, r in
-            sum + (Decimal(string: r.valueUsd) ?? 0)
-        } ?? 0)
+        }
         return ObjectValuation(objectId: objectId, path: path, type: type,
                                denomination: denomination, valueUsd: "\(objValue)",
                                balances: newBalances, reservedBalances: newReserved,
