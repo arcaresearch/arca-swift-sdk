@@ -132,3 +132,31 @@ public struct ArcaObjectDetailResponse: Codable, Sendable {
 public struct ArcaObjectVersionsResponse: Codable, Sendable {
     public let versions: [ArcaObject]
 }
+
+// MARK: - Realm
+
+public enum RealmType: String, Codable, Sendable {
+    case demo
+    case production
+    case staging
+    case development
+    case testing
+}
+
+public struct RealmSettings: Codable, Sendable {
+    public let defaultBuilderFeeBps: Int?
+}
+
+public struct Realm: Codable, Sendable {
+    public let id: RealmID
+    public let orgId: OrgID
+    public let name: String
+    public let slug: String
+    public let type: RealmType
+    public let description: String?
+    public let settings: RealmSettings?
+    public let archivedAt: String?
+    public let createdBy: UserID?
+    public let createdAt: String
+    public let updatedAt: String
+}

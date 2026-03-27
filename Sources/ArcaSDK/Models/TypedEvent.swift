@@ -101,7 +101,7 @@ public enum TypedEvent: Sendable {
 
     // MARK: - Realm
 
-    case realmCreated(envelope: EventEnvelope)
+    case realmCreated(Realm, envelope: EventEnvelope)
 
     // MARK: - Fallback
 
@@ -130,7 +130,7 @@ public enum TypedEvent: Sendable {
              .midsUpdated(_, let e),
              .aggregationUpdated(_, let e),
              .objectValuation(_, _, _, let e),
-             .realmCreated(let e):
+             .realmCreated(_, let e):
             return e
         case .unknown:
             return nil
@@ -212,7 +212,8 @@ public enum TypedEvent: Sendable {
             return .objectValuation(val, path: path, watchId: watchId, envelope: envelope)
 
         case EventType.realmCreated.rawValue:
-            return .realmCreated(envelope: envelope)
+            guard let realm = event.realm else { return .unknown(event) }
+            return .realmCreated(realm, envelope: envelope)
 
         default:
             return .unknown(event)

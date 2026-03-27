@@ -755,6 +755,8 @@ final class ModelDecodingTests: XCTestCase {
             "fill": {
                 "id": "sf_01abc",
                 "orderId": "ord_01xyz",
+                "accountId": "act_01abc",
+                "realmId": "rlm_01abc",
                 "coin": "hl:BTC",
                 "side": "BUY",
                 "size": "0.1",
@@ -773,7 +775,7 @@ final class ModelDecodingTests: XCTestCase {
         switch typed {
         case .fillPreview(let fill, let envelope):
             XCTAssertEqual(fill.coin, "hl:BTC")
-            XCTAssertEqual(fill.side, "BUY")
+            XCTAssertEqual(fill.side, .buy)
             XCTAssertEqual(envelope.correlationId, "ord_01xyz")
             XCTAssertEqual(envelope.sequence, 1)
         default:
@@ -829,11 +831,13 @@ final class ModelDecodingTests: XCTestCase {
             "entityId": "obj_01def",
             "deliverySeq": 10,
             "funding": {
+                "accountId": "act_01abc",
                 "coin": "hl:BTC",
-                "payment": "-0.25",
-                "rate": "0.0001",
-                "positionSize": "0.5",
-                "createdAt": "2026-03-27T12:00:00.000000Z"
+                "side": "LONG",
+                "size": "0.5",
+                "price": "65000",
+                "fundingRate": "0.0001",
+                "payment": "-0.25"
             }
         }
         """.data(using: .utf8)!
@@ -911,6 +915,66 @@ final class ModelDecodingTests: XCTestCase {
             XCTAssertEqual(event.type, "some.future.event")
         default:
             XCTFail("Expected .unknown, got \(typed)")
+        }
+    }
+
+    func testTypedEventFromRealmCreated() throws {
+        let json = """
+        {
+            "type": "realm.created",
+            "realmId": "rlm_01abc",
+            "entityId": "rlm_01abc",
+            "deliverySeq": 1,
+            "realm": {
+                "id": "rlm_01abc",
+                "orgId": "org_01def",
+                "name": "Test Realm",
+                "slug": "test-realm",
+                "type": "demo",
+                "description": null,
+                "settings": null,
+                "archivedAt": null,
+                "createdBy": "usr_01xyz",
+                "createdAt": "2026-03-27T10:00:00.000000Z",
+                "updatedAt": "2026-03-27T10:00:00.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .realmCreated(let realm, let envelope):
+            XCTAssertEqual(realm.id.rawValue, "rlm_01abc")
+            XCTAssertEqual(realm.name, "Test Realm")
+            XCTAssertEqual(realm.slug, "test-realm")
+            XCTAssertEqual(realm.type, .demo)
+            XCTAssertEqual(envelope.entityId, "rlm_01abc")
+            XCTAssertEqual(envelope.deliverySeq, 1)
+        default:
+            XCTFail("Expected .realmCreated, got \(typed)")
+        }
+    }
+
+    func testTypedEventRealmCreatedMissingRealmFallsToUnknown() throws {
+        let json = """
+        {
+            "type": "realm.created",
+            "realmId": "rlm_01abc",
+            "entityId": "rlm_01abc",
+            "deliverySeq": 1
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .unknown(let event):
+            XCTAssertEqual(event.type, "realm.created")
+        default:
+            XCTFail("Expected .unknown for realm.created without realm payload, got \(typed)")
         }
     }
 
