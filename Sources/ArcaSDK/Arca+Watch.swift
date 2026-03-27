@@ -357,9 +357,11 @@ extension Arca {
 
     /// Watch fills (trade history) for an exchange Arca object.
     ///
-    /// Fetches initial fills via REST, then merges live `fill.recorded` WebSocket
-    /// events. On reconnect, re-fetches to reconcile any fills missed during the
-    /// disconnection window. Call `stop()` when done.
+    /// Two-phase fill delivery:
+    /// 1. `exchange.fill` — instant preview with venue data (market, side, size, price, total fee)
+    /// 2. `fill.recorded` — authoritative fill with platform-computed data (dir, position, fee breakdown)
+    ///
+    /// Phase 2 replaces the preview. On reconnect, re-fetches from REST to reconcile gaps.
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
@@ -375,11 +377,21 @@ extension Arca {
         let state = SendableBox<WatchStreamState>(.loading)
         let box = SendableBox<[Fill]>([])
         let fillIdSet = SendableBox<Set<String>>(Set())
+        let previewOrderIds = SendableBox<Set<String>>([])
+        let recordedOrderIds = SendableBox<Set<String>>([])
         let fetchInFlight = SendableBox<Bool>(false)
 
-        var objectPath: String?
+        let objectPath: String?
         if let detail = try? await getObjectDetail(objectId: objectId) {
             objectPath = detail.object.path
+        } else {
+            objectPath = nil
+        }
+
+        let capturedPath = objectPath
+        let matchesObject: @Sendable (RealmEvent) -> Bool = { event in
+            event.entityId == objectId
+                || (capturedPath != nil && event.entityPath == capturedPath)
         }
 
         let fetchFills: @Sendable () async -> Void = { [self] in
@@ -392,6 +404,8 @@ extension Arca {
                 ids.removeAll()
                 for f in resp.fills { ids.insert(f.id) }
             }
+            previewOrderIds.update { $0.removeAll() }
+            recordedOrderIds.update { $0.removeAll() }
             state.update { $0 = .connected }
         }
 
@@ -408,23 +422,69 @@ extension Arca {
 
         await ws.acquireChannel(.exchange)
 
-        let fillStream = await ws.fillRecordedEvents()
+        let previewStream = await ws.fillEvents()
+        let recordedStream = await ws.fillRecordedEvents()
 
         let updates = AsyncStream<(Fill, RealmEvent)> { continuation in
-            let task = Task {
-                for await (fill, event) in fillStream {
-                    let matchesObj = event.entityId == objectId
-                        || (objectPath != nil && event.entityPath == objectPath)
-                    guard matchesObj else { continue }
-                    let isNew = fillIdSet.value.contains(fill.id) == false
-                    guard isNew else { continue }
+            let previewTask = Task {
+                for await (simFill, event) in previewStream {
+                    guard matchesObject(event) else { continue }
+                    let orderId = simFill.orderId.rawValue
+                    guard !previewOrderIds.value.contains(orderId) && !recordedOrderIds.value.contains(orderId) else { continue }
+                    let preview = Fill(
+                        id: simFill.id.rawValue,
+                        operationId: nil,
+                        fillId: nil,
+                        orderOperationId: nil,
+                        orderId: orderId,
+                        market: simFill.coin,
+                        side: simFill.side,
+                        size: simFill.size,
+                        price: simFill.price,
+                        dir: nil,
+                        startPosition: nil,
+                        fee: simFill.fee,
+                        exchangeFee: nil,
+                        platformFee: nil,
+                        builderFee: simFill.builderFee,
+                        realizedPnl: simFill.realizedPnl,
+                        resultingPosition: nil,
+                        isLiquidation: simFill.isLiquidation,
+                        createdAt: simFill.createdAt
+                    )
+                    previewOrderIds.update { $0.insert(orderId) }
+                    box.update { $0.insert(preview, at: 0) }
+                    continuation.yield((preview, event))
+                }
+            }
+            let recordedTask = Task {
+                for await (fill, event) in recordedStream {
+                    guard matchesObject(event) else { continue }
+                    if let orderId = fill.orderId, previewOrderIds.value.contains(orderId) {
+                        box.update { fills in
+                            if let idx = fills.firstIndex(where: { $0.orderId == orderId && $0.operationId == nil }) {
+                                fills[idx] = fill
+                            } else {
+                                fills.insert(fill, at: 0)
+                            }
+                        }
+                        previewOrderIds.update { $0.remove(orderId) }
+                    } else {
+                        guard !fillIdSet.value.contains(fill.id) else { continue }
+                        box.update { $0.insert(fill, at: 0) }
+                    }
+                    if let orderId = fill.orderId {
+                        recordedOrderIds.update { $0.insert(orderId) }
+                    }
                     fillIdSet.update { $0.insert(fill.id) }
-                    box.update { $0.insert(fill, at: 0) }
                     continuation.yield((fill, event))
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in
+                previewTask.cancel()
+                recordedTask.cancel()
+            }
         }
 
         await fetchFills()

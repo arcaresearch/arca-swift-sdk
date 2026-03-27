@@ -357,7 +357,9 @@ public struct FillResultingPosition: Codable, Sendable {
 
 public struct Fill: Codable, Sendable {
     public let id: String
-    public let operationId: String
+    /// Platform operation ID. Absent on preview fills from `exchange.fill`.
+    public let operationId: String?
+    public let fillId: String?
     public let orderOperationId: String?
     public let orderId: String?
     public let market: String
@@ -371,9 +373,10 @@ public struct Fill: Codable, Sendable {
     public let platformFee: String?
     public let builderFee: String?
     public let realizedPnl: String?
-    public let resultingPosition: FillResultingPosition
+    /// Absent on preview fills from `exchange.fill`; populated by `fill.recorded`.
+    public let resultingPosition: FillResultingPosition?
     public let isLiquidation: Bool?
-    public let createdAt: String
+    public let createdAt: String?
 }
 
 public struct FillListResponse: Codable, Sendable {
