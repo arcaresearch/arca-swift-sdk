@@ -489,6 +489,15 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of platform-level fill recorded events (full Fill data + originating event).
+    public func fillRecordedEvents() -> AsyncStream<(Fill, RealmEvent)> {
+        filteredStream { event in
+            guard event.type == EventType.fillRecorded.rawValue,
+                  let fill = event.recordedFill else { return nil }
+            return (fill, event)
+        }
+    }
+
     /// Stream of exchange funding payment events.
     public func fundingEvents() -> AsyncStream<(FundingPayment, RealmEvent)> {
         filteredStream { event in

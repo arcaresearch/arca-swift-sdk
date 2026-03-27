@@ -299,3 +299,28 @@ public struct MaxOrderSizeWatchStream: Sendable {
         }
     }
 }
+
+// MARK: - FillWatchStream
+
+/// A stream of platform-level trade history for an exchange Arca object.
+///
+/// Fetches initial fills via REST, then merges live `fill.recorded` WebSocket events.
+/// On reconnect, re-fetches from REST to reconcile any fills missed during the
+/// disconnection window.
+public struct FillWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Running list of fills, populated on initial fetch and updated live.
+    public let fills: SendableBox<[Fill]>
+    /// Async stream of new fill events.
+    public let updates: AsyncStream<(Fill, RealmEvent)>
+    /// Stop listening and unsubscribe from fill updates.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the initial fill list has been fetched. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}

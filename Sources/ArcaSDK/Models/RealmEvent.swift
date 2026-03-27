@@ -21,5 +21,62 @@ public struct RealmEvent: Codable, Sendable {
     public let interval: String?
     public let candle: Candle?
     public let fill: SimFill?
+    /// Platform-level fill data, present on `fill.recorded` events.
+    /// Decoded from the same `fill` JSON key as `SimFill`, but with the
+    /// platform `Fill` schema (includes `operationId`, `resultingPosition`, etc.).
+    public let recordedFill: Fill?
     public let funding: FundingPayment?
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        realmId = try container.decodeIfPresent(String.self, forKey: .realmId)
+        type = try container.decode(String.self, forKey: .type)
+        entityId = try container.decodeIfPresent(String.self, forKey: .entityId)
+        entityPath = try container.decodeIfPresent(String.self, forKey: .entityPath)
+        summary = try container.decodeIfPresent(ExplorerSummary.self, forKey: .summary)
+        operation = try container.decodeIfPresent(Operation.self, forKey: .operation)
+        event = try container.decodeIfPresent(ArcaEvent.self, forKey: .event)
+        object = try container.decodeIfPresent(ArcaObject.self, forKey: .object)
+        mids = try container.decodeIfPresent([String: String].self, forKey: .mids)
+        exchangeState = try container.decodeIfPresent(ExchangeState.self, forKey: .exchangeState)
+        valuation = try container.decodeIfPresent(ObjectValuation.self, forKey: .valuation)
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        watchId = try container.decodeIfPresent(String.self, forKey: .watchId)
+        aggregation = try container.decodeIfPresent(PathAggregation.self, forKey: .aggregation)
+        coin = try container.decodeIfPresent(String.self, forKey: .coin)
+        interval = try container.decodeIfPresent(String.self, forKey: .interval)
+        candle = try container.decodeIfPresent(Candle.self, forKey: .candle)
+        funding = try container.decodeIfPresent(FundingPayment.self, forKey: .funding)
+
+        if type == EventType.fillRecorded.rawValue {
+            fill = nil
+            recordedFill = try container.decodeIfPresent(Fill.self, forKey: .fill)
+        } else {
+            fill = try container.decodeIfPresent(SimFill.self, forKey: .fill)
+            recordedFill = nil
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case realmId, type, entityId, entityPath, summary, operation, event, object
+        case mids, exchangeState, valuation, path, watchId, aggregation
+        case coin, interval, candle, fill, funding
+    }
+
+    public init(
+        realmId: String? = nil, type: String, entityId: String? = nil, entityPath: String? = nil,
+        summary: ExplorerSummary? = nil, operation: Operation? = nil, event: ArcaEvent? = nil,
+        object: ArcaObject? = nil, mids: [String: String]? = nil, exchangeState: ExchangeState? = nil,
+        valuation: ObjectValuation? = nil, path: String? = nil, watchId: String? = nil,
+        aggregation: PathAggregation? = nil, coin: String? = nil, interval: String? = nil,
+        candle: Candle? = nil, fill: SimFill? = nil, recordedFill: Fill? = nil,
+        funding: FundingPayment? = nil
+    ) {
+        self.realmId = realmId; self.type = type; self.entityId = entityId; self.entityPath = entityPath
+        self.summary = summary; self.operation = operation; self.event = event; self.object = object
+        self.mids = mids; self.exchangeState = exchangeState; self.valuation = valuation
+        self.path = path; self.watchId = watchId; self.aggregation = aggregation
+        self.coin = coin; self.interval = interval; self.candle = candle
+        self.fill = fill; self.recordedFill = recordedFill; self.funding = funding
+    }
 }

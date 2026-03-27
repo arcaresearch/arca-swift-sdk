@@ -355,6 +355,92 @@ extension Arca {
         return stream
     }
 
+    /// Watch fills (trade history) for an exchange Arca object.
+    ///
+    /// Fetches initial fills via REST, then merges live `fill.recorded` WebSocket
+    /// events. On reconnect, re-fetches to reconcile any fills missed during the
+    /// disconnection window. Call `stop()` when done.
+    ///
+    /// - Parameters:
+    ///   - objectId: Exchange Arca object ID
+    ///   - market: Optional market filter (canonical coin ID)
+    ///   - limit: Max fills for initial fetch (default 100)
+    public func watchFills(
+        objectId: String,
+        market: String? = nil,
+        limit: Int? = nil
+    ) async throws -> FillWatchStream {
+        await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.loading)
+        let box = SendableBox<[Fill]>([])
+        let fillIdSet = SendableBox<Set<String>>(Set())
+        let fetchInFlight = SendableBox<Bool>(false)
+
+        var objectPath: String?
+        if let detail = try? await getObjectDetail(objectId: objectId) {
+            objectPath = detail.object.path
+        }
+
+        let fetchFills: @Sendable () async -> Void = { [self] in
+            guard !fetchInFlight.value else { return }
+            fetchInFlight.update { $0 = true }
+            defer { fetchInFlight.update { $0 = false } }
+            guard let resp = try? await self.listFills(objectId: objectId, market: market, limit: limit) else { return }
+            box.update { $0 = resp.fills }
+            fillIdSet.update { ids in
+                ids.removeAll()
+                for f in resp.fills { ids.insert(f.id) }
+            }
+            state.update { $0 = .connected }
+        }
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected && state.value != .loading {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected && !box.value.isEmpty {
+                    await fetchFills()
+                }
+            }
+        }
+
+        await ws.acquireChannel(.exchange)
+
+        let fillStream = await ws.fillRecordedEvents()
+
+        let updates = AsyncStream<(Fill, RealmEvent)> { continuation in
+            let task = Task {
+                for await (fill, event) in fillStream {
+                    let matchesObj = event.entityId == objectId
+                        || (objectPath != nil && event.entityPath == objectPath)
+                    guard matchesObj else { continue }
+                    let isNew = fillIdSet.value.contains(fill.id) == false
+                    guard isNew else { continue }
+                    fillIdSet.update { $0.insert(fill.id) }
+                    box.update { $0.insert(fill, at: 0) }
+                    continuation.yield((fill, event))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
+        await fetchFills()
+
+        let stream = FillWatchStream(
+            state: state,
+            fills: box,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseChannel(.exchange)
+            }
+        )
+        return stream
+    }
+
     /// Subscribe to raw real-time candle events (no history blending).
     ///
     /// **For candlestick charts, use ``watchCandleChart(coin:interval:count:)``
