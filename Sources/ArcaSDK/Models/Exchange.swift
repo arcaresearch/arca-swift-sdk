@@ -61,6 +61,12 @@ public struct SimOrder: Codable, Sendable {
     public let timeInForce: TimeInForce
     public let leverage: Int
     public let builderFeeBps: Int?
+    public let isTrigger: Bool?
+    public let triggerPx: String?
+    public let isMarket: Bool?
+    public let tpsl: String?
+    public let grouping: String?
+    public let parentOrderId: String?
     public let createdAt: String?
     public let updatedAt: String?
 }
@@ -74,7 +80,7 @@ public extension SimOrder {
             return true
         case .cancelled:
             return filledSize != "0" && !filledSize.isEmpty
-        case .failed, .pending, .open, .partiallyFilled:
+        case .failed, .pending, .open, .partiallyFilled, .waitingForTrigger, .triggered:
             return false
         }
     }
@@ -82,6 +88,11 @@ public extension SimOrder {
     /// `true` when the order was partially filled and the remainder cancelled (IOC semantics).
     var isPartiallyFilled: Bool {
         status == .cancelled && filledSize != "0" && !filledSize.isEmpty && filledSize != size
+    }
+
+    /// `true` when this is a trigger (TP/SL) order.
+    var isTriggerOrder: Bool {
+        isTrigger == true
     }
 }
 

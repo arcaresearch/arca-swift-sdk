@@ -105,6 +105,11 @@ extension Arca {
     ///   - timeInForce: Time in force (default: `.gtc`)
     ///   - builderFeeBps: Builder fee in tenths of a basis point
     ///   - feeTargets: Fee routing targets
+    ///   - isTrigger: If true, this is a trigger (TP/SL) order
+    ///   - triggerPx: Trigger price — mark price threshold to activate the order
+    ///   - isMarket: If true, execute as market order when triggered; if false, use price as limit
+    ///   - tpsl: Take profit (`.takeProfit`) or stop loss (`.stopLoss`)
+    ///   - grouping: Lifecycle grouping (`.standalone`, `.normalTpsl`, `.positionTpsl`)
     public func placeOrder(
         path: String,
         objectId: String,
@@ -117,7 +122,12 @@ extension Arca {
         reduceOnly: Bool = false,
         timeInForce: TimeInForce = .gtc,
         builderFeeBps: Int? = nil,
-        feeTargets: [FeeTarget]? = nil
+        feeTargets: [FeeTarget]? = nil,
+        isTrigger: Bool? = nil,
+        triggerPx: String? = nil,
+        isMarket: Bool? = nil,
+        tpsl: TpslType? = nil,
+        grouping: TpslGrouping? = nil
     ) -> OrderHandle {
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
             try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
@@ -132,7 +142,12 @@ extension Arca {
                 reduceOnly: reduceOnly,
                 timeInForce: timeInForce.rawValue,
                 builderFeeBps: builderFeeBps,
-                feeTargets: feeTargets
+                feeTargets: feeTargets,
+                isTrigger: isTrigger,
+                triggerPx: triggerPx,
+                isMarket: isMarket,
+                tpsl: tpsl?.rawValue,
+                grouping: grouping?.rawValue
             ))
         }
 
@@ -252,7 +267,12 @@ extension Arca {
                 reduceOnly: true,
                 timeInForce: timeInForce.rawValue,
                 builderFeeBps: builderFeeBps,
-                feeTargets: feeTargets
+                feeTargets: feeTargets,
+                isTrigger: nil,
+                triggerPx: nil,
+                isMarket: nil,
+                tpsl: nil,
+                grouping: nil
             ))
         }
 
@@ -588,6 +608,19 @@ public enum OrderStatus: String, Codable, Sendable {
     case filled = "FILLED"
     case cancelled = "CANCELLED"
     case failed = "FAILED"
+    case waitingForTrigger = "WAITING_FOR_TRIGGER"
+    case triggered = "TRIGGERED"
+}
+
+public enum TpslType: String, Codable, Sendable {
+    case takeProfit = "tp"
+    case stopLoss = "sl"
+}
+
+public enum TpslGrouping: String, Codable, Sendable {
+    case standalone = "na"
+    case normalTpsl = "normalTpsl"
+    case positionTpsl = "positionTpsl"
 }
 
 public enum LeverageType: String, Codable, Sendable {
@@ -630,4 +663,9 @@ private struct PlaceOrderRequest: Encodable {
     let timeInForce: String
     let builderFeeBps: Int?
     let feeTargets: [FeeTarget]?
+    let isTrigger: Bool?
+    let triggerPx: String?
+    let isMarket: Bool?
+    let tpsl: String?
+    let grouping: String?
 }
