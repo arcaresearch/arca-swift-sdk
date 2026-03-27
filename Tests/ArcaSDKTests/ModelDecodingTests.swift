@@ -693,6 +693,247 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(event.mids)
     }
 
+    // MARK: - TypedEvent
+
+    func testTypedEventFromExchangeUpdated() throws {
+        let json = """
+        {
+            "type": "exchange.updated",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "entityPath": "/exchanges/main",
+            "correlationId": "corr_123",
+            "deliverySeq": 42,
+            "exchangeState": {
+                "account": {
+                    "id": "act_01abc",
+                    "realmId": "rlm_01abc",
+                    "name": "test",
+                    "createdAt": "2026-03-07T10:00:00.000000Z",
+                    "updatedAt": "2026-03-07T10:00:00.000000Z"
+                },
+                "marginSummary": {
+                    "equity": "10000",
+                    "initialMarginUsed": "0",
+                    "maintenanceMarginRequired": "0",
+                    "availableToWithdraw": "10000",
+                    "totalNtlPos": "0",
+                    "totalUnrealizedPnl": "0",
+                    "totalRawUsd": "10000"
+                },
+                "positions": [],
+                "openOrders": [],
+                "feeRates": null
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .exchangeUpdated(let state, let envelope):
+            XCTAssertEqual(state.account.id.rawValue, "act_01abc")
+            XCTAssertEqual(envelope.realmId, "rlm_01abc")
+            XCTAssertEqual(envelope.entityId, "obj_01def")
+            XCTAssertEqual(envelope.correlationId, "corr_123")
+            XCTAssertEqual(envelope.deliverySeq, 42)
+        default:
+            XCTFail("Expected .exchangeUpdated, got \(typed)")
+        }
+    }
+
+    func testTypedEventFromFillPreview() throws {
+        let json = """
+        {
+            "type": "exchange.fill",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "correlationId": "ord_01xyz",
+            "sequence": 1,
+            "deliverySeq": 5,
+            "fill": {
+                "id": "sf_01abc",
+                "orderId": "ord_01xyz",
+                "coin": "hl:BTC",
+                "side": "BUY",
+                "size": "0.1",
+                "price": "65000",
+                "fee": "1.5",
+                "isMaker": false,
+                "isLiquidation": false,
+                "createdAt": "2026-03-27T12:00:00.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .fillPreview(let fill, let envelope):
+            XCTAssertEqual(fill.coin, "hl:BTC")
+            XCTAssertEqual(fill.side, "BUY")
+            XCTAssertEqual(envelope.correlationId, "ord_01xyz")
+            XCTAssertEqual(envelope.sequence, 1)
+        default:
+            XCTFail("Expected .fillPreview, got \(typed)")
+        }
+    }
+
+    func testTypedEventFromFillRecorded() throws {
+        let json = """
+        {
+            "type": "fill.recorded",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "correlationId": "ord_01xyz",
+            "sequence": 2,
+            "deliverySeq": 6,
+            "fill": {
+                "id": "pl_01abc",
+                "operationId": "op_fill_01",
+                "orderId": "ord_01xyz",
+                "market": "hl:BTC",
+                "side": "BUY",
+                "size": "0.1",
+                "price": "65000",
+                "fee": "1.5",
+                "realizedPnl": "0",
+                "resultingPosition": { "side": "LONG", "size": "0.1", "entryPx": "65000", "leverage": 5 },
+                "isLiquidation": false,
+                "createdAt": "2026-03-27T12:00:00.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .fillRecorded(let fill, let envelope):
+            XCTAssertEqual(fill.operationId, "op_fill_01")
+            XCTAssertEqual(fill.market, "hl:BTC")
+            XCTAssertEqual(envelope.correlationId, "ord_01xyz")
+            XCTAssertEqual(envelope.sequence, 2)
+        default:
+            XCTFail("Expected .fillRecorded, got \(typed)")
+        }
+    }
+
+    func testTypedEventFromFunding() throws {
+        let json = """
+        {
+            "type": "exchange.funding",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "deliverySeq": 10,
+            "funding": {
+                "coin": "hl:BTC",
+                "payment": "-0.25",
+                "rate": "0.0001",
+                "positionSize": "0.5",
+                "createdAt": "2026-03-27T12:00:00.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .fundingPayment(let payment, let envelope):
+            XCTAssertEqual(payment.coin, "hl:BTC")
+            XCTAssertEqual(payment.payment, "-0.25")
+            XCTAssertEqual(envelope.entityId, "obj_01def")
+        default:
+            XCTFail("Expected .fundingPayment, got \(typed)")
+        }
+    }
+
+    func testTypedEventFromOperationCreated() throws {
+        let json = """
+        {
+            "type": "operation.created",
+            "realmId": "rlm_01abc",
+            "entityId": "op_01def",
+            "entityPath": "/op/transfer/1",
+            "eventId": "rev_01abc",
+            "deliverySeq": 1,
+            "operation": {
+                "id": "op_01def",
+                "realmId": "rlm_01abc",
+                "path": "/op/transfer/1",
+                "type": "transfer",
+                "state": "pending",
+                "sourceArcaPath": "/wallets/a",
+                "targetArcaPath": "/wallets/b",
+                "input": null,
+                "outcome": null,
+                "actorType": null,
+                "actorId": null,
+                "tokenJti": null,
+                "createdAt": "2026-03-27T10:00:00.000000Z",
+                "updatedAt": "2026-03-27T10:00:00.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .operationCreated(let op, let envelope):
+            XCTAssertEqual(op.type, .transfer)
+            XCTAssertEqual(op.state, .pending)
+            XCTAssertEqual(envelope.eventId, "rev_01abc")
+            XCTAssertEqual(envelope.entityPath, "/op/transfer/1")
+        default:
+            XCTFail("Expected .operationCreated, got \(typed)")
+        }
+    }
+
+    func testTypedEventUnknownType() throws {
+        let json = """
+        {
+            "type": "some.future.event",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "deliverySeq": 99
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .unknown(let event):
+            XCTAssertEqual(event.type, "some.future.event")
+        default:
+            XCTFail("Expected .unknown, got \(typed)")
+        }
+    }
+
+    func testTypedEventEnvelopeAccessor() throws {
+        let json = """
+        {
+            "type": "balance.updated",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "timestamp": "2026-03-27T10:00:00.000000Z",
+            "deliverySeq": 7
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+        let envelope = typed.envelope
+        XCTAssertNotNil(envelope)
+        XCTAssertEqual(envelope?.realmId, "rlm_01abc")
+        XCTAssertEqual(envelope?.timestamp, "2026-03-27T10:00:00.000000Z")
+        XCTAssertEqual(envelope?.deliverySeq, 7)
+    }
+
     // MARK: - Deposit Response
 
     func testDepositResponseDecoding() throws {

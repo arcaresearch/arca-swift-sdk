@@ -300,6 +300,47 @@ public struct MaxOrderSizeWatchStream: Sendable {
     }
 }
 
+// MARK: - ExchangeStateWatchStream
+
+/// A stream of real-time exchange state updates for an Arca exchange object.
+/// Fetches initial state via REST, then re-fetches on each `exchange.updated` event.
+public struct ExchangeStateWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Current exchange state (positions, orders, margin).
+    public let exchangeState: SendableBox<ExchangeState?>
+    /// Async stream of exchange state updates.
+    public let updates: AsyncStream<ExchangeState>
+    /// Stop listening and unsubscribe.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the first state has been fetched. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
+// MARK: - FundingWatchStream
+
+/// A stream of real-time funding payment events for an exchange Arca object.
+public struct FundingWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Async stream of funding payment events.
+    public let updates: AsyncStream<(FundingPayment, EventEnvelope)>
+    /// Stop listening and unsubscribe.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the stream is connected. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - FillWatchStream
 
 /// A stream of platform-level trade history for an exchange Arca object.

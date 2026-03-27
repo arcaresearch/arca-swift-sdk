@@ -355,6 +355,116 @@ extension Arca {
         return stream
     }
 
+    /// Subscribe to real-time exchange state updates for an Arca exchange object.
+    /// Fetches initial state via REST, then re-fetches on each `exchange.updated`
+    /// event matching the given object. Reconnections are handled automatically.
+    /// Call `stop()` when done.
+    ///
+    /// - Parameter objectId: Exchange Arca object ID
+    public func watchExchangeState(objectId: String) async throws -> ExchangeStateWatchStream {
+        await ws.ensureConnected()
+
+        let streamState = SendableBox<WatchStreamState>(.loading)
+        let stateBox = SendableBox<ExchangeState?>(nil)
+
+        let initialState = try await getExchangeState(objectId: objectId)
+        stateBox.update { $0 = initialState }
+        streamState.update { $0 = .connected }
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task { [weak self] in
+            for await s in statusStream {
+                if s == .disconnected && streamState.value != .loading {
+                    streamState.update { $0 = .reconnecting }
+                } else if s == .connected && streamState.value == .reconnecting {
+                    guard let self = self else { continue }
+                    if let refreshed = try? await self.getExchangeState(objectId: objectId) {
+                        stateBox.update { $0 = refreshed }
+                    }
+                    streamState.update { $0 = .connected }
+                }
+            }
+        }
+
+        await ws.acquireChannel(.exchange)
+
+        let exchangeStream = await ws.exchangeEvents()
+        let updates = AsyncStream<ExchangeState> { [weak self] continuation in
+            let task = Task { [weak self] in
+                for await (state, event) in exchangeStream {
+                    guard event.entityId == objectId else { continue }
+                    if state.positions.isEmpty && state.openOrders.isEmpty {
+                        guard let self = self,
+                              let fetched = try? await self.getExchangeState(objectId: objectId) else { continue }
+                        stateBox.update { $0 = fetched }
+                        continuation.yield(fetched)
+                    } else {
+                        stateBox.update { $0 = state }
+                        continuation.yield(state)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
+        return ExchangeStateWatchStream(
+            state: streamState,
+            exchangeState: stateBox,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseChannel(.exchange)
+            }
+        )
+    }
+
+    /// Subscribe to real-time funding payment events for an exchange Arca object.
+    /// Yields each funding payment with its ``EventEnvelope`` for correlation.
+    /// Call `stop()` when done.
+    ///
+    /// - Parameter objectId: Exchange Arca object ID
+    public func watchFunding(objectId: String) async throws -> FundingWatchStream {
+        await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.connected)
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected {
+                    state.update { $0 = .connected }
+                }
+            }
+        }
+
+        await ws.acquireChannel(.exchange)
+
+        let fundingStream = await ws.fundingEvents()
+        let updates = AsyncStream<(FundingPayment, EventEnvelope)> { continuation in
+            let task = Task {
+                for await (payment, event) in fundingStream {
+                    guard event.entityId == objectId else { continue }
+                    let envelope = EventEnvelope(from: event)
+                    continuation.yield((payment, envelope))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
+        return FundingWatchStream(
+            state: state,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseChannel(.exchange)
+            }
+        )
+    }
+
     /// Watch fills (trade history) for an exchange Arca object.
     ///
     /// Two-phase fill delivery with envelope-based correlation:

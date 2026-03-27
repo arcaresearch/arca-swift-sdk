@@ -379,6 +379,13 @@ public actor WebSocketManager {
         }
     }
 
+    /// A stream of discriminated ``TypedEvent`` values. Each event carries its
+    /// strongly-typed payload and an ``EventEnvelope`` with correlation spine
+    /// fields. Use `switch` for exhaustive handling.
+    public var typedEvents: AsyncStream<TypedEvent> {
+        filteredStream { event in TypedEvent.from(event) }
+    }
+
     /// A stream of connection status changes.
     public var statusStream: AsyncStream<ConnectionStatus> {
         let id = UUID()
@@ -519,6 +526,48 @@ public actor WebSocketManager {
                   let interval = CandleInterval(rawValue: intervalStr),
                   let candle = event.candle else { return nil }
             return CandleEvent(coin: coin, interval: interval, candle: candle)
+        }
+    }
+
+    // MARK: - Typed Event Streams
+
+    /// Stream of trading-related typed events (exchange state, fills, funding).
+    /// Exhaustive switching on the result gives compile-time safety.
+    public func typedExchangeEvents() -> AsyncStream<TypedEvent> {
+        filteredStream { event in
+            let typed = TypedEvent.from(event)
+            switch typed {
+            case .exchangeUpdated, .fillPreview, .fillRecorded, .fundingPayment:
+                return typed
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// Stream of typed fill events (both preview and recorded phases).
+    public func typedFillEvents() -> AsyncStream<TypedEvent> {
+        filteredStream { event in
+            let typed = TypedEvent.from(event)
+            switch typed {
+            case .fillPreview, .fillRecorded:
+                return typed
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// Stream of typed funding payment events.
+    public func typedFundingEvents() -> AsyncStream<TypedEvent> {
+        filteredStream { event in
+            let typed = TypedEvent.from(event)
+            switch typed {
+            case .fundingPayment:
+                return typed
+            default:
+                return nil
+            }
         }
     }
 
