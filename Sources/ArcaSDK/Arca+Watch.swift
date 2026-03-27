@@ -357,11 +357,12 @@ extension Arca {
 
     /// Watch fills (trade history) for an exchange Arca object.
     ///
-    /// Two-phase fill delivery:
-    /// 1. `exchange.fill` — instant preview with venue data (market, side, size, price, total fee)
-    /// 2. `fill.recorded` — authoritative fill with platform-computed data (dir, position, fee breakdown)
+    /// Two-phase fill delivery with envelope-based correlation:
+    /// 1. `exchange.fill` — instant preview with venue data (matched by `correlationId`)
+    /// 2. `fill.recorded` — authoritative fill replaces preview (matched by `correlationId`)
     ///
-    /// Phase 2 replaces the preview. On reconnect, re-fetches from REST to reconcile gaps.
+    /// A convergence timeout fires if a preview doesn't receive its authoritative
+    /// update within the timeout window. On reconnect, re-fetches from REST to reconcile gaps.
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
@@ -377,8 +378,9 @@ extension Arca {
         let state = SendableBox<WatchStreamState>(.loading)
         let box = SendableBox<[Fill]>([])
         let fillIdSet = SendableBox<Set<String>>(Set())
-        let previewOrderIds = SendableBox<Set<String>>([])
-        let recordedOrderIds = SendableBox<Set<String>>([])
+        let previewCorrelations = SendableBox<[String: Task<Void, Never>]>([:])
+        let resolvedCorrelations = SendableBox<Set<String>>([])
+        let convergenceCallbacks = SendableBox<[UUID: @Sendable (String) -> Void]>([:])
         let fetchInFlight = SendableBox<Bool>(false)
 
         let objectPath: String?
@@ -394,6 +396,13 @@ extension Arca {
                 || (capturedPath != nil && event.entityPath == capturedPath)
         }
 
+        let clearAllTimers: @Sendable () -> Void = {
+            previewCorrelations.update { map in
+                for (_, task) in map { task.cancel() }
+                map.removeAll()
+            }
+        }
+
         let fetchFills: @Sendable () async -> Void = { [self] in
             guard !fetchInFlight.value else { return }
             fetchInFlight.update { $0 = true }
@@ -404,8 +413,8 @@ extension Arca {
                 ids.removeAll()
                 for f in resp.fills { ids.insert(f.id) }
             }
-            previewOrderIds.update { $0.removeAll() }
-            recordedOrderIds.update { $0.removeAll() }
+            clearAllTimers()
+            resolvedCorrelations.update { $0.removeAll() }
             state.update { $0 = .connected }
         }
 
@@ -430,7 +439,12 @@ extension Arca {
                 for await (simFill, event) in previewStream {
                     guard matchesObject(event) else { continue }
                     let orderId = simFill.orderId.rawValue
-                    guard !previewOrderIds.value.contains(orderId) && !recordedOrderIds.value.contains(orderId) else { continue }
+                    let correlationKey = event.correlationId ?? orderId
+
+                    if previewCorrelations.value[correlationKey] != nil || resolvedCorrelations.value.contains(correlationKey) {
+                        continue
+                    }
+
                     let preview = Fill(
                         id: simFill.id.rawValue,
                         operationId: nil,
@@ -452,7 +466,17 @@ extension Arca {
                         isLiquidation: simFill.isLiquidation,
                         createdAt: simFill.createdAt
                     )
-                    previewOrderIds.update { $0.insert(orderId) }
+
+                    let timerTask = Task {
+                        try? await Task.sleep(nanoseconds: FillWatchStream.convergenceTimeoutNs)
+                        guard !Task.isCancelled else { return }
+                        let stillPending = previewCorrelations.value[correlationKey] != nil
+                        guard stillPending else { return }
+                        let cbs = convergenceCallbacks.value
+                        for (_, cb) in cbs { cb(correlationKey) }
+                    }
+
+                    previewCorrelations.update { $0[correlationKey] = timerTask }
                     box.update { $0.insert(preview, at: 0) }
                     continuation.yield((preview, event))
                 }
@@ -460,22 +484,39 @@ extension Arca {
             let recordedTask = Task {
                 for await (fill, event) in recordedStream {
                     guard matchesObject(event) else { continue }
-                    if let orderId = fill.orderId, previewOrderIds.value.contains(orderId) {
-                        box.update { fills in
-                            if let idx = fills.firstIndex(where: { $0.orderId == orderId && $0.operationId == nil }) {
-                                fills[idx] = fill
-                            } else {
-                                fills.insert(fill, at: 0)
+                    let correlationKey = event.correlationId ?? fill.orderId
+
+                    var replaced = false
+                    if let key = correlationKey {
+                        let hadPreview = previewCorrelations.value[key] != nil
+                        if hadPreview {
+                            box.update { fills in
+                                if let idx = fills.firstIndex(where: { ($0.orderId == key || $0.orderId == fill.orderId) && $0.operationId == nil }) {
+                                    fills[idx] = fill
+                                    replaced = true
+                                }
+                            }
+                        } else {
+                            box.update { fills in
+                                if let idx = fills.firstIndex(where: { $0.orderId == key && $0.operationId == nil }) {
+                                    fills[idx] = fill
+                                    replaced = true
+                                }
                             }
                         }
-                        previewOrderIds.update { $0.remove(orderId) }
-                    } else {
+
+                        previewCorrelations.update { map in
+                            map[key]?.cancel()
+                            map.removeValue(forKey: key)
+                        }
+                        resolvedCorrelations.update { $0.insert(key) }
+                    }
+
+                    if !replaced {
                         guard !fillIdSet.value.contains(fill.id) else { continue }
                         box.update { $0.insert(fill, at: 0) }
                     }
-                    if let orderId = fill.orderId {
-                        recordedOrderIds.update { $0.insert(orderId) }
-                    }
+
                     fillIdSet.update { $0.insert(fill.id) }
                     continuation.yield((fill, event))
                 }
@@ -484,6 +525,7 @@ extension Arca {
             continuation.onTermination = { _ in
                 previewTask.cancel()
                 recordedTask.cancel()
+                clearAllTimers()
             }
         }
 
@@ -495,8 +537,10 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                clearAllTimers()
                 await ws.releaseChannel(.exchange)
-            }
+            },
+            convergenceCallbacks: convergenceCallbacks
         )
         return stream
     }

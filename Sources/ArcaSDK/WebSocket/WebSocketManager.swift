@@ -58,6 +58,9 @@ public actor WebSocketManager {
     private static let pingIntervalNs: UInt64 = 30_000_000_000  // 30s
     private static let staleThresholdS: TimeInterval = 45        // 45s
 
+    private var lastDeliverySeq: Int = 0
+    private var gapHandlers: [UUID: @Sendable (Int) -> Void] = [:]
+
     /// If set, called on each reconnect to obtain a fresh token.
     private let getToken: (@Sendable () async throws -> String)?
 
@@ -612,6 +615,7 @@ public actor WebSocketManager {
 
             if msgType == "authenticated" {
                 reconnectAttempt = 0
+                lastDeliverySeq = 0
                 setStatus(.connected)
                 startHeartbeat()
                 // Re-subscribe from raw subscription state
@@ -670,11 +674,43 @@ public actor WebSocketManager {
             }
         }
 
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let seq = json["deliverySeq"] as? Int {
+            checkDeliveryGap(seq)
+        }
+
         if let event = try? decoder.decode(RealmEvent.self, from: data) {
             for continuation in eventContinuations.values {
                 continuation.yield(event)
             }
         }
+    }
+
+    // MARK: - Delivery gap detection
+
+    private func checkDeliveryGap(_ seq: Int) {
+        if lastDeliverySeq > 0 && seq > lastDeliverySeq + 1 {
+            let missed = seq - lastDeliverySeq - 1
+            for handler in gapHandlers.values {
+                handler(missed)
+            }
+        }
+        lastDeliverySeq = seq
+    }
+
+    /// Register a handler that fires when a delivery sequence gap is detected.
+    /// The handler receives the number of missed events.
+    /// Returns an ID that can be passed to ``removeGapHandler`` to unregister.
+    @discardableResult
+    public func onGap(_ handler: @escaping @Sendable (Int) -> Void) -> UUID {
+        let id = UUID()
+        gapHandlers[id] = handler
+        return id
+    }
+
+    /// Remove a previously registered gap handler.
+    public func removeGapHandler(_ id: UUID) {
+        gapHandlers.removeValue(forKey: id)
     }
 
     // MARK: - Private: Reconnection

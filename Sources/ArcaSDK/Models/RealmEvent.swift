@@ -27,6 +27,13 @@ public struct RealmEvent: Codable, Sendable {
     public let recordedFill: Fill?
     public let funding: FundingPayment?
 
+    // Envelope fields (Convergent Event Spine)
+    public let eventId: String?
+    public let correlationId: String?
+    public let sequence: Int?
+    public let timestamp: String?
+    public let deliverySeq: Int?
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         realmId = try container.decodeIfPresent(String.self, forKey: .realmId)
@@ -47,6 +54,11 @@ public struct RealmEvent: Codable, Sendable {
         interval = try container.decodeIfPresent(String.self, forKey: .interval)
         candle = try container.decodeIfPresent(Candle.self, forKey: .candle)
         funding = try container.decodeIfPresent(FundingPayment.self, forKey: .funding)
+        eventId = try container.decodeIfPresent(String.self, forKey: .eventId)
+        correlationId = try container.decodeIfPresent(String.self, forKey: .correlationId)
+        sequence = try container.decodeIfPresent(Int.self, forKey: .sequence)
+        timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        deliverySeq = try container.decodeIfPresent(Int.self, forKey: .deliverySeq)
 
         if type == EventType.fillRecorded.rawValue {
             fill = nil
@@ -61,6 +73,7 @@ public struct RealmEvent: Codable, Sendable {
         case realmId, type, entityId, entityPath, summary, operation, event, object
         case mids, exchangeState, valuation, path, watchId, aggregation
         case coin, interval, candle, fill, funding
+        case eventId, correlationId, sequence, timestamp, deliverySeq
     }
 
     public init(
@@ -70,7 +83,9 @@ public struct RealmEvent: Codable, Sendable {
         valuation: ObjectValuation? = nil, path: String? = nil, watchId: String? = nil,
         aggregation: PathAggregation? = nil, coin: String? = nil, interval: String? = nil,
         candle: Candle? = nil, fill: SimFill? = nil, recordedFill: Fill? = nil,
-        funding: FundingPayment? = nil
+        funding: FundingPayment? = nil,
+        eventId: String? = nil, correlationId: String? = nil, sequence: Int? = nil,
+        timestamp: String? = nil, deliverySeq: Int? = nil
     ) {
         self.realmId = realmId; self.type = type; self.entityId = entityId; self.entityPath = entityPath
         self.summary = summary; self.operation = operation; self.event = event; self.object = object
@@ -78,5 +93,7 @@ public struct RealmEvent: Codable, Sendable {
         self.path = path; self.watchId = watchId; self.aggregation = aggregation
         self.coin = coin; self.interval = interval; self.candle = candle
         self.fill = fill; self.recordedFill = recordedFill; self.funding = funding
+        self.eventId = eventId; self.correlationId = correlationId; self.sequence = sequence
+        self.timestamp = timestamp; self.deliverySeq = deliverySeq
     }
 }

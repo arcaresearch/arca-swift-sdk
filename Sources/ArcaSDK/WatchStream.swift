@@ -304,10 +304,16 @@ public struct MaxOrderSizeWatchStream: Sendable {
 
 /// A stream of platform-level trade history for an exchange Arca object.
 ///
-/// Fetches initial fills via REST, then merges live `fill.recorded` WebSocket events.
-/// On reconnect, re-fetches from REST to reconcile any fills missed during the
-/// disconnection window.
+/// Two-phase fill delivery with envelope-based correlation:
+/// 1. `exchange.fill` — instant preview with venue data (matched by `correlationId`)
+/// 2. `fill.recorded` — authoritative fill replaces preview (matched by `correlationId`)
+///
+/// A convergence timeout fires if a preview doesn't receive its authoritative
+/// update within 10 seconds. On reconnect, re-fetches from REST to reconcile gaps.
 public struct FillWatchStream: Sendable {
+    /// Convergence timeout for preview fills awaiting authoritative updates.
+    public static let convergenceTimeoutNs: UInt64 = 10_000_000_000 // 10s
+
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
     /// Running list of fills, populated on initial fetch and updated live.
@@ -316,6 +322,23 @@ public struct FillWatchStream: Sendable {
     public let updates: AsyncStream<(Fill, RealmEvent)>
     /// Stop listening and unsubscribe from fill updates.
     public let stop: @Sendable () async -> Void
+
+    internal let convergenceCallbacks: SendableBox<[UUID: @Sendable (String) -> Void]>
+
+    /// Register a callback for convergence timeouts. Fires when a preview
+    /// (`exchange.fill`) doesn't receive its authoritative update (`fill.recorded`)
+    /// within the timeout window. Returns a UUID to remove the handler later.
+    @discardableResult
+    public func onConvergenceTimeout(_ handler: @escaping @Sendable (String) -> Void) -> UUID {
+        let id = UUID()
+        convergenceCallbacks.update { $0[id] = handler }
+        return id
+    }
+
+    /// Remove a previously registered convergence timeout handler.
+    public func removeConvergenceHandler(id: UUID) {
+        convergenceCallbacks.update { $0.removeValue(forKey: id) }
+    }
 
     /// Returns when the initial fill list has been fetched. Never throws.
     public func ready() async {
