@@ -5,13 +5,16 @@ import XCTest
 /// errors from `getObjectDetail` instead of silently falling back to watching "/".
 final class WatchErrorPropagationTests: XCTestCase {
 
+    private var sessionConfig: URLSessionConfiguration!
+
     override func setUp() {
         super.setUp()
-        URLProtocol.registerClass(ObjectNotFoundProtocol.self)
+        sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [ObjectNotFoundProtocol.self]
     }
 
     override func tearDown() {
-        URLProtocol.unregisterClass(ObjectNotFoundProtocol.self)
+        sessionConfig = nil
         super.tearDown()
     }
 
@@ -50,7 +53,8 @@ final class WatchErrorPropagationTests: XCTestCase {
     private func makeArca() -> Arca {
         try! Arca(
             token: fakeJwt(),
-            baseURL: URL(string: "http://localhost:19999")!
+            baseURL: URL(string: "http://localhost:19999")!,
+            urlSessionConfiguration: sessionConfig
         )
     }
 

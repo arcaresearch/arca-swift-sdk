@@ -26,14 +26,16 @@ extension Arca {
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
                 guard let self = self else { return }
-                guard let resp = try? await self.listOperations() else { return }
+                let resp = path != "/" ? try? await self.listOperations(path: path) : try? await self.listOperations()
+                guard let resp = resp else { return }
                 box.update { $0 = resp.operations }
             }
         }
 
         await ws.watchPath(path)
 
-        if let resp = try? await self.listOperations() {
+        let initialResp = path != "/" ? try? await self.listOperations(path: path) : try? await self.listOperations()
+        if let resp = initialResp {
             box.update { $0 = resp.operations }
         }
         state.update { $0 = .connected }

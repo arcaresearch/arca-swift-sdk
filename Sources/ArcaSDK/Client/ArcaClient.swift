@@ -25,12 +25,13 @@ public actor ArcaClient {
     public init(
         token: String,
         baseURL: URL,
+        urlSessionConfiguration: URLSessionConfiguration = .default,
         onUnauthorized: (@Sendable () async throws -> String)? = nil,
         onAuthError: (@Sendable (Error) -> Void)? = nil
     ) {
         self.token = token
         self.baseURL = baseURL.appendingPathComponent("api/v1")
-        self.session = URLSession(configuration: .default)
+        self.session = URLSession(configuration: urlSessionConfiguration)
         self.decoder = JSONDecoder()
         self.onUnauthorized = onUnauthorized
         self.onAuthError = onAuthError

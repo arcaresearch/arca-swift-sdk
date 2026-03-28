@@ -47,7 +47,8 @@ public final class Arca: Sendable {
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
         realmId: String? = nil,
         tokenProvider: TokenProvider? = nil,
-        cache: CacheConfig = CacheConfig()
+        cache: CacheConfig = CacheConfig(),
+        urlSessionConfiguration: URLSessionConfiguration = .default
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
@@ -70,6 +71,7 @@ public final class Arca: Sendable {
         self.client = ArcaClient(
             token: token,
             baseURL: baseURL,
+            urlSessionConfiguration: urlSessionConfiguration,
             onUnauthorized: onUnauthorized,
             onAuthError: onAuthError
         )
