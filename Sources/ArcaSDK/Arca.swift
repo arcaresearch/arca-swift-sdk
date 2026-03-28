@@ -224,3 +224,17 @@ public final class Arca: Sendable {
         return components.url!
     }
 }
+
+/// Validate that a path argument starts with "/".
+/// Paths without a trailing slash target a single object.
+/// Paths with a trailing slash aggregate all objects under that prefix.
+func validatePath(_ path: String) throws {
+    guard path.hasPrefix("/") else {
+        throw ArcaError.validation(
+            message: "Path must start with '/'. Got: \"\(path)\". " +
+            "Use a trailing slash for aggregation (e.g., '/users/alice/') " +
+            "or an exact path for a single object (e.g., '/users/alice/main').",
+            errorId: nil
+        )
+    }
+}

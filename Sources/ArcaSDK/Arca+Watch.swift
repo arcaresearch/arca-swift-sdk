@@ -106,7 +106,7 @@ extension Arca {
 
         await ws.watchPath(path)
 
-        if let objects = try? await self.listObjects(prefix: path == "/" ? nil : path) {
+        if let objects = try? await self.listObjects(path: path == "/" ? nil : path) {
             for obj in objects.objects {
                 if let bals = try? await self.getBalances(objectId: obj.id.rawValue), !bals.isEmpty {
                     box.update { $0[obj.id.rawValue] = BalanceSnapshot(entityId: obj.id.rawValue, entityPath: obj.path, balances: bals) }

@@ -62,21 +62,23 @@ extension Arca {
         ])
     }
 
-    /// Get the next unique nonce for a path prefix.
+    /// Get the next unique nonce for a path.
     ///
     /// Reserve the nonce *before* the operation and store the resulting path.
     /// Reuse the stored path on retry — never call `nonce()` inline inside an
     /// operation call, as each invocation produces a new unique path.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix (e.g. `/op/transfer/fund`)
-    ///   - separator: Override separator between prefix and nonce number.
-    ///     Default: `/` if prefix ends with `/`, otherwise `-`.
+    ///   - path: Path prefix for nonce generation (e.g. `/op/transfer/fund`).
+    ///     Always used as a prefix — the nonce number is appended.
+    ///   - separator: Override separator between path and nonce number.
+    ///     Default: `/` if path ends with `/`, otherwise `-`.
     ///     Use `:` for operation nonces.
-    public func nonce(prefix: String, separator: String? = nil) async throws -> NonceResponse {
+    public func nonce(path: String, separator: String? = nil) async throws -> NonceResponse {
+        try validatePath(path)
         var body: [String: String] = [
             "realmId": realm,
-            "prefix": prefix,
+            "prefix": path,
         ]
         if let separator = separator { body["separator"] = separator }
         return try await client.post("/nonce", body: body)

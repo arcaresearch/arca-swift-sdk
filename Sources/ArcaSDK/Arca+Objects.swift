@@ -102,10 +102,19 @@ extension Arca {
         try await client.get("/objects/\(objectId)")
     }
 
-    /// List Arca objects, optionally filtered by path prefix.
-    public func listObjects(prefix: String? = nil, includeDeleted: Bool = false) async throws -> ArcaObjectListResponse {
+    /// List Arca objects, optionally filtered by path.
+    ///
+    /// - Parameters:
+    ///   - path: Object path or path prefix to filter.
+    ///     Exact path (no trailing slash): returns the single matching object.
+    ///     Path prefix (trailing slash): returns all objects under that prefix.
+    ///   - includeDeleted: Include soft-deleted objects.
+    public func listObjects(path: String? = nil, includeDeleted: Bool = false) async throws -> ArcaObjectListResponse {
         var query: [String: String] = ["realmId": realm]
-        if let prefix = prefix { query["prefix"] = prefix }
+        if let path = path {
+            try validatePath(path)
+            query["prefix"] = path
+        }
         if includeDeleted { query["includeDeleted"] = "true" }
         return try await client.get("/objects", query: query)
     }
@@ -122,9 +131,14 @@ extension Arca {
         return try await getBalances(objectId: obj.id.rawValue)
     }
 
-    /// Browse objects in a folder-like structure at the given prefix.
-    public func browseObjects(prefix: String = "/", includeDeleted: Bool = false) async throws -> ArcaObjectBrowseResponse {
-        var query: [String: String] = ["realmId": realm, "prefix": prefix]
+    /// Browse objects in a folder-like structure at the given path.
+    ///
+    /// - Parameters:
+    ///   - path: Path prefix to browse (default: "/"). Must start with "/".
+    ///   - includeDeleted: Include soft-deleted objects.
+    public func browseObjects(path: String = "/", includeDeleted: Bool = false) async throws -> ArcaObjectBrowseResponse {
+        try validatePath(path)
+        var query: [String: String] = ["realmId": realm, "prefix": path]
         if includeDeleted { query["includeDeleted"] = "true" }
         return try await client.get("/objects/browse", query: query)
     }

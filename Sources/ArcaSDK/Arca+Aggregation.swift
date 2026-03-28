@@ -12,55 +12,66 @@ extension Arca {
         try await client.get("/objects/valuation", query: ["realmId": realm, "path": path])
     }
 
-    /// Get aggregated valuation for all objects under a path prefix.
+    /// Get aggregated valuation for objects at a path.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix to aggregate
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): returns valuation for a single object.
+    ///     Path prefix (trailing slash): returns aggregated valuation for all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - asOf: Optional timestamp for historical aggregation
-    public func getPathAggregation(prefix: String, asOf: String? = nil) async throws -> PathAggregation {
-        var query: [String: String] = ["realmId": realm, "prefix": prefix]
+    public func getPathAggregation(path: String, asOf: String? = nil) async throws -> PathAggregation {
+        try validatePath(path)
+        var query: [String: String] = ["realmId": realm, "prefix": path]
         if let asOf = asOf { query["asOf"] = asOf }
         return try await client.get("/objects/aggregate", query: query)
     }
 
-    /// Get P&L for objects under a path prefix over a time range.
+    /// Get P&L for objects at a path over a time range.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): returns P&L for a single object.
+    ///     Path prefix (trailing slash): returns aggregated P&L for all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
-    public func getPnl(prefix: String, from: String, to: String) async throws -> PnlResponse {
-        try await client.get("/objects/pnl", query: [
+    public func getPnl(path: String, from: String, to: String) async throws -> PnlResponse {
+        try validatePath(path)
+        return try await client.get("/objects/pnl", query: [
             "realmId": realm,
-            "prefix": prefix,
+            "prefix": path,
             "from": from,
             "to": to,
         ])
     }
 
-    /// Get P&L history (time-series) for objects under a path prefix.
-    /// Returns P&L and equity values adjusted for external flows.
+    /// Get P&L history (time-series) for objects at a path.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): returns P&L history for a single object.
+    ///     Path prefix (trailing slash): returns aggregated P&L history for all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
     ///   - points: Number of samples (default 200, max 1000)
     public func getPnlHistory(
-        prefix: String,
+        path: String,
         from: String,
         to: String,
         points: Int = 200
     ) async throws -> PnlHistoryResponse {
+        try validatePath(path)
         let key = buildCacheKey("pnlHistory", [
-            "prefix": prefix, "from": from, "to": to, "points": String(points),
+            "prefix": path, "from": from, "to": to, "points": String(points),
         ])
         if let cached: PnlHistoryResponse = await historyCache.get(key) {
             return cached
         }
         let result: PnlHistoryResponse = try await client.get("/objects/pnl/history", query: [
             "realmId": realm,
-            "prefix": prefix,
+            "prefix": path,
             "from": from,
             "to": to,
             "points": String(points),
@@ -69,28 +80,32 @@ extension Arca {
         return result
     }
 
-    /// Get equity history (time-series) for objects under a path prefix.
+    /// Get equity history (time-series) for objects at a path.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): returns equity history for a single object.
+    ///     Path prefix (trailing slash): returns aggregated equity history for all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
     ///   - points: Number of samples (default 200, max 1000)
     public func getEquityHistory(
-        prefix: String,
+        path: String,
         from: String,
         to: String,
         points: Int = 200
     ) async throws -> EquityHistoryResponse {
+        try validatePath(path)
         let key = buildCacheKey("equityHistory", [
-            "prefix": prefix, "from": from, "to": to, "points": String(points),
+            "prefix": path, "from": from, "to": to, "points": String(points),
         ])
         if let cached: EquityHistoryResponse = await historyCache.get(key) {
             return cached
         }
         let result: EquityHistoryResponse = try await client.get("/objects/aggregate/history", query: [
             "realmId": realm,
-            "prefix": prefix,
+            "prefix": path,
             "from": from,
             "to": to,
             "points": String(points),
@@ -105,26 +120,30 @@ extension Arca {
     /// and a new live point starts.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix to chart
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): chart for a single object.
+    ///     Path prefix (trailing slash): chart aggregated across all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
     ///   - points: Number of historical samples (default 200, max 1000)
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
     public func watchEquityChart(
-        prefix: String,
+        path: String,
         from: String,
         to: String,
         points: Int = 200,
         exchange: String = "sim"
     ) async throws -> EquityChartStream {
+        try validatePath(path)
         let history: EquityHistoryResponse
         do {
-            history = try await getEquityHistory(prefix: prefix, from: from, to: to, points: points)
+            history = try await getEquityHistory(path: path, from: from, to: to, points: points)
         } catch {
-            history = EquityHistoryResponse(prefix: prefix, from: from, to: to, points: 0, equityPoints: [])
+            history = EquityHistoryResponse(prefix: path, from: from, to: to, points: 0, equityPoints: [])
         }
         let aggStream = try await watchAggregation(
-            sources: [AggregationSource(type: .prefix, value: prefix)],
+            sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange
         )
 
@@ -185,22 +204,26 @@ extension Arca {
     /// current live P&L. Operation events update cumulative flows client-side.
     ///
     /// - Parameters:
-    ///   - prefix: Path prefix to chart
+    ///   - path: Object path or path prefix.
+    ///     Exact path (no trailing slash): P&L chart for a single object.
+    ///     Path prefix (trailing slash): P&L chart aggregated across all objects under that prefix.
+    ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
     ///   - points: Number of historical samples (default 200, max 1000)
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
     public func watchPnlChart(
-        prefix: String,
+        path: String,
         from: String,
         to: String,
         points: Int = 200,
         exchange: String = "sim"
     ) async throws -> PnlChartStream {
-        let history = try await getPnlHistory(prefix: prefix, from: from, to: to, points: points)
-        await ws.watchPath(prefix)
+        try validatePath(path)
+        let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
+        await ws.watchPath(path)
         let aggStream = try await watchAggregation(
-            sources: [AggregationSource(type: .prefix, value: prefix)],
+            sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange
         )
         let opStream = await ws.operationEvents()
@@ -285,12 +308,12 @@ extension Arca {
                     }
                     let valueUsd = amount * price
 
-                    let prefixMode = prefix.hasSuffix("/")
+                    let prefixMode = path.hasSuffix("/")
                     let sourceIn = op.sourceArcaPath.map {
-                        prefixMode ? $0.hasPrefix(prefix) : $0 == prefix
+                        prefixMode ? $0.hasPrefix(path) : $0 == path
                     } ?? false
                     let targetIn = op.targetArcaPath.map {
-                        prefixMode ? $0.hasPrefix(prefix) : $0 == prefix
+                        prefixMode ? $0.hasPrefix(path) : $0 == path
                     } ?? false
 
                     var direction: String?
@@ -334,7 +357,7 @@ extension Arca {
             chart: chartBox,
             updates: updates,
             stop: {
-                await self.ws.unwatchPath(prefix)
+                await self.ws.unwatchPath(path)
                 await aggStream.stop()
             }
         )
