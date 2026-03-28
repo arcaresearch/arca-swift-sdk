@@ -45,6 +45,11 @@ struct PositionListResponse: Codable, Sendable {
     let total: Int
 }
 
+struct OrderListResponse: Codable, Sendable {
+    let orders: [SimOrder]
+    let total: Int
+}
+
 public struct SimOrder: Codable, Sendable {
     public let id: SimOrderID
     public let accountId: SimAccountID?

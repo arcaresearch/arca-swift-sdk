@@ -181,7 +181,8 @@ extension Arca {
     public func listOrders(objectId: String, status: String? = nil) async throws -> [SimOrder] {
         var query: [String: String] = [:]
         if let status = status { query["status"] = status }
-        return try await client.get("/objects/\(objectId)/exchange/orders", query: query)
+        let response: OrderListResponse = try await client.get("/objects/\(objectId)/exchange/orders", query: query)
+        return response.orders
     }
 
     /// Get a specific order with its fills.

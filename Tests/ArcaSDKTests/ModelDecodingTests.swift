@@ -448,6 +448,80 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(envelope.data?.positions[0].coin, "hl:BTC")
     }
 
+    func testOrderListResponseDecoding() throws {
+        let json = """
+        {
+            "orders": [
+                {
+                    "id": "ord_01abc",
+                    "accountId": "act_01abc",
+                    "realmId": "rlm_01def",
+                    "coin": "hl:BTC",
+                    "side": "SELL",
+                    "orderType": "LIMIT",
+                    "price": "66300",
+                    "size": "0.1",
+                    "filledSize": "0",
+                    "status": "WAITING_FOR_TRIGGER",
+                    "reduceOnly": true,
+                    "timeInForce": "GTC",
+                    "leverage": 5,
+                    "isTrigger": true,
+                    "triggerPx": "66300",
+                    "tpsl": "tp",
+                    "grouping": "positionTpsl",
+                    "createdAt": "2026-03-28T03:50:00.000000Z",
+                    "updatedAt": "2026-03-28T03:50:00.000000Z"
+                }
+            ],
+            "total": 1
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(OrderListResponse.self, from: json)
+        XCTAssertEqual(response.orders.count, 1)
+        XCTAssertEqual(response.total, 1)
+        let order = response.orders[0]
+        XCTAssertEqual(order.id.rawValue, "ord_01abc")
+        XCTAssertEqual(order.coin, "hl:BTC")
+        XCTAssertEqual(order.side, .sell)
+        XCTAssertEqual(order.isTrigger, true)
+        XCTAssertEqual(order.triggerPx, "66300")
+        XCTAssertEqual(order.tpsl, "tp")
+        XCTAssertEqual(order.grouping, "positionTpsl")
+    }
+
+    func testOrderListResponseDecodingViaAPIEnvelope() throws {
+        let json = """
+        {
+            "success": true,
+            "data": {
+                "orders": [
+                    {
+                        "id": "ord_01abc",
+                        "coin": "hl:BTC",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "price": "60000",
+                        "size": "0.5",
+                        "filledSize": "0",
+                        "status": "OPEN",
+                        "reduceOnly": false,
+                        "timeInForce": "GTC",
+                        "leverage": 3
+                    }
+                ],
+                "total": 1
+            }
+        }
+        """.data(using: .utf8)!
+
+        let envelope = try decoder.decode(APIResponse<OrderListResponse>.self, from: json)
+        XCTAssertTrue(envelope.success)
+        XCTAssertEqual(envelope.data?.orders.count, 1)
+        XCTAssertEqual(envelope.data?.orders[0].coin, "hl:BTC")
+    }
+
     func testExchangeStateDecodingWithOpenOrders() throws {
         let json = """
         {
