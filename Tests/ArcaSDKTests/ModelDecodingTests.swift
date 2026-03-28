@@ -384,6 +384,25 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(delta.afterValue, "500")
     }
 
+    func testStateDeltaLabelsChangeDecoding() throws {
+        let json = """
+        {
+            "id": "dlt_01abc",
+            "realmId": "rlm_01def",
+            "eventId": "evt_01ghi",
+            "arcaPath": "/wallets/main/.info",
+            "deltaType": "labels_change",
+            "beforeValue": "{}",
+            "afterValue": "{\\"tier\\": \\"gold\\"}",
+            "createdAt": "2026-03-07T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let delta = try decoder.decode(StateDelta.self, from: json)
+        XCTAssertEqual(delta.deltaType, .labelsChange)
+        XCTAssertEqual(delta.beforeValue, "{}")
+    }
+
     // MARK: - Exchange State
 
     func testExchangeStateDecoding() throws {

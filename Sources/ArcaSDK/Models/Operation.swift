@@ -229,6 +229,7 @@ public enum DeltaType: String, Codable, Sendable {
     case positionChange = "position_change"
     case statusChange = "status_change"
     case holdChange = "hold_change"
+    case labelsChange = "labels_change"
     case creation
     case deletion
 }
