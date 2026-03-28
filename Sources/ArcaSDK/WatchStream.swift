@@ -50,6 +50,15 @@ public final class SendableBox<T: Sendable>: @unchecked Sendable {
         transform(&_value)
         lock.unlock()
     }
+
+    /// Atomically mutate the value and return the post-mutation snapshot.
+    public func updateAndGet(_ transform: (inout T) -> Void) -> T {
+        lock.lock()
+        transform(&_value)
+        let result = _value
+        lock.unlock()
+        return result
+    }
 }
 
 // MARK: - BalanceWatchStream

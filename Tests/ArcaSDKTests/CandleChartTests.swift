@@ -194,6 +194,106 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(existing[0].t, 3000)
     }
 
+    // MARK: - SendableBox.updateAndGet
+
+    func testUpdateAndGetReturnsPostMutationSnapshot() {
+        let box = SendableBox<[Int]>([1, 2, 3])
+        let snapshot = box.updateAndGet { $0.append(4) }
+        XCTAssertEqual(snapshot, [1, 2, 3, 4])
+        XCTAssertEqual(box.value, [1, 2, 3, 4])
+    }
+
+    func testUpdateAndGetIsAtomic() {
+        let box = SendableBox<[Int]>([])
+        let iterations = 1000
+
+        let expectation = XCTestExpectation(description: "concurrent updates")
+        expectation.expectedFulfillmentCount = iterations
+
+        for i in 0..<iterations {
+            DispatchQueue.global().async {
+                let snapshot = box.updateAndGet { $0.append(i) }
+                XCTAssertTrue(snapshot.contains(i))
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 10)
+        XCTAssertEqual(box.value.count, iterations)
+    }
+
+    // MARK: - Candle array monotonicity
+
+    func testApplyCandleNeverShrinks() {
+        var arr = (0..<300).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let initialCount = arr.count
+
+        // In-progress updates to the last candle
+        for i in 0..<50 {
+            applyCandle(makeCandle(t: 299 * 60_000, c: "update_\(i)"), to: &arr)
+            XCTAssertGreaterThanOrEqual(arr.count, initialCount,
+                "In-progress update should not shrink: \(arr.count) < \(initialCount)")
+        }
+
+        // New candles appended
+        for i in 300..<320 {
+            applyCandle(makeCandle(t: i * 60_000, c: "\(i)"), to: &arr)
+            XCTAssertGreaterThanOrEqual(arr.count, initialCount,
+                "Append should not shrink: \(arr.count) < \(initialCount)")
+        }
+        XCTAssertEqual(arr.count, 320)
+    }
+
+    func testGapRecoveryMergeNeverShrinks() {
+        var arr = (0..<300).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let initialCount = arr.count
+
+        // Gap recovery: fetch last 50 candles (overlapping with tail of existing)
+        let gapCandles = (280..<310).map { makeCandle(t: $0 * 60_000, c: "gap_\($0)") }
+        arr.append(contentsOf: gapCandles)
+        arr = dedupCandles(arr)
+
+        XCTAssertGreaterThanOrEqual(arr.count, initialCount,
+            "Gap recovery merge should not shrink: \(arr.count) < \(initialCount)")
+        XCTAssertEqual(arr.count, 310)
+    }
+
+    func testLoadMoreMergeNeverShrinks() {
+        var arr = (100..<400).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let initialCount = arr.count
+
+        // Load older candles with partial overlap
+        let older = (0..<120).map { makeCandle(t: $0 * 60_000, c: "old_\($0)") }
+        arr.insert(contentsOf: older, at: 0)
+        arr = dedupCandles(arr)
+
+        XCTAssertGreaterThanOrEqual(arr.count, initialCount,
+            "loadMore merge should not shrink: \(arr.count) < \(initialCount)")
+        XCTAssertEqual(arr.count, 400)
+    }
+
+    func testReconnectCyclePreservesCandles() {
+        // Simulate full lifecycle: initial load → WS events → disconnect → reconnect → gap recovery
+        var arr = (0..<300).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+
+        // Live WS events update and extend
+        applyCandle(makeCandle(t: 299 * 60_000, c: "live_update"), to: &arr)
+        applyCandle(makeCandle(t: 300 * 60_000, c: "300"), to: &arr)
+        applyCandle(makeCandle(t: 301 * 60_000, c: "301"), to: &arr)
+        XCTAssertEqual(arr.count, 302)
+
+        // Disconnect happens — no changes to array
+        // Reconnect — gap recovery fetches last 50 candles
+        let gapCandles = (290..<305).map { makeCandle(t: $0 * 60_000, c: "gap_\($0)") }
+        arr.append(contentsOf: gapCandles)
+        arr = dedupCandles(arr)
+
+        XCTAssertEqual(arr.count, 305)
+        // Original candles preserved (not overwritten by gap for non-overlapping range)
+        XCTAssertEqual(arr[0].t, 0)
+        XCTAssertEqual(arr[0].c, "0")
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

@@ -55,16 +55,32 @@ extension Arca {
         candlesBox.update { $0 = dedupCandles(history.candles) }
         state.update { $0 = .connected }
 
+        let previousCount = SendableBox<Int>(0)
+
         let updates = AsyncStream<CandleChartUpdate> { continuation in
             continuationBox.update { $0 = continuation }
 
+            let yieldSnapshot: @Sendable ([Candle], Candle) -> Void = { snapshot, trigger in
+                let count = snapshot.count
+                let prev = previousCount.value
+                if count < prev {
+                    #if DEBUG
+                    print("[ArcaSDK] WARNING: candle array shrunk \(prev) → \(count)")
+                    #endif
+                    return
+                }
+                previousCount.update { $0 = max($0, count) }
+                continuation.yield(CandleChartUpdate(
+                    candles: snapshot,
+                    latestCandle: trigger
+                ))
+            }
+
             // Emit the historical snapshot immediately so `for await` renders
             // the chart on the very first iteration — no waiting for a WS event.
-            if let last = candlesBox.value.last {
-                continuation.yield(CandleChartUpdate(
-                    candles: candlesBox.value,
-                    latestCandle: last
-                ))
+            let initial = candlesBox.value
+            if let last = initial.last {
+                yieldSnapshot(initial, last)
             }
 
             let candleTask = Task { [weak ws] in
@@ -73,13 +89,10 @@ extension Arca {
                           event.interval == interval else { continue }
 
                     let latest = event.candle
-                    candlesBox.update { arr in
+                    let snapshot = candlesBox.updateAndGet { arr in
                         applyCandle(latest, to: &arr)
                     }
-                    continuation.yield(CandleChartUpdate(
-                        candles: candlesBox.value,
-                        latestCandle: latest
-                    ))
+                    yieldSnapshot(snapshot, latest)
                     _ = ws
                 }
                 continuation.finish()
@@ -100,15 +113,12 @@ extension Arca {
                                 interval: interval,
                                 startTime: gapStart
                             ), !res.candles.isEmpty {
-                                candlesBox.update { arr in
+                                let snapshot = candlesBox.updateAndGet { arr in
                                     arr.append(contentsOf: res.candles)
                                     arr = dedupCandles(arr)
                                 }
-                                if let last = candlesBox.value.last {
-                                    continuation.yield(CandleChartUpdate(
-                                        candles: candlesBox.value,
-                                        latestCandle: last
-                                    ))
+                                if let last = snapshot.last {
+                                    yieldSnapshot(snapshot, last)
                                 }
                             }
                         }
@@ -149,19 +159,18 @@ extension Arca {
                 return false
             }
 
-            candlesBox.update { arr in
+            let snapshot = candlesBox.updateAndGet { arr in
                 arr.insert(contentsOf: res.candles, at: 0)
                 arr = dedupCandles(arr)
             }
 
-            if let cont = continuationBox.value {
-                let snapshot = candlesBox.value
-                if let first = snapshot.first {
-                    cont.yield(CandleChartUpdate(
-                        candles: snapshot,
-                        latestCandle: first
-                    ))
-                }
+            if let cont = continuationBox.value, let first = snapshot.first {
+                let count = snapshot.count
+                previousCount.update { $0 = max($0, count) }
+                cont.yield(CandleChartUpdate(
+                    candles: snapshot,
+                    latestCandle: first
+                ))
             }
 
             return true

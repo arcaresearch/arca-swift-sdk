@@ -187,6 +187,8 @@ await chart.stop()
 
 `watchCandleChart` merges historical OHLCV candles from the REST API with real-time WebSocket candle events into a single continuously-updating array. It handles subscribe-before-fetch ordering, deduplication, in-place updates for open candles, and automatic gap recovery on reconnection.
 
+Each `CandleChartUpdate.candles` contains the **complete** merged array — it never shrinks. The array grows as new bars form and prepends when `loadMore()` is called.
+
 ```swift
 let chart = try await arca.watchCandleChart(
     coin: "hl:1:BRENTOIL",
@@ -195,12 +197,26 @@ let chart = try await arca.watchCandleChart(
 )
 
 for await update in chart.updates {
-    // update.candles — full sorted array (historical + live)
+    // update.candles — full sorted array (historical + live), always growing
     // update.latestCandle — the candle that triggered this update
     renderCandleChart(update.candles)
 }
 
 await chart.stop()
+```
+
+**Important**: Only one `for await` loop should consume a given stream's `updates` at a time. When switching coins or intervals, cancel the previous task and call `stop()` before creating a new stream. In SwiftUI, use `.task(id:)` to get automatic cancellation:
+
+```swift
+.task(id: "\(coin):\(interval.rawValue)") {
+    guard let chart = try? await arca.watchCandleChart(
+        coin: coin, interval: interval
+    ) else { return }
+    defer { Task { await chart.stop() } }
+    for await update in chart.updates {
+        self.candles = update.candles
+    }
+}
 ```
 
 ### Loading older candles
