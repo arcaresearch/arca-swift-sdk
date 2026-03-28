@@ -370,6 +370,9 @@ extension Arca {
 
     /// Get OHLCV candle data for a specific coin.
     ///
+    /// When `candleCdnBaseUrl` is configured and the interval is not `15s`,
+    /// fetches from CDN chunks for historical data with REST API fallback.
+    ///
     /// - Parameters:
     ///   - coin: Canonical coin ID (e.g. `hl:BTC`, `hl:ETH`)
     ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
@@ -390,6 +393,29 @@ extension Arca {
         if let cached: CandlesResponse = await historyCache.get(key) {
             return cached
         }
+
+        // Use CDN path when configured and interval supports chunks
+        if let cdnBase = candleCdnBaseUrl, interval != .fifteenSeconds,
+           let start = startTime, let end = endTime {
+            let candles = try await CandleCDN.fetchCandlesFromCDN(
+                baseUrl: cdnBase,
+                coin: coin,
+                interval: interval,
+                startMs: start,
+                endMs: end,
+                apiFallback: { [client] s, e in
+                    var q: [String: String] = ["interval": interval.rawValue]
+                    q["startTime"] = String(s)
+                    q["endTime"] = String(e)
+                    let resp: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: q)
+                    return resp.candles
+                }
+            )
+            let result = CandlesResponse(coin: coin, interval: interval.rawValue, candles: candles)
+            await historyCache.set(key, value: result)
+            return result
+        }
+
         var query: [String: String] = ["interval": interval.rawValue]
         if let startTime = startTime { query["startTime"] = String(startTime) }
         if let endTime = endTime { query["endTime"] = String(endTime) }

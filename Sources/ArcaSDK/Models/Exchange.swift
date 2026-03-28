@@ -353,6 +353,8 @@ public struct Candle: Codable, Sendable {
     public let c: String
     public let v: String
     public let n: Int
+    /// Data source. `nil` = venue-native (Hyperliquid), `"ext"` = external historical data.
+    public let s: String?
 }
 
 public struct CandlesResponse: Codable, Sendable {

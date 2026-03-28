@@ -31,6 +31,10 @@ public final class Arca: Sendable {
     public let tokenManager: TokenManager
     public let historyCache: HistoryCache
 
+    /// Base URL for the candle CDN (e.g. `https://cdn.arcaos.io`).
+    /// When set, `getCandles` fetches from CDN chunks for historical data.
+    public let candleCdnBaseUrl: String?
+
     private let realmId: String
 
     /// Initialize the SDK from a scoped JWT token, with optional automatic refresh.
@@ -48,11 +52,13 @@ public final class Arca: Sendable {
         realmId: String? = nil,
         tokenProvider: TokenProvider? = nil,
         cache: CacheConfig = CacheConfig(),
-        urlSessionConfiguration: URLSessionConfiguration = .default
+        urlSessionConfiguration: URLSessionConfiguration = .default,
+        candleCdnBaseUrl: String? = nil
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
         self.realmId = resolved
+        self.candleCdnBaseUrl = candleCdnBaseUrl
         self.tokenManager = TokenManager(provider: tokenProvider)
         self.historyCache = HistoryCache(config: cache)
 
@@ -104,9 +110,11 @@ public final class Arca: Sendable {
         tokenManager: TokenManager,
         client: ArcaClient,
         ws: WebSocketManager,
-        historyCache: HistoryCache
+        historyCache: HistoryCache,
+        candleCdnBaseUrl: String? = nil
     ) {
         self.realmId = realmId
+        self.candleCdnBaseUrl = candleCdnBaseUrl
         self.tokenManager = tokenManager
         self.client = client
         self.ws = ws
@@ -124,7 +132,8 @@ public final class Arca: Sendable {
         _ tokenProvider: @escaping TokenProvider,
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
         realmId: String? = nil,
-        cache: CacheConfig = CacheConfig()
+        cache: CacheConfig = CacheConfig(),
+        candleCdnBaseUrl: String? = nil
     ) async throws -> Arca {
         let token = try await tokenProvider()
         return try Arca(
@@ -132,7 +141,8 @@ public final class Arca: Sendable {
             baseURL: baseURL,
             realmId: realmId,
             tokenProvider: tokenProvider,
-            cache: cache
+            cache: cache,
+            candleCdnBaseUrl: candleCdnBaseUrl
         )
     }
 
