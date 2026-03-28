@@ -10,7 +10,7 @@ final class WatchErrorPropagationTests: XCTestCase {
     override func setUp() {
         super.setUp()
         sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [ObjectNotFoundProtocol.self]
+        sessionConfig.protocolClasses = [ObjectNotFoundProtocol.self] + (sessionConfig.protocolClasses ?? [])
     }
 
     override func tearDown() {
