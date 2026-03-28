@@ -223,6 +223,113 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(op.state, .completed)
     }
 
+    func testOperationDecodingWithParsedOutcomeContainingArray() throws {
+        let json = """
+        {
+            "id": "op_recon01",
+            "realmId": "rlm_01def",
+            "path": "/op/fill/exchanges/main/ord_01/op_recon01",
+            "type": "fill",
+            "state": "completed",
+            "sourceArcaPath": null,
+            "targetArcaPath": "/exchanges/main",
+            "input": null,
+            "outcome": null,
+            "parsedOutcome": {
+                "status": "matched",
+                "equity": "10500.25",
+                "positionCount": 3,
+                "positionDetail": [
+                    {"coin": "BTC", "size": "0.1", "side": "LONG"},
+                    {"coin": "ETH", "size": "2.0", "side": "SHORT"}
+                ],
+                "isReconciled": true,
+                "extra": null
+            },
+            "actorType": "system",
+            "actorId": "venue-reconciliation",
+            "tokenJti": null,
+            "createdAt": "2026-03-28T10:00:00.000000Z",
+            "updatedAt": "2026-03-28T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertEqual(op.type, .fill)
+        XCTAssertEqual(op.state, .completed)
+
+        let parsed = try XCTUnwrap(op.parsedOutcome)
+        XCTAssertEqual(parsed["status"], .string("matched"))
+        XCTAssertEqual(parsed["equity"], .string("10500.25"))
+        XCTAssertEqual(parsed["positionCount"], .int(3))
+        XCTAssertEqual(parsed["isReconciled"], .bool(true))
+        XCTAssertEqual(parsed["extra"], .null)
+
+        guard case .array(let positions) = parsed["positionDetail"] else {
+            XCTFail("positionDetail should be an array")
+            return
+        }
+        XCTAssertEqual(positions.count, 2)
+        guard case .object(let first) = positions[0] else {
+            XCTFail("first element should be an object")
+            return
+        }
+        XCTAssertEqual(first["coin"], .string("BTC"))
+        XCTAssertEqual(first["side"], .string("LONG"))
+    }
+
+    func testOperationDecodingWithNilParsedOutcome() throws {
+        let json = """
+        {
+            "id": "op_01abc",
+            "realmId": "rlm_01def",
+            "path": "/op/transfer/1",
+            "type": "transfer",
+            "state": "completed",
+            "sourceArcaPath": "/wallets/a",
+            "targetArcaPath": "/wallets/b",
+            "input": null,
+            "outcome": null,
+            "parsedOutcome": null,
+            "actorType": "BUILDER",
+            "actorId": "usr_01xyz",
+            "tokenJti": null,
+            "createdAt": "2026-03-07T10:00:00.000000Z",
+            "updatedAt": "2026-03-07T10:01:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        XCTAssertNil(op.parsedOutcome)
+    }
+
+    func testOperationDecodingWithStringOnlyParsedOutcome() throws {
+        let json = """
+        {
+            "id": "op_01abc",
+            "realmId": "rlm_01def",
+            "path": "/op/transfer/1",
+            "type": "transfer",
+            "state": "completed",
+            "sourceArcaPath": null,
+            "targetArcaPath": null,
+            "input": null,
+            "outcome": null,
+            "parsedOutcome": {"status": "ok", "amount": "100.50"},
+            "actorType": "BUILDER",
+            "actorId": "usr_01xyz",
+            "tokenJti": null,
+            "createdAt": "2026-03-07T10:00:00.000000Z",
+            "updatedAt": "2026-03-07T10:01:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let op = try decoder.decode(Operation.self, from: json)
+        let parsed = try XCTUnwrap(op.parsedOutcome)
+        XCTAssertEqual(parsed["status"]?.stringValue, "ok")
+        XCTAssertEqual(parsed["amount"]?.stringValue, "100.50")
+    }
+
     func testOperationStateTerminal() {
         XCTAssertTrue(OperationState.completed.isTerminal)
         XCTAssertTrue(OperationState.failed.isTerminal)

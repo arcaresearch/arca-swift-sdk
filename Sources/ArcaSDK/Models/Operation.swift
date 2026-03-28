@@ -1,5 +1,65 @@
 import Foundation
 
+// MARK: - JSONValue
+
+/// Type-erased JSON value for fields like `parsedOutcome` where the server
+/// may return strings, numbers, booleans, arrays, or nested objects.
+public enum JSONValue: Codable, Sendable, Equatable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case array([JSONValue])
+    case object([String: JSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let v = try? container.decode(Bool.self) {
+            self = .bool(v)
+        } else if let v = try? container.decode(Int.self) {
+            self = .int(v)
+        } else if let v = try? container.decode(Double.self) {
+            self = .double(v)
+        } else if let v = try? container.decode(String.self) {
+            self = .string(v)
+        } else if let v = try? container.decode([JSONValue].self) {
+            self = .array(v)
+        } else if let v = try? container.decode([String: JSONValue].self) {
+            self = .object(v)
+        } else {
+            self = .null
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try container.encode(v)
+        case .int(let v): try container.encode(v)
+        case .double(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .array(let v): try container.encode(v)
+        case .object(let v): try container.encode(v)
+        case .null: try container.encodeNil()
+        }
+    }
+
+    /// Convenience accessor for string values.
+    public var stringValue: String? {
+        if case .string(let v) = self { return v }
+        return nil
+    }
+
+    /// Convenience accessor for integer values.
+    public var intValue: Int? {
+        if case .int(let v) = self { return v }
+        return nil
+    }
+}
+
 // MARK: - Operation
 
 public enum OperationType: String, Codable, Sendable {
@@ -41,7 +101,7 @@ public struct Operation: Codable, Sendable {
     public let targetArcaPath: String?
     public let input: String?
     public let outcome: String?
-    public let parsedOutcome: [String: String]?
+    public let parsedOutcome: [String: JSONValue]?
     public let failureMessage: String?
     public let actorType: String?
     public let actorId: UserID?
