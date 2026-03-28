@@ -32,6 +32,14 @@ extension Arca {
             }
         }
 
+        let gapId = await ws.onGap { [weak self] _ in
+            Task { [weak self] in
+                guard let self = self else { return }
+                guard let resp = try? await self.listOperations() else { return }
+                box.update { $0 = resp.operations }
+            }
+        }
+
         await ws.acquireChannel(.operations)
 
         let operationUpdates = await ws.operationEvents()
@@ -58,6 +66,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                await ws.removeGapHandler(gapId)
                 await ws.removeSnapshotHandler(channel: "operations", id: snapshotId)
                 await ws.releaseChannel(.operations)
             }
@@ -99,6 +108,17 @@ extension Arca {
             }
         }
 
+        let gapId = await ws.onGap { [weak self] _ in
+            Task { [weak self] in
+                guard let self = self else { return }
+                let entities = box.value
+                for (entityId, snap) in entities {
+                    guard let bals = try? await self.getBalances(objectId: entityId) else { continue }
+                    box.update { $0[entityId] = BalanceSnapshot(entityId: entityId, entityPath: snap.entityPath, balances: bals) }
+                }
+            }
+        }
+
         await ws.acquireChannel(.balances)
 
         let balanceUpdates = await ws.balanceEvents()
@@ -122,6 +142,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                await ws.removeGapHandler(gapId)
                 await ws.removeSnapshotHandler(channel: "balances", id: snapshotId)
                 await ws.releaseChannel(.balances)
             }
@@ -539,6 +560,10 @@ extension Arca {
             }
         }
 
+        let gapId = await ws.onGap { _ in
+            Task { await fetchFills() }
+        }
+
         await ws.acquireChannel(.exchange)
 
         let previewStream = await ws.fillEvents()
@@ -648,6 +673,7 @@ extension Arca {
             stop: { [ws] in
                 statusTask.cancel()
                 clearAllTimers()
+                await ws.removeGapHandler(gapId)
                 await ws.releaseChannel(.exchange)
             },
             convergenceCallbacks: convergenceCallbacks
