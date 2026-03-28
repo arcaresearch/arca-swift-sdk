@@ -104,8 +104,8 @@ public extension SimOrder {
 public struct SimFill: Codable, Sendable {
     public let id: SimFillID
     public let orderId: SimOrderID
-    public let accountId: SimAccountID
-    public let realmId: RealmID
+    public let accountId: SimAccountID?
+    public let realmId: RealmID?
     public let coin: String
     public let side: OrderSide
     public let price: String
@@ -114,7 +114,7 @@ public struct SimFill: Codable, Sendable {
     public let builderFee: String?
     public let realizedPnl: String?
     public let isLiquidation: Bool
-    public let createdAt: String
+    public let createdAt: String?
 }
 
 public struct FundingPayment: Codable, Sendable {
@@ -169,6 +169,36 @@ public struct ExchangeState: Codable, Sendable {
     public let feeRates: SimFeeRates?
     /// Pending order operations that haven't settled yet.
     public let pendingIntents: [ExchangeIntent]?
+
+    public init(
+        account: SimAccount, marginSummary: SimMarginSummary,
+        crossMarginSummary: SimMarginSummary?, crossMaintenanceMarginUsed: String?,
+        positions: [SimPosition], openOrders: [SimOrder],
+        feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?
+    ) {
+        self.account = account; self.marginSummary = marginSummary
+        self.crossMarginSummary = crossMarginSummary
+        self.crossMaintenanceMarginUsed = crossMaintenanceMarginUsed
+        self.positions = positions; self.openOrders = openOrders
+        self.feeRates = feeRates; self.pendingIntents = pendingIntents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        account = try container.decode(SimAccount.self, forKey: .account)
+        marginSummary = try container.decode(SimMarginSummary.self, forKey: .marginSummary)
+        crossMarginSummary = try container.decodeIfPresent(SimMarginSummary.self, forKey: .crossMarginSummary)
+        crossMaintenanceMarginUsed = try container.decodeIfPresent(String.self, forKey: .crossMaintenanceMarginUsed)
+        positions = try container.decodeIfPresent([SimPosition].self, forKey: .positions) ?? []
+        openOrders = try container.decodeIfPresent([SimOrder].self, forKey: .openOrders) ?? []
+        feeRates = try container.decodeIfPresent(SimFeeRates.self, forKey: .feeRates)
+        pendingIntents = try container.decodeIfPresent([ExchangeIntent].self, forKey: .pendingIntents)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
+        case positions, openOrders, feeRates, pendingIntents
+    }
 }
 
 public struct SimOrderWithFills: Codable, Sendable {

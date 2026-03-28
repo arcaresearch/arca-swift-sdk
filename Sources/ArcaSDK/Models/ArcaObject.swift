@@ -2,12 +2,45 @@ import Foundation
 
 // MARK: - Arca Object Types
 
-public enum ArcaObjectType: String, Codable, Sendable {
+public enum ArcaObjectType: Codable, Sendable, Equatable {
     case denominated
     case exchange
     case deposit
     case withdrawal
     case escrow
+    case info
+    case unknown(String)
+
+    private static let mapping: [(String, ArcaObjectType)] = [
+        ("denominated", .denominated),
+        ("exchange", .exchange),
+        ("deposit", .deposit),
+        ("withdrawal", .withdrawal),
+        ("escrow", .escrow),
+        ("info", .info),
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = Self.mapping.first(where: { $0.0 == raw })?.1 ?? .unknown(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if case .unknown(let raw) = self {
+            try container.encode(raw)
+            return
+        }
+        if let pair = Self.mapping.first(where: { $0.1 == self }) {
+            try container.encode(pair.0)
+        }
+    }
+
+    public var rawValue: String {
+        if case .unknown(let raw) = self { return raw }
+        return Self.mapping.first(where: { $0.1 == self })?.0 ?? ""
+    }
 }
 
 public enum ArcaObjectStatus: String, Codable, Sendable {
@@ -33,14 +66,14 @@ public struct ArcaObject: Codable, Sendable {
 // MARK: - Balances
 
 public struct ArcaBalance: Codable, Sendable {
-    public let id: BalanceID
-    public let arcaId: ObjectID
+    public let id: BalanceID?
+    public let arcaId: ObjectID?
     public let denomination: String
-    public let amount: String
-    public let arriving: String
-    public let settled: String
-    public let departing: String
-    public let total: String
+    public let amount: String?
+    public let arriving: String?
+    public let settled: String?
+    public let departing: String?
+    public let total: String?
 }
 
 public struct ArcaBalanceListResponse: Codable, Sendable {
@@ -84,7 +117,7 @@ public struct ArcaPositionCurrent: Codable, Sendable {
     public let side: String
     public let size: String
     public let leverage: Int
-    public let entryPrice: String?
+    public let entryPx: String?
     public let updatedAt: String
 }
 
@@ -96,9 +129,9 @@ public struct ArcaObjectListResponse: Codable, Sendable {
 }
 
 public struct ArcaObjectBrowseResponse: Codable, Sendable {
-    public let prefix: String
     public let folders: [String]
     public let objects: [ArcaObject]
+    public let total: Int?
 }
 
 public struct CreateArcaObjectResponse: Codable, Sendable, OperationResponse {
@@ -125,8 +158,8 @@ public struct ArcaObjectDetailResponse: Codable, Sendable {
     public let events: [ArcaEvent]
     public let deltas: [StateDelta]
     public let balances: [ArcaBalance]
-    public let reservedBalances: [ReservedBalance]
-    public let positions: [ArcaPositionCurrent]
+    public let reservedBalances: [ReservedBalance]?
+    public let positions: [ArcaPositionCurrent]?
 }
 
 public struct ArcaObjectVersionsResponse: Codable, Sendable {

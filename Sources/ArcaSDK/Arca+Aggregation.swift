@@ -233,7 +233,7 @@ extension Arca {
 
         var initCumInflows = 0.0
         var initCumOutflows = 0.0
-        for flow in history.externalFlows {
+        for flow in history.externalFlows ?? [] {
             let val = Double(flow.valueUsd) ?? 0
             if flow.direction == "inflow" { initCumInflows += val }
             else { initCumOutflows += val }
@@ -241,7 +241,7 @@ extension Arca {
 
         let state = SendableBox<WatchStreamState>(.connected)
         let historicalBox = SendableBox<[PnlPoint]>(history.pnlPoints)
-        let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows)
+        let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows ?? [])
         let chartBox = SendableBox<[PnlPoint]>(history.pnlPoints)
         let hourBoundaryBox = SendableBox<Int64>(Int64(Date().timeIntervalSince1970 / 3600) * 3600)
         let cumInflowsBox = SendableBox<Double>(initCumInflows)

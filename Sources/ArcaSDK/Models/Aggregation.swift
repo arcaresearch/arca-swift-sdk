@@ -216,7 +216,7 @@ public struct PnlResponse: Codable, Sendable {
     public let netInflowsUsd: String
     public let netOutflowsUsd: String
     public let pnlUsd: String
-    public let externalFlows: [ExternalFlowEntry]
+    public let externalFlows: [ExternalFlowEntry]?
 }
 
 // MARK: - P&L History
@@ -234,7 +234,7 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let points: Int
     public let startingEquityUsd: String
     public let pnlPoints: [PnlPoint]
-    public let externalFlows: [ExternalFlowEntry]
+    public let externalFlows: [ExternalFlowEntry]?
     public let midPrices: [String: String]?
 }
 

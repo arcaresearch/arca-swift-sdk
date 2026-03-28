@@ -362,6 +362,83 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(balance.total, "1000.50")
     }
 
+    func testBalanceDecoding_BasicShape() throws {
+        let json = """
+        {
+            "id": "bal_01abc",
+            "arcaId": "obj_01def",
+            "denomination": "USD",
+            "amount": "500.00"
+        }
+        """.data(using: .utf8)!
+
+        let balance = try decoder.decode(ArcaBalance.self, from: json)
+        XCTAssertEqual(balance.id?.rawValue, "bal_01abc")
+        XCTAssertEqual(balance.arcaId?.rawValue, "obj_01def")
+        XCTAssertEqual(balance.denomination, "USD")
+        XCTAssertEqual(balance.amount, "500.00")
+        XCTAssertNil(balance.arriving)
+        XCTAssertNil(balance.settled)
+        XCTAssertNil(balance.departing)
+        XCTAssertNil(balance.total)
+    }
+
+    func testBalanceDecoding_SummaryShape() throws {
+        let json = """
+        {
+            "denomination": "USD",
+            "arriving": "50.00",
+            "settled": "800.00",
+            "departing": "100.00",
+            "total": "950.00"
+        }
+        """.data(using: .utf8)!
+
+        let balance = try decoder.decode(ArcaBalance.self, from: json)
+        XCTAssertNil(balance.id)
+        XCTAssertNil(balance.arcaId)
+        XCTAssertNil(balance.amount)
+        XCTAssertEqual(balance.denomination, "USD")
+        XCTAssertEqual(balance.arriving, "50.00")
+        XCTAssertEqual(balance.settled, "800.00")
+        XCTAssertEqual(balance.departing, "100.00")
+        XCTAssertEqual(balance.total, "950.00")
+    }
+
+    func testObjectDetailResponse_BasicBalances() throws {
+        let json = """
+        {
+            "object": {
+                "id": "obj_01abc",
+                "realmId": "rlm_01def",
+                "path": "/wallets/main",
+                "type": "denominated",
+                "denomination": "USD",
+                "status": "active",
+                "metadata": null,
+                "deletedAt": null,
+                "systemOwned": false,
+                "createdAt": "2026-03-28T10:00:00.000000Z",
+                "updatedAt": "2026-03-28T10:00:00.000000Z"
+            },
+            "operations": [],
+            "events": [],
+            "deltas": [],
+            "balances": [
+                {"id": "bal_01", "arcaId": "obj_01abc", "denomination": "USD", "amount": "1000"}
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let detail = try decoder.decode(ArcaObjectDetailResponse.self, from: json)
+        XCTAssertEqual(detail.balances.count, 1)
+        XCTAssertEqual(detail.balances[0].denomination, "USD")
+        XCTAssertEqual(detail.balances[0].amount, "1000")
+        XCTAssertNil(detail.balances[0].arriving)
+        XCTAssertNil(detail.reservedBalances)
+        XCTAssertNil(detail.positions)
+    }
+
     // MARK: - StateDelta
 
     func testStateDeltaDecoding() throws {
@@ -1515,5 +1592,274 @@ final class ModelDecodingTests: XCTestCase {
             "revaluing a computed:false placeholder should not produce a non-zero value")
         XCTAssertEqual(revalued.computed, false,
             "computed flag must survive revaluation")
+    }
+
+    // MARK: - SimFill Preview (exchange.fill WS event)
+
+    func testSimFillDecoding_PreviewWithoutAccountRealmCreatedAt() throws {
+        let json = """
+        {
+            "id": "sf_01abc",
+            "orderId": "ord_01xyz",
+            "coin": "hl:BTC",
+            "side": "BUY",
+            "size": "0.1",
+            "price": "65000",
+            "fee": "1.5",
+            "isMaker": false,
+            "isLiquidation": false
+        }
+        """.data(using: .utf8)!
+
+        let fill = try decoder.decode(SimFill.self, from: json)
+        XCTAssertEqual(fill.id.rawValue, "sf_01abc")
+        XCTAssertEqual(fill.coin, "hl:BTC")
+        XCTAssertEqual(fill.side, .buy)
+        XCTAssertNil(fill.accountId)
+        XCTAssertNil(fill.realmId)
+        XCTAssertNil(fill.createdAt)
+    }
+
+    func testSimFillDecoding_FullWithAllFields() throws {
+        let json = """
+        {
+            "id": "sf_01abc",
+            "orderId": "ord_01xyz",
+            "accountId": "act_01abc",
+            "realmId": "rlm_01def",
+            "coin": "hl:BTC",
+            "side": "SELL",
+            "size": "0.5",
+            "price": "64000",
+            "fee": "2.0",
+            "builderFee": "0.5",
+            "realizedPnl": "100.00",
+            "isLiquidation": false,
+            "createdAt": "2026-03-28T12:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let fill = try decoder.decode(SimFill.self, from: json)
+        XCTAssertEqual(fill.accountId?.rawValue, "act_01abc")
+        XCTAssertEqual(fill.realmId?.rawValue, "rlm_01def")
+        XCTAssertEqual(fill.createdAt, "2026-03-28T12:00:00.000000Z")
+        XCTAssertEqual(fill.side, .sell)
+    }
+
+    func testRealmEventDecoding_ExchangeFillPreview() throws {
+        let json = """
+        {
+            "type": "exchange.fill",
+            "realmId": "rlm_01abc",
+            "entityId": "obj_01def",
+            "deliverySeq": 5,
+            "fill": {
+                "id": "sf_01abc",
+                "orderId": "ord_01xyz",
+                "coin": "hl:BTC",
+                "side": "BUY",
+                "size": "0.1",
+                "price": "65000",
+                "fee": "1.5",
+                "isMaker": false,
+                "isLiquidation": false
+            }
+        }
+        """.data(using: .utf8)!
+
+        let event = try decoder.decode(RealmEvent.self, from: json)
+        XCTAssertEqual(event.type, "exchange.fill")
+        XCTAssertNotNil(event.fill)
+        XCTAssertEqual(event.fill?.coin, "hl:BTC")
+        XCTAssertNil(event.fill?.accountId)
+    }
+
+    // MARK: - ArcaObjectBrowseResponse
+
+    func testBrowseResponseDecoding_NoPrefix() throws {
+        let json = """
+        {
+            "folders": ["/users/", "/exchanges/"],
+            "objects": [],
+            "total": 2
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(ArcaObjectBrowseResponse.self, from: json)
+        XCTAssertEqual(response.folders.count, 2)
+        XCTAssertTrue(response.objects.isEmpty)
+        XCTAssertEqual(response.total, 2)
+    }
+
+    // MARK: - PnlResponse omitempty
+
+    func testPnlResponseDecoding_WithoutExternalFlows() throws {
+        let json = """
+        {
+            "prefix": "/",
+            "from": "2026-03-01T00:00:00.000000Z",
+            "to": "2026-03-28T00:00:00.000000Z",
+            "startingEquityUsd": "10000",
+            "endingEquityUsd": "10500",
+            "netInflowsUsd": "0",
+            "netOutflowsUsd": "0",
+            "pnlUsd": "500"
+        }
+        """.data(using: .utf8)!
+
+        let pnl = try decoder.decode(PnlResponse.self, from: json)
+        XCTAssertEqual(pnl.pnlUsd, "500")
+        XCTAssertNil(pnl.externalFlows)
+    }
+
+    func testPnlResponseDecoding_WithExternalFlows() throws {
+        let json = """
+        {
+            "prefix": "/",
+            "from": "2026-03-01T00:00:00.000000Z",
+            "to": "2026-03-28T00:00:00.000000Z",
+            "startingEquityUsd": "10000",
+            "endingEquityUsd": "10500",
+            "netInflowsUsd": "1000",
+            "netOutflowsUsd": "0",
+            "pnlUsd": "-500",
+            "externalFlows": [
+                {
+                    "operationId": "op_01abc",
+                    "type": "deposit",
+                    "direction": "inflow",
+                    "amount": "1000",
+                    "denomination": "USD",
+                    "valueUsd": "1000",
+                    "timestamp": "2026-03-15T12:00:00.000000Z"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let pnl = try decoder.decode(PnlResponse.self, from: json)
+        XCTAssertEqual(pnl.externalFlows?.count, 1)
+        XCTAssertEqual(pnl.externalFlows?[0].direction, "inflow")
+    }
+
+    // MARK: - ArcaObjectType resilience
+
+    func testArcaObjectTypeInfoDecoding() throws {
+        let json = Data(#""info""#.utf8)
+        let decoded = try decoder.decode(ArcaObjectType.self, from: json)
+        XCTAssertEqual(decoded, .info)
+    }
+
+    func testArcaObjectTypeUnknownDecoding() throws {
+        let json = Data(#""future_type""#.utf8)
+        let decoded = try decoder.decode(ArcaObjectType.self, from: json)
+        XCTAssertEqual(decoded, .unknown("future_type"))
+    }
+
+    func testArcaObjectTypeRoundTrips() throws {
+        for typeStr in ["denominated", "exchange", "deposit", "withdrawal", "escrow", "info"] {
+            let json = Data(#""\#(typeStr)""#.utf8)
+            let decoded = try decoder.decode(ArcaObjectType.self, from: json)
+            let encoded = try JSONEncoder().encode(decoded)
+            let roundTripped = String(data: encoded, encoding: .utf8)
+            XCTAssertEqual(roundTripped, #""\#(typeStr)""#)
+        }
+    }
+
+    func testArcaObjectWithInfoType() throws {
+        let json = """
+        {
+            "id": "obj_info01",
+            "realmId": "rlm_01def",
+            "path": "/.info",
+            "type": "info",
+            "denomination": null,
+            "status": "active",
+            "metadata": null,
+            "deletedAt": null,
+            "systemOwned": true,
+            "createdAt": "2026-03-28T10:00:00.000000Z",
+            "updatedAt": "2026-03-28T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let obj = try decoder.decode(ArcaObject.self, from: json)
+        XCTAssertEqual(obj.type, .info)
+        XCTAssertEqual(obj.path, "/.info")
+        XCTAssertTrue(obj.systemOwned)
+    }
+
+    // MARK: - ExchangeState null arrays
+
+    func testExchangeStateDecoding_NullPositionsAndOrders() throws {
+        let json = """
+        {
+            "account": {
+                "id": "act_01abc",
+                "realmId": "rlm_01def",
+                "name": "test",
+                "createdAt": "2026-03-28T10:00:00.000000Z",
+                "updatedAt": "2026-03-28T10:00:00.000000Z"
+            },
+            "marginSummary": {
+                "equity": "10000",
+                "initialMarginUsed": "0",
+                "maintenanceMarginRequired": "0",
+                "availableToWithdraw": "10000",
+                "totalNtlPos": "0",
+                "totalUnrealizedPnl": "0",
+                "totalRawUsd": "10000"
+            },
+            "positions": null,
+            "openOrders": null,
+            "feeRates": null
+        }
+        """.data(using: .utf8)!
+
+        let state = try decoder.decode(ExchangeState.self, from: json)
+        XCTAssertTrue(state.positions.isEmpty)
+        XCTAssertTrue(state.openOrders.isEmpty)
+    }
+
+    // MARK: - SnapshotBalancesResponse null arrays
+
+    func testSnapshotBalancesDecoding_NullPositions() throws {
+        let json = """
+        {
+            "realmId": "rlm_01abc",
+            "arcaId": "obj_01def",
+            "asOf": "2026-03-28T10:00:00.000000Z",
+            "balances": [
+                {"denomination": "USD", "amount": "1000"}
+            ],
+            "positions": null
+        }
+        """.data(using: .utf8)!
+
+        let snapshot = try decoder.decode(SnapshotBalancesResponse.self, from: json)
+        XCTAssertEqual(snapshot.balances.count, 1)
+        XCTAssertTrue(snapshot.positions.isEmpty)
+    }
+
+    // MARK: - ArcaPositionCurrent entryPx
+
+    func testArcaPositionCurrentDecoding_EntryPx() throws {
+        let json = """
+        {
+            "id": "pos_01abc",
+            "realmId": "rlm_01def",
+            "arcaId": "obj_01ghi",
+            "market": "hl:BTC",
+            "side": "LONG",
+            "size": "0.1",
+            "leverage": 5,
+            "entryPx": "65000",
+            "updatedAt": "2026-03-28T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let pos = try decoder.decode(ArcaPositionCurrent.self, from: json)
+        XCTAssertEqual(pos.entryPx, "65000")
+        XCTAssertEqual(pos.market, "hl:BTC")
     }
 }

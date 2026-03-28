@@ -73,4 +73,17 @@ public struct SnapshotBalancesResponse: Codable, Sendable {
     public let asOf: String
     public let balances: [ArcaBalance]
     public let positions: [CanonicalPosition]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        realmId = try container.decode(String.self, forKey: .realmId)
+        arcaId = try container.decode(String.self, forKey: .arcaId)
+        asOf = try container.decode(String.self, forKey: .asOf)
+        balances = try container.decodeIfPresent([ArcaBalance].self, forKey: .balances) ?? []
+        positions = try container.decodeIfPresent([CanonicalPosition].self, forKey: .positions) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case realmId, arcaId, asOf, balances, positions
+    }
 }
