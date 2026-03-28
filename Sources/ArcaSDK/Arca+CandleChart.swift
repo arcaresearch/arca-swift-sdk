@@ -57,30 +57,31 @@ extension Arca {
 
         let previousCount = SendableBox<Int>(0)
 
+        let yieldSnapshot: @Sendable (AsyncStream<CandleChartUpdate>.Continuation, [Candle], Candle) -> Void = {
+            cont, snapshot, trigger in
+            let count = snapshot.count
+            let prev = previousCount.value
+            if count < prev {
+                #if DEBUG
+                print("[ArcaSDK] WARNING: candle array shrunk \(prev) → \(count)")
+                #endif
+                return
+            }
+            previousCount.update { $0 = max($0, count) }
+            cont.yield(CandleChartUpdate(
+                candles: snapshot,
+                latestCandle: trigger
+            ))
+        }
+
         let updates = AsyncStream<CandleChartUpdate> { continuation in
             continuationBox.update { $0 = continuation }
-
-            let yieldSnapshot: @Sendable ([Candle], Candle) -> Void = { snapshot, trigger in
-                let count = snapshot.count
-                let prev = previousCount.value
-                if count < prev {
-                    #if DEBUG
-                    print("[ArcaSDK] WARNING: candle array shrunk \(prev) → \(count)")
-                    #endif
-                    return
-                }
-                previousCount.update { $0 = max($0, count) }
-                continuation.yield(CandleChartUpdate(
-                    candles: snapshot,
-                    latestCandle: trigger
-                ))
-            }
 
             // Emit the historical snapshot immediately so `for await` renders
             // the chart on the very first iteration — no waiting for a WS event.
             let initial = candlesBox.value
             if let last = initial.last {
-                yieldSnapshot(initial, last)
+                yieldSnapshot(continuation, initial, last)
             }
 
             let candleTask = Task { [weak ws] in
@@ -92,7 +93,7 @@ extension Arca {
                     let snapshot = candlesBox.updateAndGet { arr in
                         applyCandle(latest, to: &arr)
                     }
-                    yieldSnapshot(snapshot, latest)
+                    yieldSnapshot(continuation, snapshot, latest)
                     _ = ws
                 }
                 continuation.finish()
@@ -118,7 +119,7 @@ extension Arca {
                                     arr = dedupCandles(arr)
                                 }
                                 if let last = snapshot.last {
-                                    yieldSnapshot(snapshot, last)
+                                    yieldSnapshot(continuation, snapshot, last)
                                 }
                             }
                         }
@@ -165,12 +166,7 @@ extension Arca {
             }
 
             if let cont = continuationBox.value, let first = snapshot.first {
-                let count = snapshot.count
-                previousCount.update { $0 = max($0, count) }
-                cont.yield(CandleChartUpdate(
-                    candles: snapshot,
-                    latestCandle: first
-                ))
+                yieldSnapshot(cont, snapshot, first)
             }
 
             return true
