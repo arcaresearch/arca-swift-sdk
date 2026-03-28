@@ -401,6 +401,7 @@ final class ModelDecodingTests: XCTestCase {
         let delta = try decoder.decode(StateDelta.self, from: json)
         XCTAssertEqual(delta.deltaType, .labelsChange)
         XCTAssertEqual(delta.beforeValue, "{}")
+        XCTAssertEqual(delta.afterValue, "{\"tier\": \"gold\"}")
     }
 
     // MARK: - Exchange State
