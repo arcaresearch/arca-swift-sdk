@@ -49,11 +49,15 @@ extension Arca {
                 startTime: startTime
             )
         } catch {
+            #if DEBUG
+            print("[ArcaSDK] initial getCandles failed: \(error)")
+            #endif
             history = CandlesResponse(coin: coin, interval: interval.rawValue, candles: [])
         }
 
         candlesBox.update { $0 = dedupCandles(history.candles) }
         state.update { $0 = .connected }
+        let needsRetry = history.candles.isEmpty
 
         let previousCount = SendableBox<Int>(0)
 
@@ -128,9 +132,46 @@ extension Arca {
                 }
             }
 
+            // If the initial fetch returned empty candles, retry indefinitely
+            // with capped exponential backoff. Staying on a screen should never
+            // produce worse data than closing and reopening the app.
+            let retryTask: Task<Void, Never>? = needsRetry ? Task { [weak self] in
+                var delay: UInt64 = 1_000_000_000 // 1s
+                let maxDelay: UInt64 = 30_000_000_000 // 30s
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: delay)
+                    guard !Task.isCancelled, let self = self else { return }
+                    do {
+                        let retryStart = Int(Date().timeIntervalSince1970 * 1000)
+                            - interval.milliseconds * count
+                        let res = try await self.getCandles(
+                            coin: coin,
+                            interval: interval,
+                            startTime: retryStart
+                        )
+                        if !res.candles.isEmpty {
+                            let snapshot = candlesBox.updateAndGet { arr in
+                                arr.append(contentsOf: res.candles)
+                                arr = dedupCandles(arr)
+                            }
+                            if let last = snapshot.last {
+                                yieldSnapshot(continuation, snapshot, last)
+                            }
+                            return
+                        }
+                    } catch {
+                        #if DEBUG
+                        print("[ArcaSDK] candle retry failed: \(error)")
+                        #endif
+                    }
+                    delay = min(delay * 2, maxDelay)
+                }
+            } : nil
+
             continuation.onTermination = { _ in
                 candleTask.cancel()
                 statusTask.cancel()
+                retryTask?.cancel()
             }
         }
 

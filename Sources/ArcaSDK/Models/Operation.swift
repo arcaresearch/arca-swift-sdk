@@ -223,15 +223,46 @@ public struct EventDetailResponse: Codable, Sendable {
 
 // MARK: - State Delta
 
-public enum DeltaType: String, Codable, Sendable {
-    case balanceChange = "balance_change"
-    case settlementChange = "settlement_change"
-    case positionChange = "position_change"
-    case statusChange = "status_change"
-    case holdChange = "hold_change"
-    case labelsChange = "labels_change"
+public enum DeltaType: Codable, Sendable, Equatable {
+    case balanceChange
+    case balanceAdjustment
+    case settlementChange
+    case positionChange
+    case statusChange
+    case holdChange
+    case labelsChange
     case creation
     case deletion
+    case unknown(String)
+
+    private static let mapping: [(String, DeltaType)] = [
+        ("balance_change", .balanceChange),
+        ("balance_adjustment", .balanceAdjustment),
+        ("settlement_change", .settlementChange),
+        ("position_change", .positionChange),
+        ("status_change", .statusChange),
+        ("hold_change", .holdChange),
+        ("labels_change", .labelsChange),
+        ("creation", .creation),
+        ("deletion", .deletion),
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = Self.mapping.first(where: { $0.0 == raw })?.1 ?? .unknown(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if case .unknown(let raw) = self {
+            try container.encode(raw)
+            return
+        }
+        if let pair = Self.mapping.first(where: { $0.1 == self }) {
+            try container.encode(pair.0)
+        }
+    }
 }
 
 public struct StateDelta: Codable, Sendable {

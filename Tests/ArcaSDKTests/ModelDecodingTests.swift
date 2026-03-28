@@ -384,6 +384,112 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(delta.afterValue, "500")
     }
 
+    func testStateDeltaBalanceAdjustmentDecoding() throws {
+        let json = """
+        {
+            "id": "dlt_adj01",
+            "realmId": "rlm_01def",
+            "eventId": "evt_adj01",
+            "arcaPath": "/exchanges/main",
+            "deltaType": "balance_adjustment",
+            "beforeValue": "9800.50",
+            "afterValue": "9850.75",
+            "createdAt": "2026-03-28T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let delta = try decoder.decode(StateDelta.self, from: json)
+        XCTAssertEqual(delta.deltaType, .balanceAdjustment)
+        XCTAssertEqual(delta.beforeValue, "9800.50")
+        XCTAssertEqual(delta.afterValue, "9850.75")
+    }
+
+    func testDeltaTypeUnknownValueDoesNotCrash() throws {
+        let json = """
+        {
+            "id": "dlt_future01",
+            "realmId": "rlm_01def",
+            "eventId": "evt_future01",
+            "arcaPath": "/wallets/main",
+            "deltaType": "some_future_delta_type",
+            "beforeValue": null,
+            "afterValue": "100",
+            "createdAt": "2026-03-28T10:00:00.000000Z"
+        }
+        """.data(using: .utf8)!
+
+        let delta = try decoder.decode(StateDelta.self, from: json)
+        XCTAssertEqual(delta.deltaType, .unknown("some_future_delta_type"))
+    }
+
+    func testDeltaTypeUnknownRoundTrips() throws {
+        let original = DeltaType.unknown("custom_type")
+        let data = try JSONEncoder().encode(original)
+        let decoded = try decoder.decode(DeltaType.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testOperationDetailWithBalanceAdjustmentDelta() throws {
+        let json = """
+        {
+            "operation": {
+                "id": "op_adj01",
+                "realmId": "rlm_01def",
+                "path": "/op/adjustment/exchanges/main/op_adj01",
+                "type": "adjustment",
+                "state": "completed",
+                "sourceArcaPath": null,
+                "targetArcaPath": "/exchanges/main",
+                "input": null,
+                "outcome": "{\\"type\\":\\"positive_drift\\"}",
+                "actorType": "system",
+                "actorId": "venue_reconciliation",
+                "tokenJti": null,
+                "createdAt": "2026-03-28T10:00:00.000000Z",
+                "updatedAt": "2026-03-28T10:00:00.000000Z"
+            },
+            "events": [],
+            "deltas": [
+                {
+                    "id": "dlt_01",
+                    "realmId": "rlm_01def",
+                    "arcaPath": "/exchanges/main",
+                    "deltaType": "balance_change",
+                    "beforeValue": "9800",
+                    "afterValue": "9850",
+                    "createdAt": "2026-03-28T10:00:00.000000Z"
+                },
+                {
+                    "id": "dlt_02",
+                    "realmId": "rlm_01def",
+                    "arcaPath": "/exchanges/main",
+                    "deltaType": "status_change",
+                    "beforeValue": null,
+                    "afterValue": "active",
+                    "createdAt": "2026-03-28T10:00:00.000000Z"
+                },
+                {
+                    "id": "dlt_03",
+                    "realmId": "rlm_01def",
+                    "eventId": "evt_adj01",
+                    "arcaPath": "/exchanges/main",
+                    "deltaType": "balance_adjustment",
+                    "beforeValue": "9800",
+                    "afterValue": "9850",
+                    "createdAt": "2026-03-28T10:00:00.000000Z"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let detail = try decoder.decode(OperationDetailResponse.self, from: json)
+        XCTAssertEqual(detail.operation.type, .adjustment)
+        XCTAssertEqual(detail.deltas.count, 3)
+        XCTAssertEqual(detail.deltas[0].deltaType, .balanceChange)
+        XCTAssertEqual(detail.deltas[1].deltaType, .statusChange)
+        XCTAssertEqual(detail.deltas[2].deltaType, .balanceAdjustment)
+    }
+
     func testStateDeltaLabelsChangeDecoding() throws {
         let json = """
         {
