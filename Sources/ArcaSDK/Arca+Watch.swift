@@ -199,13 +199,11 @@ extension Arca {
                     guard eventPath == path else { continue }
                     watchIdBox.update { $0 = wid }
                     await ws.trackObjectWatch(watchId: wid, path: path)
-                    let currentMids = midsBox.value
-                    let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
-                    valBox.update { $0 = revalued }
-                    state.update { $0 = .connected }
-                    continuation.yield(revalued)
 
                     if valuation.computed == false {
+                        // Don't yield uncomputed valuations (valueUsd:"0")
+                        // to consumers — hold the last-known-good value and
+                        // retry silently. Yielding $0 causes phantom P&L.
                         let attempt = retryAttemptBox.value
                         let delay = min(1.0 * pow(2.0, Double(attempt)), 30.0)
                         retryTaskBox.value?.cancel()
@@ -215,11 +213,27 @@ extension Arca {
                             retryAttemptBox.update { $0 += 1 }
                             await ws.sendWatchObject(path: path)
                         }}
-                    } else {
-                        retryTaskBox.value?.cancel()
-                        retryTaskBox.update { $0 = nil }
-                        retryAttemptBox.update { $0 = 0 }
+                        if valBox.value == nil {
+                            // First event ever — yield even if uncomputed
+                            // so the stream transitions out of loading.
+                            let currentMids = midsBox.value
+                            let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
+                            valBox.update { $0 = revalued }
+                            state.update { $0 = .connected }
+                            continuation.yield(revalued)
+                        }
+                        continue
                     }
+
+                    retryTaskBox.value?.cancel()
+                    retryTaskBox.update { $0 = nil }
+                    retryAttemptBox.update { $0 = 0 }
+
+                    let currentMids = midsBox.value
+                    let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
+                    valBox.update { $0 = revalued }
+                    state.update { $0 = .connected }
+                    continuation.yield(revalued)
                 }
                 continuation.finish()
             }
