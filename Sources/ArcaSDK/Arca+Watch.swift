@@ -2,26 +2,17 @@ import Foundation
 
 extension Arca {
 
-    /// Subscribe to real-time operation events.
-    /// Resolves once the server sends the initial snapshot, so `operations`
-    /// is populated on return. Reconnections are handled automatically.
-    /// Call `stop()` when done.
-    public func watchOperations() async throws -> OperationWatchStream {
+    /// Watch real-time operation events under a path prefix.
+    /// Creates a path-scoped watch; the server sends initial operations in the
+    /// snapshot, then streams `operation.created` / `operation.updated`.
+    /// Reconnections are handled automatically. Call `stop()` when done.
+    ///
+    /// - Parameter path: Arca path prefix to watch (default: "/" for all operations)
+    public func watchOperations(path: String = "/") async throws -> OperationWatchStream {
         await ws.ensureConnected()
 
         let state = SendableBox<WatchStreamState>(.loading)
         let box = SendableBox<[Operation]>([])
-        let decoder = JSONDecoder()
-
-        let snapshotId = await ws.onSnapshot(channel: "operations") { data in
-            let snapshot = data as? [[String: Any]] ?? []
-            let ops: [Operation] = snapshot.compactMap { dict in
-                guard let d = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
-                return try? decoder.decode(Operation.self, from: d)
-            }
-            box.update { $0 = ops }
-            state.update { $0 = .connected }
-        }
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
@@ -40,7 +31,12 @@ extension Arca {
             }
         }
 
-        await ws.acquireChannel(.operations)
+        await ws.watchPath(path)
+
+        if let resp = try? await self.listOperations() {
+            box.update { $0 = resp.operations }
+        }
+        state.update { $0 = .connected }
 
         let operationUpdates = await ws.operationEvents()
         let updates = AsyncStream<(Operation, RealmEvent)> { continuation in
@@ -67,37 +63,24 @@ extension Arca {
             stop: { [ws] in
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
-                await ws.removeSnapshotHandler(channel: "operations", id: snapshotId)
-                await ws.releaseChannel(.operations)
+                await ws.unwatchPath(path)
             }
         )
         await stream.ready()
         return stream
     }
 
-    /// Subscribe to real-time balance updates.
-    /// Resolves once the server sends the initial snapshot, so `balances`
-    /// is populated on return. Reconnections are handled automatically.
-    /// Optionally filter by an Arca path prefix.
-    /// Call `stop()` when done.
-    public func watchBalances(arcaRef: String? = nil) async throws -> BalanceWatchStream {
+    /// Watch real-time balance updates under a path prefix.
+    /// Creates a path-scoped watch; the server sends initial balances
+    /// (four-bucket summary) in the snapshot, then streams `balance.updated`.
+    /// Reconnections are handled automatically. Call `stop()` when done.
+    ///
+    /// - Parameter path: Arca path prefix to watch (default: "/" for all balances)
+    public func watchBalances(path: String = "/") async throws -> BalanceWatchStream {
         await ws.ensureConnected()
 
         let state = SendableBox<WatchStreamState>(.loading)
         let box = SendableBox<[String: BalanceSnapshot]>([:])
-
-        let snapshotId = await ws.onSnapshot(channel: "balances") { data in
-            let entries = data as? [[String: Any]] ?? []
-            var map: [String: BalanceSnapshot] = [:]
-            let decoder = JSONDecoder()
-            for entry in entries {
-                guard let d = try? JSONSerialization.data(withJSONObject: entry),
-                      let snap = try? decoder.decode(BalanceSnapshot.self, from: d) else { continue }
-                map[snap.entityId] = snap
-            }
-            box.update { $0 = map }
-            state.update { $0 = .connected }
-        }
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
@@ -119,14 +102,23 @@ extension Arca {
             }
         }
 
-        await ws.acquireChannel(.balances)
+        await ws.watchPath(path)
+
+        if let objects = try? await self.listObjects(prefix: path == "/" ? nil : path) {
+            for obj in objects.objects {
+                if let bals = try? await self.getBalances(objectId: obj.id.rawValue), !bals.isEmpty {
+                    box.update { $0[obj.id.rawValue] = BalanceSnapshot(entityId: obj.id.rawValue, entityPath: obj.path, balances: bals) }
+                }
+            }
+        }
+        state.update { $0 = .connected }
 
         let balanceUpdates = await ws.balanceEvents()
 
         let updates = AsyncStream<(String, RealmEvent)> { continuation in
             let task = Task {
                 for await (entityId, event) in balanceUpdates {
-                    if let filter = arcaRef, let path = event.entityPath, !path.hasPrefix(filter) {
+                    if path != "/", let eventPath = event.entityPath, !eventPath.hasPrefix(path) {
                         continue
                     }
                     continuation.yield((entityId, event))
@@ -143,16 +135,17 @@ extension Arca {
             stop: { [ws] in
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
-                await ws.removeSnapshotHandler(channel: "balances", id: snapshotId)
-                await ws.releaseChannel(.balances)
+                await ws.unwatchPath(path)
             }
         )
         await stream.ready()
         return stream
     }
 
-    /// Subscribe to real-time valuation updates for a single Arca object.
-    /// The server pushes structural changes (fills, balance updates, object CRUD).
+    /// Watch real-time valuation updates for a single Arca object.
+    /// Creates a path-scoped watch with an aggregation watch for valuation;
+    /// the server sends initial valuation in the snapshot, then streams
+    /// `object.valuation` events on structural changes (fills, balance updates).
     /// Mid-price revaluation is performed client-side so valuations update in
     /// real time without consuming server bandwidth on every tick.
     /// Call `stop()` when done.
@@ -183,39 +176,19 @@ extension Arca {
             }
         }
 
-        let midsSnapshotId = await ws.onSnapshot(channel: "mids") { data in
-            let mids = data as? [String: String] ?? [:]
-            midsBox.update { $0 = mids }
-        }
-
         await ws.acquireMids(exchange: exchange)
 
         let valEvents = await ws.objectValuationEvents()
         let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<ObjectValuation> { continuation in
-            let valTask = Task { [ws] in
+            let valTask = Task {
                 for await (valuation, eventPath, wid) in valEvents {
                     guard eventPath == path else { continue }
                     watchIdBox.update { $0 = wid }
-                    await ws.trackObjectWatch(watchId: wid, path: path)
 
                     if valuation.computed == false {
-                        // Don't yield uncomputed valuations (valueUsd:"0")
-                        // to consumers — hold the last-known-good value and
-                        // retry silently. Yielding $0 causes phantom P&L.
-                        let attempt = retryAttemptBox.value
-                        let delay = min(1.0 * pow(2.0, Double(attempt)), 30.0)
-                        retryTaskBox.value?.cancel()
-                        retryTaskBox.update { $0 = Task { [ws] in
-                            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                            guard !Task.isCancelled else { return }
-                            retryAttemptBox.update { $0 += 1 }
-                            await ws.sendWatchObject(path: path)
-                        }}
                         if valBox.value == nil {
-                            // First event ever — yield even if uncomputed
-                            // so the stream transitions out of loading.
                             let currentMids = midsBox.value
                             let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                             valBox.update { $0 = revalued }
@@ -224,10 +197,6 @@ extension Arca {
                         }
                         continue
                     }
-
-                    retryTaskBox.value?.cancel()
-                    retryTaskBox.update { $0 = nil }
-                    retryAttemptBox.update { $0 = 0 }
 
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
@@ -253,11 +222,10 @@ extension Arca {
             continuation.onTermination = { _ in
                 valTask.cancel()
                 midsTask.cancel()
-                retryTaskBox.value?.cancel()
             }
         }
 
-        await ws.sendWatchObject(path: path)
+        await ws.watchPath(path)
 
         return ObjectWatchStream(
             state: state,
@@ -267,19 +235,16 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                retryTaskBox.value?.cancel()
-                await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
                 await ws.releaseMids()
-                if let wid = watchIdBox.value {
-                    await ws.sendUnwatchObject(watchId: wid)
-                }
+                await ws.unwatchPath(path)
             }
         )
     }
 
-    /// Subscribe to real-time aggregation updates for a set of sources.
-    /// Automatically handles server-side watch creation, structural change events,
-    /// and client-side revaluation from mid prices. Call `stop()` when done.
+    /// Watch real-time aggregation updates for a set of sources.
+    /// Creates a standalone aggregation watch (not path-scoped); handles
+    /// structural change events and client-side revaluation from mid prices.
+    /// Call `stop()` when done.
     ///
     /// - Parameters:
     ///   - sources: Aggregation sources to track
@@ -326,13 +291,7 @@ extension Arca {
             }
         }
 
-        let midsSnapshotId = await ws.onSnapshot(channel: "mids") { data in
-            let mids = data as? [String: String] ?? [:]
-            midsBox.update { $0 = mids }
-        }
-
         await ws.acquireMids(exchange: exchange)
-        await ws.acquireChannel(.aggregation)
 
         let aggEvents = await ws.aggregationEvents()
         let midsStream = await ws.midsEvents()
@@ -380,9 +339,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                await ws.removeSnapshotHandler(channel: "mids", id: midsSnapshotId)
                 await ws.releaseMids()
-                await ws.releaseChannel(.aggregation)
                 try? await self.destroyAggregationWatch(watchId: widBox.value)
             }
         )
@@ -390,14 +347,18 @@ extension Arca {
         return stream
     }
 
-    /// Subscribe to real-time exchange state updates for an Arca exchange object.
-    /// Fetches initial state via REST, then re-fetches on each `exchange.updated`
-    /// event matching the given object. Reconnections are handled automatically.
+    /// Watch real-time exchange state for an Arca exchange object.
+    /// Resolves the object path from `objectId`, creates a path-scoped watch,
+    /// then fetches initial state via REST and re-fetches on each `exchange.updated`
+    /// event matching the object. Reconnections are handled automatically.
     /// Call `stop()` when done.
     ///
     /// - Parameter objectId: Exchange Arca object ID
     public func watchExchangeState(objectId: String) async throws -> ExchangeStateWatchStream {
         await ws.ensureConnected()
+
+        let detail = try await getObjectDetail(objectId: objectId)
+        let objectPath = detail.object.path
 
         let streamState = SendableBox<WatchStreamState>(.loading)
         let stateBox = SendableBox<ExchangeState?>(nil)
@@ -421,7 +382,7 @@ extension Arca {
             }
         }
 
-        await ws.acquireChannel(.exchange)
+        await ws.watchPath(objectPath)
 
         let exchangeStream = await ws.exchangeEvents()
         let updates = AsyncStream<ExchangeState> { [weak self] continuation in
@@ -449,18 +410,22 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                await ws.releaseChannel(.exchange)
+                await ws.unwatchPath(objectPath)
             }
         )
     }
 
-    /// Subscribe to real-time funding payment events for an exchange Arca object.
-    /// Yields each funding payment with its ``EventEnvelope`` for correlation.
+    /// Watch real-time funding payment events for an exchange Arca object.
+    /// Resolves the object path from `objectId`, creates a path-scoped watch,
+    /// then yields each funding payment with its ``EventEnvelope`` for correlation.
     /// Call `stop()` when done.
     ///
     /// - Parameter objectId: Exchange Arca object ID
     public func watchFunding(objectId: String) async throws -> FundingWatchStream {
         await ws.ensureConnected()
+
+        let detail = try await getObjectDetail(objectId: objectId)
+        let objectPath = detail.object.path
 
         let state = SendableBox<WatchStreamState>(.connected)
 
@@ -475,7 +440,7 @@ extension Arca {
             }
         }
 
-        await ws.acquireChannel(.exchange)
+        await ws.watchPath(objectPath)
 
         let fundingStream = await ws.fundingEvents()
         let updates = AsyncStream<(FundingPayment, EventEnvelope)> { continuation in
@@ -495,7 +460,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                await ws.releaseChannel(.exchange)
+                await ws.unwatchPath(objectPath)
             }
         )
     }
@@ -528,17 +493,12 @@ extension Arca {
         let convergenceCallbacks = SendableBox<[UUID: @Sendable (String) -> Void]>([:])
         let fetchInFlight = SendableBox<Bool>(false)
 
-        let objectPath: String?
-        if let detail = try? await getObjectDetail(objectId: objectId) {
-            objectPath = detail.object.path
-        } else {
-            objectPath = nil
-        }
+        let detail = try await getObjectDetail(objectId: objectId)
+        let objectPath = detail.object.path
 
-        let capturedPath = objectPath
         let matchesObject: @Sendable (RealmEvent) -> Bool = { event in
             event.entityId == objectId
-                || (capturedPath != nil && event.entityPath == capturedPath)
+                || event.entityPath == objectPath
         }
 
         let clearAllTimers: @Sendable () -> Void = {
@@ -578,7 +538,7 @@ extension Arca {
             Task { await fetchFills() }
         }
 
-        await ws.acquireChannel(.exchange)
+        await ws.watchPath(objectPath)
 
         let previewStream = await ws.fillEvents()
         let recordedStream = await ws.fillRecordedEvents()
@@ -688,7 +648,7 @@ extension Arca {
                 statusTask.cancel()
                 clearAllTimers()
                 await ws.removeGapHandler(gapId)
-                await ws.releaseChannel(.exchange)
+                await ws.unwatchPath(objectPath)
             },
             convergenceCallbacks: convergenceCallbacks
         )

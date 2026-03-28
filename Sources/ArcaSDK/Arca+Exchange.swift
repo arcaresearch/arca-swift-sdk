@@ -428,12 +428,6 @@ extension Arca {
         let state = SendableBox<WatchStreamState>(.loading)
         let prices = SendableBox<[String: String]>([:])
 
-        let snapshotId = await ws.onSnapshot(channel: "mids") { data in
-            let mids = data as? [String: String] ?? [:]
-            prices.update { $0 = mids }
-            state.update { $0 = .connected }
-        }
-
         let statusStream = await ws.statusStream
         let statusTask = Task {
             for await s in statusStream {
@@ -454,6 +448,7 @@ extension Arca {
                             current[key] = value
                         }
                     }
+                    state.update { $0 = .connected }
                     continuation.yield(prices.value)
                 }
                 continuation.finish()
@@ -467,7 +462,6 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
-                await ws.removeSnapshotHandler(channel: "mids", id: snapshotId)
                 await ws.releaseMids()
             }
         )
@@ -528,7 +522,9 @@ extension Arca {
             activeAssetBox.update { $0 = initial }
         }
 
-        await ws.acquireChannel(.exchange)
+        let detail = try await getObjectDetail(objectId: opts.objectId)
+        let objectPath = detail.object.path
+        await ws.watchPath(objectPath)
 
         let exchangeStream = await ws.exchangeEvents()
         let midsUpdates = priceStream.updates
@@ -578,7 +574,7 @@ extension Arca {
             stop: { [ws] in
                 statusTask.cancel()
                 await priceStream.stop()
-                await ws.releaseChannel(.exchange)
+                await ws.unwatchPath(objectPath)
             }
         )
         return stream

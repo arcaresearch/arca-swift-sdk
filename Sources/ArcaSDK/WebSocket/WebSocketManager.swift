@@ -21,7 +21,6 @@ public actor WebSocketManager {
     private var webSocketTask: URLSessionWebSocketTask?
     private let session: URLSession
 
-    private var subscribedChannels: Set<String> = []
     private var subscribedMids: (exchange: String, coins: [String])?
     private var subscribedCandles: (coins: [String], intervals: [CandleInterval])?
     private var shouldReconnect = false
@@ -35,22 +34,15 @@ public actor WebSocketManager {
 
     private var _status: ConnectionStatus = .disconnected
 
-    // Ref-counted subscription engine
-    private var channelRefs: [String: Int] = [:]
+    // Ref-counted path watch engine
+    private var pathRefs: [String: Int] = [:]
     private var midsRefs = 0
     private var midsExchange = "sim"
-    private var candleRefCoins: [String: Set<String>] = [:] // coin → set of interval rawValues
+    private var candleRefCoins: [String: Set<String>] = [:]
     private var unsubTasks: [String: Task<Void, Never>] = [:]
     private var idleDisconnectTask: Task<Void, Never>?
     private static let unsubDebounceNs: UInt64 = 100_000_000 // 100ms
     private static let idleDisconnectNs: UInt64 = 60_000_000_000 // 60s
-
-    private var snapshotHandlers: [String: [UUID: @Sendable (Any) -> Void]] = [:]
-    private var snapshotCache: [String: Any] = [:]
-
-    // Object watch tracking for reconnect replay
-    private var objectWatches: [String: String] = [:]  // watchId → path
-    private var pendingObjectWatchPaths: Set<String> = []
 
     // Application-level heartbeat for half-open connection detection
     private var pingTask: Task<Void, Never>?
@@ -97,12 +89,9 @@ public actor WebSocketManager {
 
     // MARK: - Connection Lifecycle
 
-    /// Connect to the WebSocket and subscribe to the given channels.
-    public func connect(channels: [Channel] = []) {
+    /// Connect to the WebSocket.
+    public func connect() {
         shouldReconnect = true
-        for ch in channels {
-            subscribedChannels.insert(ch.rawValue)
-        }
         doConnect()
     }
 
@@ -123,31 +112,12 @@ public actor WebSocketManager {
         cancelIdleTimer()
         for task in unsubTasks.values { task.cancel() }
         unsubTasks.removeAll()
-        snapshotCache.removeAll()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         setStatus(.disconnected)
     }
 
-    // MARK: - Channel Subscriptions
-
-    /// Subscribe to additional channels.
-    public func subscribe(channels: [Channel]) {
-        for ch in channels { subscribedChannels.insert(ch.rawValue) }
-        sendMessage(.subscribe(channels: channels.map(\.rawValue)))
-    }
-
-    /// Unsubscribe from channels.
-    public func unsubscribe(channels: [Channel]) {
-        for ch in channels {
-            subscribedChannels.remove(ch.rawValue)
-            snapshotCache.removeValue(forKey: ch.rawValue)
-        }
-        sendMessage(.unsubscribe(channels: channels.map(\.rawValue)))
-    }
-
     /// Subscribe to real-time mid price updates.
-    /// Pass an empty `coins` array (the default) to subscribe to all assets.
     public func subscribeMids(exchange: String, coins: [String] = []) {
         subscribedMids = (exchange, coins)
         sendMessage(.subscribeMids(exchange: exchange, coins: coins))
@@ -171,48 +141,44 @@ public actor WebSocketManager {
         sendMessage(.unsubscribeCandles)
     }
 
-    // MARK: - Ref-Counted Subscription Management
+    // MARK: - Path Watch Management
 
-    /// Acquire interest in a channel. Increments ref count;
-    /// auto-connects and subscribes on first interest.
-    public func acquireChannel(_ channel: Channel) {
+    /// Watch a path. Increments the ref count; sends a `watch` message on first interest.
+    public func watchPath(_ path: String) {
         cancelIdleTimer()
-        let key = channel.rawValue
-        let prev = channelRefs[key, default: 0]
-        channelRefs[key] = prev + 1
+        let prev = pathRefs[path, default: 0]
+        pathRefs[path] = prev + 1
         if prev == 0 {
-            let timerKey = "ch:\(key)"
+            let timerKey = "path:\(path)"
             if let task = unsubTasks.removeValue(forKey: timerKey) {
                 task.cancel()
             } else {
                 ensureConnected()
-                subscribe(channels: [channel])
+                sendMessage(.watch(path: path))
             }
         }
     }
 
-    /// Release interest in a channel. Decrements ref count;
-    /// debounced unsubscribe when the last watcher leaves.
-    public func releaseChannel(_ channel: Channel) {
-        let key = channel.rawValue
-        let current = channelRefs[key, default: 0]
+    /// Unwatch a path. Decrements the ref count; debounced unwatch when last watcher leaves.
+    public func unwatchPath(_ path: String) {
+        let current = pathRefs[path, default: 0]
         if current <= 1 {
-            channelRefs.removeValue(forKey: key)
-            let timerKey = "ch:\(key)"
+            pathRefs.removeValue(forKey: path)
+            let timerKey = "path:\(path)"
             unsubTasks[timerKey] = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
                 guard !Task.isCancelled else { return }
-                await self?.finishRelease(channel: channel, timerKey: timerKey)
+                await self?.finishPathUnwatch(path: path, timerKey: timerKey)
             }
         } else {
-            channelRefs[key] = current - 1
+            pathRefs[path] = current - 1
         }
     }
 
-    private func finishRelease(channel: Channel, timerKey: String) {
+    private func finishPathUnwatch(path: String, timerKey: String) {
         unsubTasks.removeValue(forKey: timerKey)
-        if channelRefs[channel.rawValue] == nil {
-            unsubscribe(channels: [channel])
+        if pathRefs[path] == nil {
+            sendMessage(.unwatch(path: path))
         }
         maybeStartIdleTimer()
     }
@@ -308,37 +274,8 @@ public actor WebSocketManager {
         subscribeCandles(coins: allCoins, intervals: intervals)
     }
 
-    /// Register a persistent handler for snapshot messages on a channel.
-    /// The handler fires on every snapshot (initial and reconnect).
-    /// Returns an ID that can be passed to ``removeSnapshotHandler`` to unregister.
-    @discardableResult
-    public func onSnapshot(channel: String, handler: @escaping @Sendable (Any) -> Void) -> UUID {
-        let id = UUID()
-        snapshotHandlers[channel, default: [:]][id] = handler
-        if let cached = snapshotCache[channel] {
-            handler(cached)
-        }
-        return id
-    }
-
-    /// Remove a previously registered snapshot handler.
-    public func removeSnapshotHandler(channel: String, id: UUID) {
-        snapshotHandlers[channel]?[id] = nil
-        if snapshotHandlers[channel]?.isEmpty == true {
-            snapshotHandlers.removeValue(forKey: channel)
-        }
-    }
-
-    private func dispatchSnapshot(channel: String, data: Any) {
-        snapshotCache[channel] = data
-        guard let handlers = snapshotHandlers[channel] else { return }
-        for (_, handler) in handlers {
-            handler(data)
-        }
-    }
-
     private func hasAnyInterest() -> Bool {
-        !channelRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty
+        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty
     }
 
     private func maybeStartIdleTimer() {
@@ -468,26 +405,6 @@ public actor WebSocketManager {
                   let watchId = event.watchId else { return nil }
             return (valuation, path, watchId)
         }
-    }
-
-    /// Send a watch_object message to the server.
-    public func sendWatchObject(path: String) {
-        cancelIdleTimer()
-        pendingObjectWatchPaths.insert(path)
-        ensureConnected()
-        sendMessage(.watchObject(path: path))
-    }
-
-    /// Called internally when the server responds with a watchId for an object watch.
-    public func trackObjectWatch(watchId: String, path: String) {
-        pendingObjectWatchPaths.remove(path)
-        objectWatches[watchId] = path
-    }
-
-    /// Send an unwatch_object message to the server.
-    public func sendUnwatchObject(watchId: String) {
-        objectWatches.removeValue(forKey: watchId)
-        sendMessage(.unwatchObject(watchId: watchId))
     }
 
     /// Stream of exchange fill events (fill data + originating event).
@@ -638,7 +555,6 @@ public actor WebSocketManager {
                 }
             } catch {
                 if !Task.isCancelled {
-                    snapshotCache.removeAll()
                     setStatus(.disconnected)
                     if shouldReconnect {
                         scheduleReconnect()
@@ -667,21 +583,12 @@ public actor WebSocketManager {
                 lastDeliverySeq = 0
                 setStatus(.connected)
                 startHeartbeat()
-                // Re-subscribe from raw subscription state
-                if !subscribedChannels.isEmpty {
-                    sendMessage(.subscribe(channels: Array(subscribedChannels)))
-                }
+                // Re-subscribe mids
                 if let mids = subscribedMids {
                     sendMessage(.subscribeMids(exchange: mids.exchange, coins: mids.coins))
                 }
                 if let candles = subscribedCandles {
                     sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)))
-                }
-                // Re-subscribe from ref-counted state
-                let refChannels = Array(channelRefs.keys)
-                let newChannels = refChannels.filter { !subscribedChannels.contains($0) }
-                if !newChannels.isEmpty {
-                    sendMessage(.subscribe(channels: newChannels))
                 }
                 if midsRefs > 0 && subscribedMids == nil {
                     sendMessage(.subscribeMids(exchange: midsExchange, coins: []))
@@ -689,14 +596,9 @@ public actor WebSocketManager {
                 if !candleRefCoins.isEmpty && subscribedCandles == nil {
                     syncCandleSubscription()
                 }
-                // Re-subscribe object watches — collect all unique paths from
-                // both tracked watches (have a watchId) and pending watches (sent
-                // but never got a response before disconnect).
-                var objectPaths = pendingObjectWatchPaths
-                for path in objectWatches.values { objectPaths.insert(path) }
-                objectWatches.removeAll()
-                for path in objectPaths {
-                    sendMessage(.watchObject(path: path))
+                // Re-watch all paths from ref-counted state
+                for path in pathRefs.keys {
+                    sendMessage(.watch(path: path))
                 }
                 return
             }
@@ -712,15 +614,6 @@ public actor WebSocketManager {
                 return
             }
 
-            // Snapshot messages from server
-            if msgType == "snapshot", let channel = json["channel"] as? String {
-                dispatchSnapshot(channel: channel, data: json["data"] as Any)
-                return
-            }
-            if msgType == "mids.snapshot", let mids = json["mids"] as? [String: String] {
-                dispatchSnapshot(channel: "mids", data: mids)
-                return
-            }
         }
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -804,7 +697,6 @@ public actor WebSocketManager {
         let elapsed = Date().timeIntervalSince(lastMessageAt)
         if elapsed >= WebSocketManager.staleThresholdS {
             stopHeartbeat()
-            snapshotCache.removeAll()
             webSocketTask?.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
             receiveTask?.cancel()

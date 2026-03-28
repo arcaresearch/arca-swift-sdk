@@ -3,14 +3,12 @@ import Foundation
 /// Messages sent from client to server over the WebSocket.
 enum OutboundMessage: Encodable {
     case auth(token: String, realmId: String)
-    case subscribe(channels: [String])
-    case unsubscribe(channels: [String])
+    case watch(path: String)
+    case unwatch(path: String)
     case subscribeMids(exchange: String, coins: [String])
     case unsubscribeMids
     case subscribeCandles(coins: [String], intervals: [String])
     case unsubscribeCandles
-    case watchObject(path: String)
-    case unwatchObject(watchId: String)
     case ping
 
     func encode(to encoder: Encoder) throws {
@@ -20,12 +18,12 @@ enum OutboundMessage: Encodable {
             try container.encode("auth", forKey: .action)
             try container.encode(token, forKey: .token)
             try container.encode(realmId, forKey: .realmId)
-        case .subscribe(let channels):
-            try container.encode("subscribe", forKey: .action)
-            try container.encode(channels, forKey: .channels)
-        case .unsubscribe(let channels):
-            try container.encode("unsubscribe", forKey: .action)
-            try container.encode(channels, forKey: .channels)
+        case .watch(let path):
+            try container.encode("watch", forKey: .action)
+            try container.encode(path, forKey: .path)
+        case .unwatch(let path):
+            try container.encode("unwatch", forKey: .action)
+            try container.encode(path, forKey: .path)
         case .subscribeMids(let exchange, let coins):
             try container.encode("subscribe_mids", forKey: .action)
             try container.encode(exchange, forKey: .exchange)
@@ -38,19 +36,13 @@ enum OutboundMessage: Encodable {
             try container.encode(intervals, forKey: .intervals)
         case .unsubscribeCandles:
             try container.encode("unsubscribe_candles", forKey: .action)
-        case .watchObject(let path):
-            try container.encode("watch_object", forKey: .action)
-            try container.encode(path, forKey: .path)
-        case .unwatchObject(let watchId):
-            try container.encode("unwatch_object", forKey: .action)
-            try container.encode(watchId, forKey: .watchId)
         case .ping:
             try container.encode("ping", forKey: .action)
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, token, realmId, channels, exchange, coins, intervals, path, watchId
+        case action, token, realmId, exchange, coins, intervals, path
     }
 }
 

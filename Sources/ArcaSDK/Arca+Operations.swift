@@ -112,7 +112,8 @@ extension Arca {
         timeoutSeconds: TimeInterval = 30
     ) async throws -> Operation {
         await ws.ensureConnected()
-        await ws.subscribe(channels: [.operations])
+        await ws.watchPath("/")
+        defer { Task { [ws] in await ws.unwatchPath("/") } }
 
         return try await withThrowingTaskGroup(of: Operation.self) { group in
             // WebSocket path: listen for matching operation.updated events

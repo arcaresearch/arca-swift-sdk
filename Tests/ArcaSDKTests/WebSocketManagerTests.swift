@@ -15,22 +15,22 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(json["realmId"] as? String, "rlm_01abc")
     }
 
-    func testSubscribeMessageEncoding() throws {
-        let message = OutboundMessage.subscribe(channels: ["operations", "balances"])
+    func testWatchMessageEncoding() throws {
+        let message = OutboundMessage.watch(path: "/users/alice/main")
         let data = try JSONEncoder().encode(message)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
-        XCTAssertEqual(json["action"] as? String, "subscribe")
-        XCTAssertEqual(json["channels"] as? [String], ["operations", "balances"])
+        XCTAssertEqual(json["action"] as? String, "watch")
+        XCTAssertEqual(json["path"] as? String, "/users/alice/main")
     }
 
-    func testUnsubscribeMessageEncoding() throws {
-        let message = OutboundMessage.unsubscribe(channels: ["exchange"])
+    func testUnwatchMessageEncoding() throws {
+        let message = OutboundMessage.unwatch(path: "/users/alice/main")
         let data = try JSONEncoder().encode(message)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
-        XCTAssertEqual(json["action"] as? String, "unsubscribe")
-        XCTAssertEqual(json["channels"] as? [String], ["exchange"])
+        XCTAssertEqual(json["action"] as? String, "unwatch")
+        XCTAssertEqual(json["path"] as? String, "/users/alice/main")
     }
 
     func testSubscribeMidsMessageEncoding() throws {
