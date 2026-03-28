@@ -359,6 +359,6 @@ final class CandleChartTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {
-        Candle(t: t, o: "100", h: "200", l: "50", c: c, v: "1000", n: 10)
+        Candle(t: t, o: "100", h: "200", l: "50", c: c, v: "1000", n: 10, s: nil)
     }
 }
