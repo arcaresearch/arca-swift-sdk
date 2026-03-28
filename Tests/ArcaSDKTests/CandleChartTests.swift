@@ -141,6 +141,68 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(arr[1].c, "210")
     }
 
+    func testApplyOutOfOrderUpdateExisting() {
+        var arr = [
+            makeCandle(t: 1000, c: "100"),
+            makeCandle(t: 2000, c: "200"),
+            makeCandle(t: 3000, c: "300"),
+        ]
+        // candle.closed for t=2000 arrives after t=3000 is already the tail
+        applyCandle(makeCandle(t: 2000, c: "250"), to: &arr)
+        XCTAssertEqual(arr.count, 3, "Out-of-order update must not create a duplicate")
+        XCTAssertEqual(arr[1].c, "250")
+        // Array order preserved
+        XCTAssertEqual(arr[0].t, 1000)
+        XCTAssertEqual(arr[2].t, 3000)
+    }
+
+    func testApplyOutOfOrderInsertNewTimestamp() {
+        var arr = [
+            makeCandle(t: 1000, c: "100"),
+            makeCandle(t: 3000, c: "300"),
+        ]
+        // A candle at t=2000 that we missed (gap) arrives out of order
+        applyCandle(makeCandle(t: 2000, c: "200"), to: &arr)
+        XCTAssertEqual(arr.count, 3, "Missing timestamp should be inserted, not duplicated")
+        XCTAssertEqual(arr[0].t, 1000)
+        XCTAssertEqual(arr[1].t, 2000)
+        XCTAssertEqual(arr[2].t, 3000)
+    }
+
+    func testApplyOutOfOrderInsertBeforeAll() {
+        var arr = [
+            makeCandle(t: 2000, c: "200"),
+            makeCandle(t: 3000, c: "300"),
+        ]
+        applyCandle(makeCandle(t: 1000, c: "100"), to: &arr)
+        XCTAssertEqual(arr.count, 3)
+        XCTAssertEqual(arr[0].t, 1000)
+    }
+
+    func testApplyReconnectScenarioNoDuplicates() {
+        // Simulate: REST returns [t1..t3], then buffered WS events arrive
+        // out of order: candle.closed for t2, candle.updated for t3
+        var arr = [
+            makeCandle(t: 1000, c: "100"),
+            makeCandle(t: 2000, c: "200"),
+            makeCandle(t: 3000, c: "300"),
+        ]
+        // Buffered candle.closed for t=2000 (already in array, not at tail)
+        applyCandle(makeCandle(t: 2000, c: "200_closed"), to: &arr)
+        XCTAssertEqual(arr.count, 3, "Must update in place, not append")
+        XCTAssertEqual(arr[1].c, "200_closed")
+
+        // Buffered candle.updated for t=3000 (already at tail)
+        applyCandle(makeCandle(t: 3000, c: "300_live"), to: &arr)
+        XCTAssertEqual(arr.count, 3)
+        XCTAssertEqual(arr[2].c, "300_live")
+
+        // Verify no duplicates survive a dedup pass
+        let deduped = dedupCandles(arr)
+        XCTAssertEqual(deduped.count, arr.count,
+            "Array should already be free of duplicates")
+    }
+
     // MARK: - loadMore merge pattern
 
     func testPrependOlderCandlesAndDedup() {

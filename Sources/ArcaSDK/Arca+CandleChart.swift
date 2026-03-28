@@ -184,14 +184,36 @@ extension Arca {
     }
 }
 
-/// Apply a single candle to a sorted array: update in place if timestamps
-/// match the last entry, otherwise append.
+/// Apply a single candle to a sorted array. Updates in place if the
+/// timestamp already exists; appends if newer; inserts at the correct
+/// sorted position otherwise. Never creates duplicate timestamps.
 func applyCandle(_ candle: Candle, to arr: inout [Candle]) {
+    // Fast path: update the current (last) candle in place.
     if let last = arr.last, last.t == candle.t {
         arr[arr.count - 1] = candle
-    } else {
-        arr.append(candle)
+        return
     }
+    // Fast path: new bar strictly after the latest — append.
+    if arr.isEmpty || candle.t > arr[arr.count - 1].t {
+        arr.append(candle)
+        return
+    }
+    // Out-of-order candle (e.g., a candle.closed arriving after the next
+    // bucket's candle.updated during WS reconnection). Search backwards
+    // from the tail since out-of-order candles are typically recent.
+    var i = arr.count - 2
+    while i >= 0 {
+        if arr[i].t == candle.t {
+            arr[i] = candle
+            return
+        }
+        if arr[i].t < candle.t {
+            arr.insert(candle, at: i + 1)
+            return
+        }
+        i -= 1
+    }
+    arr.insert(candle, at: 0)
 }
 
 /// Sort candles by timestamp and deduplicate, keeping the last entry for
