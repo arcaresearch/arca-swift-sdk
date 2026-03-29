@@ -219,15 +219,26 @@ await chart.stop()
 }
 ```
 
+### Loading a specific range
+
+When the chart viewport changes (zoom, resize, jump to date), call `ensureRange` with the time range you need. The SDK tracks which ranges have already been fetched, loads only the gaps, and merges everything into the sorted candle array.
+
+```swift
+// Chart zoom-out — tell the SDK what range is now visible:
+let result = await chart.ensureRange(newVisibleStart, newVisibleEnd)
+// result.loadedCount == 0 means the range was already loaded (no network request)
+// result.reachedStart == true means no more history exists before the array start
+```
+
 ### Loading older candles
 
-When the user scrolls to the left edge of the chart (or switches to a wider time range), call `loadMore()` to fetch the next batch of older candles. It merges them into the array and emits an update through the same `updates` stream — no manual stitching required.
+For simple backward scrolling, `loadMore` fetches older candles before the current earliest. It accepts an optional count (default 300).
 
 ```swift
 // In your chart's scroll handler:
-if visibleRange.lowerBound < 10 {
-    let loaded = await chart.loadMore()
-    // loaded == false means no more history is available
+let result = await chart.loadMore(200)
+if result.reachedStart {
+    // No more history available
 }
 ```
 

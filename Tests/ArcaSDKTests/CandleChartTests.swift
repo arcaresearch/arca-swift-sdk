@@ -356,6 +356,129 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(arr[0].c, "0")
     }
 
+    // MARK: - CoverageTracker
+
+    func testCoverageAddSingleRange() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        let gaps = tracker.gaps(from: 100, to: 200)
+        XCTAssertTrue(gaps.isEmpty, "Covered range should have no gaps")
+    }
+
+    func testCoverageGapsEmpty() {
+        let tracker = CoverageTracker()
+        let gaps = tracker.gaps(from: 100, to: 200)
+        XCTAssertEqual(gaps.count, 1)
+        XCTAssertEqual(gaps[0].from, 100)
+        XCTAssertEqual(gaps[0].to, 200)
+    }
+
+    func testCoverageMergesOverlapping() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 150, to: 300)
+        let gaps = tracker.gaps(from: 100, to: 300)
+        XCTAssertTrue(gaps.isEmpty, "Overlapping ranges should merge")
+    }
+
+    func testCoverageMergesAdjacent() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 201, to: 300)
+        let gaps = tracker.gaps(from: 100, to: 300)
+        XCTAssertTrue(gaps.isEmpty, "Adjacent ranges should merge")
+    }
+
+    func testCoverageGapBetweenTwoRanges() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 300, to: 400)
+        let gaps = tracker.gaps(from: 100, to: 400)
+        XCTAssertEqual(gaps.count, 1)
+        XCTAssertEqual(gaps[0].from, 201)
+        XCTAssertEqual(gaps[0].to, 299)
+    }
+
+    func testCoverageGapsAtBothEdges() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 200, to: 300)
+        let gaps = tracker.gaps(from: 100, to: 400)
+        XCTAssertEqual(gaps.count, 2)
+        XCTAssertEqual(gaps[0].from, 100)
+        XCTAssertEqual(gaps[0].to, 199)
+        XCTAssertEqual(gaps[1].from, 301)
+        XCTAssertEqual(gaps[1].to, 400)
+    }
+
+    func testCoverageIdempotentAdd() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 100, to: 200)
+        let gaps = tracker.gaps(from: 100, to: 200)
+        XCTAssertTrue(gaps.isEmpty, "Duplicate add should be idempotent")
+    }
+
+    func testCoverageMultipleGaps() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 400, to: 500)
+        tracker.add(from: 700, to: 800)
+        let gaps = tracker.gaps(from: 0, to: 1000)
+        XCTAssertEqual(gaps.count, 4)
+        XCTAssertEqual(gaps[0].from, 0)
+        XCTAssertEqual(gaps[0].to, 99)
+        XCTAssertEqual(gaps[1].from, 201)
+        XCTAssertEqual(gaps[1].to, 399)
+        XCTAssertEqual(gaps[2].from, 501)
+        XCTAssertEqual(gaps[2].to, 699)
+        XCTAssertEqual(gaps[3].from, 801)
+        XCTAssertEqual(gaps[3].to, 1000)
+    }
+
+    func testCoverageQuerySubsetOfCovered() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 500)
+        let gaps = tracker.gaps(from: 200, to: 400)
+        XCTAssertTrue(gaps.isEmpty, "Query within covered range should have no gaps")
+    }
+
+    func testCoverageOutOfOrderAdds() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 500, to: 600)
+        tracker.add(from: 100, to: 200)
+        tracker.add(from: 300, to: 400)
+        let gaps = tracker.gaps(from: 100, to: 600)
+        XCTAssertEqual(gaps.count, 2)
+        XCTAssertEqual(gaps[0].from, 201)
+        XCTAssertEqual(gaps[0].to, 299)
+        XCTAssertEqual(gaps[1].from, 401)
+        XCTAssertEqual(gaps[1].to, 499)
+    }
+
+    func testCoverageGapsReversedRange() {
+        let tracker = CoverageTracker()
+        tracker.add(from: 100, to: 200)
+        let gaps = tracker.gaps(from: 200, to: 100)
+        XCTAssertTrue(gaps.isEmpty, "Reversed range should return no gaps")
+    }
+
+    // MARK: - LoadRangeResult
+
+    func testLoadRangeResultFields() {
+        let result = LoadRangeResult(
+            loadedCount: 42,
+            totalCount: 300,
+            rangeStart: 1000,
+            rangeEnd: 5000,
+            reachedStart: true
+        )
+        XCTAssertEqual(result.loadedCount, 42)
+        XCTAssertEqual(result.totalCount, 300)
+        XCTAssertEqual(result.rangeStart, 1000)
+        XCTAssertEqual(result.rangeEnd, 5000)
+        XCTAssertTrue(result.reachedStart)
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

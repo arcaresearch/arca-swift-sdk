@@ -1,7 +1,63 @@
 import Foundation
 
 private let gapRecoveryCandles = 50
-private let loadMoreBatchSize = 300
+private let defaultLoadCount = 300
+
+// MARK: - CoverageTracker
+
+/// Tracks which time ranges have been loaded as a sorted, non-overlapping
+/// interval list. Merge-on-insert keeps the list compact; gap queries against
+/// a requested range run in O(n) where n is the number of coverage intervals.
+final class CoverageTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var intervals: [(from: Int, to: Int)] = []
+
+    func add(from: Int, to: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        intervals.append((from, to))
+        intervals.sort { $0.from < $1.from }
+        var merged: [(from: Int, to: Int)] = []
+        for iv in intervals {
+            if let last = merged.last, iv.from <= last.to + 1 {
+                merged[merged.count - 1] = (last.from, max(last.to, iv.to))
+            } else {
+                merged.append(iv)
+            }
+        }
+        intervals = merged
+    }
+
+    func gaps(from: Int, to: Int) -> [(from: Int, to: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard from <= to else { return [] }
+        var result: [(from: Int, to: Int)] = []
+        var cursor = from
+        for iv in intervals {
+            if cursor > to { break }
+            if iv.to < cursor { continue }
+            if iv.from > cursor {
+                result.append((cursor, min(iv.from - 1, to)))
+            }
+            cursor = max(cursor, iv.to + 1)
+        }
+        if cursor <= to {
+            result.append((cursor, to))
+        }
+        return result
+    }
+
+    #if DEBUG
+    var debugIntervals: [(from: Int, to: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return intervals
+    }
+    #endif
+}
+
+// MARK: - watchCandleChart
 
 extension Arca {
 
@@ -11,9 +67,9 @@ extension Arca {
     ///
     /// On WebSocket reconnection, recent candles are refetched to fill any gap.
     ///
-    /// Call ``CandleChartStream/loadMore`` when the user scrolls to the left
-    /// edge of the chart — it fetches the next batch of older candles, merges
-    /// them, and emits an update through the same `updates` stream.
+    /// Use ``CandleChartStream/ensureRange`` when the visible viewport changes
+    /// (zoom, resize, jump to date). Use ``CandleChartStream/loadMore`` for
+    /// simple backward scrolling.
     ///
     /// - Parameters:
     ///   - coin: Canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
@@ -31,17 +87,16 @@ extension Arca {
         let continuationBox = SendableBox<AsyncStream<CandleChartUpdate>.Continuation?>(nil)
         let loadingMore = SendableBox<Bool>(false)
         let stoppedBox = SendableBox<Bool>(false)
+        let reachedStartBox = SendableBox<Bool>(false)
+        let coverage = CoverageTracker()
 
-        // Subscribe to WS candles BEFORE fetching history so we don't miss
-        // events that arrive between the HTTP snapshot and subscription.
         await ws.acquireCandles(coins: [coin], intervals: [interval])
 
         let candleStream = await ws.candleEvents()
         let statusStream = await ws.statusStream
 
-        // Fetch historical candles with explicit startTime so the cache key
-        // is unique per invocation (avoids stale HistoryCache hits).
-        let startTime = Int(Date().timeIntervalSince1970 * 1000) - interval.milliseconds * count
+        let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+        let startTime = nowMs - interval.milliseconds * count
         let history: CandlesResponse
         do {
             history = try await getCandles(
@@ -60,6 +115,10 @@ extension Arca {
         candlesBox.update { $0 = dedupCandles(history.candles) }
         state.update { $0 = .connected }
         let needsRetry = history.candles.isEmpty
+
+        if !history.candles.isEmpty {
+            coverage.add(from: startTime, to: nowMs)
+        }
 
         let previousCount = SendableBox<Int>(0)
 
@@ -83,8 +142,6 @@ extension Arca {
         let updates = AsyncStream<CandleChartUpdate> { continuation in
             continuationBox.update { $0 = continuation }
 
-            // Emit the historical snapshot immediately so `for await` renders
-            // the chart on the very first iteration — no waiting for a WS event.
             let initial = candlesBox.value
             if let last = initial.last {
                 yieldSnapshot(continuation, initial, last)
@@ -124,6 +181,8 @@ extension Arca {
                                     arr.append(contentsOf: res.candles)
                                     arr = dedupCandles(arr)
                                 }
+                                let gapEnd = Int(Date().timeIntervalSince1970 * 1000)
+                                coverage.add(from: gapStart, to: gapEnd)
                                 if let last = snapshot.last {
                                     yieldSnapshot(continuation, snapshot, last)
                                 }
@@ -134,12 +193,9 @@ extension Arca {
                 }
             }
 
-            // If the initial fetch returned empty candles, retry indefinitely
-            // with capped exponential backoff. Staying on a screen should never
-            // produce worse data than closing and reopening the app.
             let retryTask: Task<Void, Never>? = needsRetry ? Task { [weak self] in
-                var delay: UInt64 = 1_000_000_000 // 1s
-                let maxDelay: UInt64 = 30_000_000_000 // 30s
+                var delay: UInt64 = 1_000_000_000
+                let maxDelay: UInt64 = 30_000_000_000
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: delay)
                     guard !Task.isCancelled, let self = self else { return }
@@ -156,6 +212,8 @@ extension Arca {
                                 arr.append(contentsOf: res.candles)
                                 arr = dedupCandles(arr)
                             }
+                            let retryEnd = Int(Date().timeIntervalSince1970 * 1000)
+                            coverage.add(from: retryStart, to: retryEnd)
                             if let last = snapshot.last {
                                 yieldSnapshot(continuation, snapshot, last)
                             }
@@ -177,49 +235,93 @@ extension Arca {
             }
         }
 
-        let loadMore: @Sendable () async -> Bool = { [weak self] in
-            guard !stoppedBox.value else { return false }
+        // MARK: ensureRange
+
+        let ensureRange: @Sendable (_ start: Int, _ end: Int) async -> LoadRangeResult = { [weak self] start, end in
+            let makeResult: ([Candle], Int) -> LoadRangeResult = { candles, loaded in
+                LoadRangeResult(
+                    loadedCount: loaded,
+                    totalCount: candles.count,
+                    rangeStart: candles.first?.t ?? 0,
+                    rangeEnd: candles.last?.t ?? 0,
+                    reachedStart: reachedStartBox.value
+                )
+            }
+
+            guard !stoppedBox.value, let self = self else {
+                return makeResult(candlesBox.value, 0)
+            }
+
             var alreadyLoading = false
             loadingMore.update { val in
                 alreadyLoading = val
                 val = true
             }
-            if alreadyLoading { return false }
+            if alreadyLoading {
+                return makeResult(candlesBox.value, 0)
+            }
             defer { loadingMore.update { $0 = false } }
 
-            guard let self = self else { return false }
-
-            let earliest = candlesBox.value.first?.t
-            guard let earliest = earliest, earliest > 0 else { return false }
-
-            let endTime = earliest - 1
-            let fetchStart = max(0, endTime - interval.milliseconds * loadMoreBatchSize)
-
-            guard let res = try? await self.getCandles(
-                coin: coin,
-                interval: interval,
-                startTime: fetchStart,
-                endTime: endTime
-            ), !res.candles.isEmpty else {
-                return false
+            let gaps = coverage.gaps(from: start, to: end)
+            if gaps.isEmpty {
+                return makeResult(candlesBox.value, 0)
             }
 
-            let snapshot = candlesBox.updateAndGet { arr in
-                arr.insert(contentsOf: res.candles, at: 0)
-                arr = dedupCandles(arr)
+            var totalLoaded = 0
+            for gap in gaps {
+                let res = try? await self.getCandles(
+                    coin: coin,
+                    interval: interval,
+                    startTime: gap.from,
+                    endTime: gap.to
+                )
+
+                if let res = res, !res.candles.isEmpty {
+                    candlesBox.update { arr in
+                        arr.append(contentsOf: res.candles)
+                        arr = dedupCandles(arr)
+                    }
+                    totalLoaded += res.candles.count
+                } else {
+                    let earliest = candlesBox.value.first?.t ?? Int.max
+                    if gap.from <= earliest {
+                        reachedStartBox.update { $0 = true }
+                    }
+                }
+                coverage.add(from: gap.from, to: gap.to)
             }
 
-            if let cont = continuationBox.value, let first = snapshot.first {
-                yieldSnapshot(cont, snapshot, first)
+            let snapshot = candlesBox.value
+            if totalLoaded > 0, let cont = continuationBox.value, let last = snapshot.last {
+                yieldSnapshot(cont, snapshot, last)
             }
 
-            return true
+            return makeResult(snapshot, totalLoaded)
+        }
+
+        // MARK: loadMore
+
+        let loadMore: @Sendable (_ count: Int) async -> LoadRangeResult = { count in
+            let earliest = candlesBox.value.first?.t ?? 0
+            guard earliest > 0 else {
+                return LoadRangeResult(
+                    loadedCount: 0,
+                    totalCount: candlesBox.value.count,
+                    rangeStart: 0,
+                    rangeEnd: candlesBox.value.last?.t ?? 0,
+                    reachedStart: reachedStartBox.value
+                )
+            }
+            let end = earliest - 1
+            let start = max(0, end - interval.milliseconds * count)
+            return await ensureRange(start, end)
         }
 
         return CandleChartStream(
             state: state,
             candles: candlesBox,
             updates: updates,
+            ensureRange: ensureRange,
             loadMore: loadMore,
             stop: { [ws] in
                 stoppedBox.update { $0 = true }

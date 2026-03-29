@@ -388,6 +388,21 @@ public struct CandleChartUpdate: Sendable {
     public let latestCandle: Candle
 }
 
+/// Result of ``CandleChartStream/ensureRange`` or ``CandleChartStream/loadMore``.
+public struct LoadRangeResult: Sendable {
+    /// Number of new candles fetched in this call (0 when the range was already loaded).
+    public let loadedCount: Int
+    /// Total candles now in the chart array.
+    public let totalCount: Int
+    /// Timestamp of the earliest candle in the array, or 0 if empty.
+    public let rangeStart: Int
+    /// Timestamp of the latest candle in the array, or 0 if empty.
+    public let rangeEnd: Int
+    /// True if the earliest available candle for this asset is now loaded
+    /// (no more history exists before the current array start).
+    public let reachedStart: Bool
+}
+
 // MARK: - Sparklines
 
 public struct SparklinesResponse: Codable, Sendable {
