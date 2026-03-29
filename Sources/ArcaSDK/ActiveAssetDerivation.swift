@@ -42,7 +42,9 @@ public func deriveActiveAssetData(
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
-    let available = parsePositiveDouble(exchangeState.marginSummary.availableToWithdraw)
+    let equity = parsePositiveDouble(exchangeState.marginSummary.equity)
+    let initialMarginUsed = parsePositiveDouble(exchangeState.marginSummary.initialMarginUsed)
+    let available = max(0, equity - initialMarginUsed)
     let takerRate = parsePositiveDouble(exchangeState.feeRates?.taker)
     let effectiveScale = feeScale.isFinite && feeScale > 0 ? feeScale : 1
     let platformRate: Double = {

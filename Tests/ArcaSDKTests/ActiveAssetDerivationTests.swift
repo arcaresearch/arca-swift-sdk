@@ -5,7 +5,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
 
     private func makeState(
         equity: String = "10000",
-        availableToWithdraw: String = "5000",
+        initialMarginUsed: String = "0",
         positions: [SimPosition] = [],
         takerRate: String = "0.00035",
         platformFee: String? = "0.0001"
@@ -20,10 +20,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
             ),
             marginSummary: SimMarginSummary(
                 equity: equity,
-                initialMarginUsed: "500",
-                maintenanceMarginRequired: "250",
-                availableToWithdraw: availableToWithdraw,
-                totalNtlPos: "10000",
+                initialMarginUsed: initialMarginUsed,
+                maintenanceMarginRequired: "0",
+                availableToWithdraw: equity,
+                totalNtlPos: "0",
                 totalUnrealizedPnl: "0",
                 totalRawUsd: nil
             ),
@@ -65,8 +65,32 @@ final class ActiveAssetDerivationTests: XCTestCase {
         )
     }
 
+    func testUsesEquityMinusInitialMargin_NotAvailableToWithdraw() {
+        // availableToWithdraw (equity - maintenance) is a withdrawal metric.
+        // Max order size must use equity - initialMarginUsed instead.
+        let state = ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"), name: "test",
+                                createdAt: "2026-01-01T00:00:00.000000Z", updatedAt: "2026-01-01T00:00:00.000000Z"),
+            marginSummary: SimMarginSummary(
+                equity: "500", initialMarginUsed: "400", maintenanceMarginRequired: "12",
+                availableToWithdraw: "488", totalNtlPos: "10000", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            crossMarginSummary: nil, crossMaintenanceMarginUsed: nil,
+            positions: [], openOrders: [],
+            feeRates: SimFeeRates(taker: "0.00035", maker: "0.0001", platformFee: "0.0001",
+                                  tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
+            pendingIntents: nil)
+
+        let result = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        guard let data = result else { XCTFail("expected non-nil"); return }
+        let maxBuyUsd = Double(data.maxBuyUsd)!
+        // available = equity - initialMarginUsed = 100, NOT availableToWithdraw = 488
+        // At 5x: ~$500 notional, not ~$2,440
+        XCTAssertTrue(maxBuyUsd < 600, "max notional (\(maxBuyUsd)) should be based on equity-margin (100), not availableToWithdraw (488)")
+        XCTAssertTrue(maxBuyUsd > 400, "max notional (\(maxBuyUsd)) should be positive (~$500 at 5x)")
+    }
+
     func testNoPosition_SymmetricMaxSizes() {
-        let state = makeState(availableToWithdraw: "1000")
+        let state = makeState(equity: "1000")
         let result = deriveActiveAssetData(
             from: state,
             coin: "hl:BTC",
@@ -86,7 +110,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
 
     func testLongPosition_SellMaxIncludesClose() {
         let pos = makePosition(coin: "hl:BTC", side: .long, size: "0.1", marginUsed: "500")
-        let state = makeState(availableToWithdraw: "1000", positions: [pos])
+        let state = makeState(equity: "1500", initialMarginUsed: "500", positions: [pos])
         let result = deriveActiveAssetData(
             from: state,
             coin: "hl:BTC",
@@ -103,7 +127,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
 
     func testShortPosition_BuyMaxIncludesClose() {
         let pos = makePosition(coin: "hl:BTC", side: .short, size: "0.1", marginUsed: "500")
-        let state = makeState(availableToWithdraw: "1000", positions: [pos])
+        let state = makeState(equity: "1500", initialMarginUsed: "500", positions: [pos])
         let result = deriveActiveAssetData(
             from: state,
             coin: "hl:BTC",
@@ -130,7 +154,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testZeroAvailable_ReturnsZeroMax() {
-        let state = makeState(availableToWithdraw: "0")
+        let state = makeState(equity: "500", initialMarginUsed: "500")
         let result = deriveActiveAssetData(
             from: state,
             coin: "hl:BTC",
@@ -145,7 +169,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testBuilderFeeBps_ReducesMaxSize() {
-        let state = makeState(availableToWithdraw: "1000")
+        let state = makeState(equity: "1000")
         let withoutFee = deriveActiveAssetData(
             from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, builderFeeBps: 0
         )
@@ -158,7 +182,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testMaxNotional_NeverExceedsAvailable() {
-        let state = makeState(availableToWithdraw: "282.51")
+        let state = makeState(equity: "282.51")
         let result = deriveActiveAssetData(
             from: state, coin: "hl:BTC", markPx: 68995, leverage: 1, side: .sell, szDecimals: 4
         )
@@ -172,7 +196,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testFloorToDecimals_NoFloatingPointOvershoot() {
         // Craft an input where available / costPerToken is epsilon above a tick
         // boundary in IEEE 754. Without the floor fix, this overshoots by one tick.
-        let state = makeState(availableToWithdraw: "1000")
+        let state = makeState(equity: "1000")
         for markPx in stride(from: 50000.0, to: 70000.0, by: 137.0) {
             let result = deriveActiveAssetData(
                 from: state, coin: "hl:BTC", markPx: markPx, leverage: 1, side: .buy, szDecimals: 4
@@ -186,7 +210,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testDefaultPlatformFee_UsedWhenMissing() {
-        let state = makeState(availableToWithdraw: "1000", platformFee: nil)
+        let state = makeState(equity: "1000", platformFee: nil)
         let result = deriveActiveAssetData(
             from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
         )
@@ -195,7 +219,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testFeeScale_ReducesMaxSize() {
-        let state = makeState(availableToWithdraw: "1000")
+        let state = makeState(equity: "1000")
         let withoutScale = deriveActiveAssetData(
             from: state, coin: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 1
         )
@@ -209,7 +233,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testFeeScale_DefaultsToOne() {
-        let state = makeState(availableToWithdraw: "1000")
+        let state = makeState(equity: "1000")
         let explicit = deriveActiveAssetData(
             from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, feeScale: 1
         )
