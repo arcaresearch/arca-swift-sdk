@@ -201,9 +201,13 @@ extension Arca {
             continuationBox.update { $0 = continuation }
 
             let valTask = Task {
-                for await (valuation, eventPath, wid) in valEvents {
+                for await (valuation, eventPath, wid, rawEvent) in valEvents {
                     guard eventPath == path else { continue }
                     watchIdBox.update { $0 = wid }
+
+                    if rawEvent.driftCorrected == true {
+                        print("[Arca] Warning: Valuation drift corrected for \(eventPath) (watchId: \(wid)). Previous value was stale.")
+                    }
 
                     if valuation.computed == false {
                         if valBox.value == nil {

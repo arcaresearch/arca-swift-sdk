@@ -396,14 +396,14 @@ public actor WebSocketManager {
         }
     }
 
-    /// Stream of object valuation events (valuation + path + watchId).
-    public func objectValuationEvents() -> AsyncStream<(ObjectValuation, String, String)> {
+    /// Stream of object valuation events (valuation + path + watchId + raw event).
+    public func objectValuationEvents() -> AsyncStream<(ObjectValuation, String, String, RealmEvent)> {
         filteredStream { event in
             guard event.type == EventType.objectValuation.rawValue,
                   let valuation = event.valuation,
                   let path = event.path,
                   let watchId = event.watchId else { return nil }
-            return (valuation, path, watchId)
+            return (valuation, path, watchId, event)
         }
     }
 
