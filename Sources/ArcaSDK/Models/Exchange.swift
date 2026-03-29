@@ -263,6 +263,15 @@ public struct FeeTarget: Codable, Sendable {
 
 // MARK: - Market Data
 
+/// Earliest candle timestamps for an asset. When `earliestMs < hlEarliestMs`,
+/// extended (pre-listing) history is available.
+public struct CandleHistoryBounds: Codable, Sendable {
+    /// Absolute earliest candle timestamp (includes external pre-listing data).
+    public let earliestMs: Int
+    /// Earliest venue-native (Hyperliquid) candle timestamp.
+    public let hlEarliestMs: Int
+}
+
 public struct SimMetaAsset: Codable, Sendable {
     public let name: String
     public let dex: String?
@@ -274,6 +283,8 @@ public struct SimMetaAsset: Codable, Sendable {
     public let onlyIsolated: Bool
     /// HIP-3 fee multiplier. Nil or absent for standard perps (defaults to 1.0).
     public let feeScale: Double?
+    /// Candle history availability. Present when history bounds are known.
+    public let candleHistory: CandleHistoryBounds?
 }
 
 public struct SimMetaResponse: Codable, Sendable {
