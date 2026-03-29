@@ -24,6 +24,18 @@ public struct OperationWatchStream: Sendable {
     /// Stop listening and unsubscribe from operation updates.
     public let stop: @Sendable () async -> Void
 
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable (Operation, RealmEvent) -> Void]>
+
+    /// Register a callback invoked on each operation event. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable (Operation, RealmEvent) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
+
     /// Returns when the first snapshot has been received. Never throws.
     public func ready() async {
         while state.value == .loading {
@@ -33,9 +45,15 @@ public struct OperationWatchStream: Sendable {
 }
 
 /// Thread-safe mutable wrapper for use in Sendable stream types.
+///
+/// Supports callback-based change observation via ``onChange(_:)``.
+/// Register a handler to be notified after each mutation — useful for
+/// driving SwiftUI state or bridging to other reactive patterns without
+/// needing to iterate an `AsyncStream`.
 public final class SendableBox<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var _value: T
+    private var _observers: [UUID: @Sendable (T) -> Void] = [:]
 
     public init(_ value: T) { self._value = value }
 
@@ -48,7 +66,10 @@ public final class SendableBox<T: Sendable>: @unchecked Sendable {
     public func update(_ transform: (inout T) -> Void) {
         lock.lock()
         transform(&_value)
+        let snapshot = _value
+        let observers = _observers
         lock.unlock()
+        for cb in observers.values { cb(snapshot) }
     }
 
     /// Atomically mutate the value and return the post-mutation snapshot.
@@ -56,8 +77,28 @@ public final class SendableBox<T: Sendable>: @unchecked Sendable {
         lock.lock()
         transform(&_value)
         let result = _value
+        let observers = _observers
         lock.unlock()
+        for cb in observers.values { cb(result) }
         return result
+    }
+
+    /// Register a callback invoked after each mutation with the new value.
+    /// Returns an ID that can be passed to ``removeObserver(_:)`` to unregister.
+    @discardableResult
+    public func onChange(_ handler: @escaping @Sendable (T) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock()
+        _observers[id] = handler
+        lock.unlock()
+        return id
+    }
+
+    /// Remove a previously registered ``onChange(_:)`` handler.
+    public func removeObserver(_ id: UUID) {
+        lock.lock()
+        _observers.removeValue(forKey: id)
+        lock.unlock()
     }
 }
 
@@ -80,6 +121,18 @@ public struct BalanceWatchStream: Sendable {
     public let updates: AsyncStream<(String, RealmEvent)>
     /// Stop listening and unsubscribe from balance updates.
     public let stop: @Sendable () async -> Void
+
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable (String, RealmEvent) -> Void]>
+
+    /// Register a callback invoked on each balance update. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable (String, RealmEvent) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
 
     /// Returns when the first snapshot has been received. Never throws.
     public func ready() async {
@@ -107,6 +160,18 @@ public struct ObjectWatchStream: Sendable {
     /// Stop listening and unsubscribe.
     public let stop: @Sendable () async -> Void
 
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable (ObjectValuation) -> Void]>
+
+    /// Register a callback invoked on each valuation update. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable (ObjectValuation) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
+
     /// Returns when the first valuation has been received. Never throws.
     public func ready() async {
         while state.value == .loading {
@@ -131,6 +196,18 @@ public struct AggregationWatchStream: Sendable {
     public let updates: AsyncStream<PathAggregation>
     /// Stop listening, unsubscribe from updates, and destroy the server-side watch.
     public let stop: @Sendable () async -> Void
+
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable (PathAggregation) -> Void]>
+
+    /// Register a callback invoked on each aggregation update. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable (PathAggregation) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
 
     /// Returns when the first aggregation has been received. Never throws.
     public func ready() async {
@@ -233,6 +310,14 @@ public struct CandleWatchStream: Sendable {
 /// Maintains a deduped, sorted candle array that updates on every
 /// `candle.updated` and `candle.closed` event. Automatically recovers
 /// gaps on WebSocket reconnection by refetching recent candles.
+///
+/// Two ways to observe live updates:
+/// - **AsyncStream**: iterate ``updates`` with `for await`.
+/// - **Callback**: call ``onUpdate(_:)`` for push-based delivery
+///   (easier to integrate with SwiftUI `@State`).
+///
+/// The ``candles`` property is always current; use ``SendableBox/onChange(_:)``
+/// on it directly if you only need the raw array.
 public struct CandleChartStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
@@ -240,6 +325,27 @@ public struct CandleChartStream: Sendable {
     public let candles: SendableBox<[Candle]>
     /// Async stream of chart updates.
     public let updates: AsyncStream<CandleChartUpdate>
+
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable (CandleChartUpdate) -> Void]>
+
+    /// Register a callback invoked on each chart update (candle added or
+    /// updated). Returns an unsubscribe function.
+    ///
+    /// ```swift
+    /// let unsub = stream.onUpdate { update in
+    ///     self.chartCandles = update.candles
+    /// }
+    /// // later:
+    /// unsub()
+    /// ```
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable (CandleChartUpdate) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
 
     /// Ensure candles are loaded for the given time range. The SDK tracks
     /// which ranges have already been fetched and only requests the gaps.

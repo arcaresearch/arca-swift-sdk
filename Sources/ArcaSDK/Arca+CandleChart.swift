@@ -121,6 +121,7 @@ extension Arca {
         }
 
         let previousCount = SendableBox<Int>(0)
+        let chartCallbacks = SendableBox<[UUID: @Sendable (CandleChartUpdate) -> Void]>([:])
 
         let yieldSnapshot: @Sendable (AsyncStream<CandleChartUpdate>.Continuation, [Candle], Candle) -> Void = {
             cont, snapshot, trigger in
@@ -133,10 +134,13 @@ extension Arca {
                 return
             }
             previousCount.update { $0 = max($0, count) }
-            cont.yield(CandleChartUpdate(
+            let update = CandleChartUpdate(
                 candles: snapshot,
                 latestCandle: trigger
-            ))
+            )
+            cont.yield(update)
+            let cbs = chartCallbacks.value
+            for cb in cbs.values { cb(update) }
         }
 
         let updates = AsyncStream<CandleChartUpdate> { continuation in
@@ -321,6 +325,7 @@ extension Arca {
             state: state,
             candles: candlesBox,
             updates: updates,
+            updateCallbacks: chartCallbacks,
             ensureRange: ensureRange,
             loadMore: loadMore,
             stop: { [ws] in

@@ -479,6 +479,148 @@ final class CandleChartTests: XCTestCase {
         XCTAssertTrue(result.reachedStart)
     }
 
+    // MARK: - SendableBox.onChange
+
+    func testOnChangeFiresOnUpdate() {
+        let box = SendableBox<Int>(0)
+        var received: [Int] = []
+        box.onChange { received.append($0) }
+
+        box.update { $0 = 1 }
+        box.update { $0 = 2 }
+        box.update { $0 = 3 }
+
+        XCTAssertEqual(received, [1, 2, 3])
+    }
+
+    func testOnChangeFiresOnUpdateAndGet() {
+        let box = SendableBox<Int>(0)
+        var received: [Int] = []
+        box.onChange { received.append($0) }
+
+        let result = box.updateAndGet { $0 = 42 }
+        XCTAssertEqual(result, 42)
+        XCTAssertEqual(received, [42])
+    }
+
+    func testOnChangeMultipleObservers() {
+        let box = SendableBox<Int>(0)
+        var first: [Int] = []
+        var second: [Int] = []
+        box.onChange { first.append($0) }
+        box.onChange { second.append($0) }
+
+        box.update { $0 = 10 }
+
+        XCTAssertEqual(first, [10])
+        XCTAssertEqual(second, [10])
+    }
+
+    func testRemoveObserver() {
+        let box = SendableBox<Int>(0)
+        var received: [Int] = []
+        let id = box.onChange { received.append($0) }
+
+        box.update { $0 = 1 }
+        XCTAssertEqual(received, [1])
+
+        box.removeObserver(id)
+        box.update { $0 = 2 }
+        XCTAssertEqual(received, [1], "Removed observer must not fire")
+    }
+
+    func testOnChangeConcurrentSafety() {
+        let box = SendableBox<Int>(0)
+        let count = SendableBox<Int>(0)
+        box.onChange { _ in
+            count.update { $0 += 1 }
+        }
+
+        let iterations = 500
+        let expectation = XCTestExpectation(description: "concurrent onChange")
+        expectation.expectedFulfillmentCount = iterations
+
+        for i in 0..<iterations {
+            DispatchQueue.global().async {
+                box.update { $0 = i }
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 10)
+        XCTAssertEqual(count.value, iterations)
+    }
+
+    // MARK: - CandleChartStream.onUpdate
+
+    func testCandleChartStreamOnUpdateCallback() {
+        let callbacks = SendableBox<[UUID: @Sendable (CandleChartUpdate) -> Void]>([:])
+        let candlesBox = SendableBox<[Candle]>([])
+
+        let stream = CandleChartStream(
+            state: SendableBox(.connected),
+            candles: candlesBox,
+            updates: AsyncStream { $0.finish() },
+            updateCallbacks: callbacks,
+            ensureRange: { _, _ in LoadRangeResult(loadedCount: 0, totalCount: 0, rangeStart: 0, rangeEnd: 0, reachedStart: false) },
+            loadMore: { _ in LoadRangeResult(loadedCount: 0, totalCount: 0, rangeStart: 0, rangeEnd: 0, reachedStart: false) },
+            stop: { }
+        )
+
+        var received: [CandleChartUpdate] = []
+        let unsub = stream.onUpdate { received.append($0) }
+
+        let candle = makeCandle(t: 1000, c: "100")
+        let update = CandleChartUpdate(candles: [candle], latestCandle: candle)
+        let cbs = callbacks.value
+        for cb in cbs.values { cb(update) }
+
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received[0].candles.count, 1)
+        XCTAssertEqual(received[0].latestCandle.t, 1000)
+
+        unsub()
+
+        let update2 = CandleChartUpdate(candles: [candle], latestCandle: candle)
+        let cbs2 = callbacks.value
+        for cb in cbs2.values { cb(update2) }
+        XCTAssertEqual(received.count, 1, "Unsubscribed callback must not fire")
+    }
+
+    func testCandleChartStreamMultipleOnUpdateCallbacks() {
+        let callbacks = SendableBox<[UUID: @Sendable (CandleChartUpdate) -> Void]>([:])
+
+        let stream = CandleChartStream(
+            state: SendableBox(.connected),
+            candles: SendableBox([]),
+            updates: AsyncStream { $0.finish() },
+            updateCallbacks: callbacks,
+            ensureRange: { _, _ in LoadRangeResult(loadedCount: 0, totalCount: 0, rangeStart: 0, rangeEnd: 0, reachedStart: false) },
+            loadMore: { _ in LoadRangeResult(loadedCount: 0, totalCount: 0, rangeStart: 0, rangeEnd: 0, reachedStart: false) },
+            stop: { }
+        )
+
+        var firstCount = 0
+        var secondCount = 0
+        stream.onUpdate { _ in firstCount += 1 }
+        let unsub2 = stream.onUpdate { _ in secondCount += 1 }
+
+        let candle = makeCandle(t: 1000, c: "100")
+        let update = CandleChartUpdate(candles: [candle], latestCandle: candle)
+        let cbs = callbacks.value
+        for cb in cbs.values { cb(update) }
+
+        XCTAssertEqual(firstCount, 1)
+        XCTAssertEqual(secondCount, 1)
+
+        unsub2()
+
+        let cbs2 = callbacks.value
+        for cb in cbs2.values { cb(update) }
+        XCTAssertEqual(firstCount, 2)
+        XCTAssertEqual(secondCount, 1, "Second callback should not fire after unsub")
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

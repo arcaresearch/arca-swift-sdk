@@ -40,6 +40,8 @@ extension Arca {
         }
         state.update { $0 = .connected }
 
+        let opCallbacks = SendableBox<[UUID: @Sendable (Operation, RealmEvent) -> Void]>([:])
+
         let operationUpdates = await ws.operationEvents()
         let updates = AsyncStream<(Operation, RealmEvent)> { continuation in
             let task = Task {
@@ -52,6 +54,8 @@ extension Arca {
                         }
                     }
                     continuation.yield((op, event))
+                    let cbs = opCallbacks.value
+                    for cb in cbs.values { cb(op, event) }
                 }
                 continuation.finish()
             }
@@ -66,7 +70,8 @@ extension Arca {
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
                 await ws.unwatchPath(path)
-            }
+            },
+            updateCallbacks: opCallbacks
         )
         await stream.ready()
         return stream
@@ -115,6 +120,8 @@ extension Arca {
         }
         state.update { $0 = .connected }
 
+        let balCallbacks = SendableBox<[UUID: @Sendable (String, RealmEvent) -> Void]>([:])
+
         let balanceUpdates = await ws.balanceEvents()
 
         let updates = AsyncStream<(String, RealmEvent)> { continuation in
@@ -124,6 +131,8 @@ extension Arca {
                         continue
                     }
                     continuation.yield((entityId, event))
+                    let cbs = balCallbacks.value
+                    for cb in cbs.values { cb(entityId, event) }
                 }
                 continuation.finish()
             }
@@ -138,7 +147,8 @@ extension Arca {
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
                 await ws.unwatchPath(path)
-            }
+            },
+            updateCallbacks: balCallbacks
         )
         await stream.ready()
         return stream
@@ -194,6 +204,14 @@ extension Arca {
 
         await ws.acquireMids(exchange: exchange)
 
+        let objCallbacks = SendableBox<[UUID: @Sendable (ObjectValuation) -> Void]>([:])
+
+        let yieldValuation: @Sendable (AsyncStream<ObjectValuation>.Continuation, ObjectValuation) -> Void = { cont, val in
+            cont.yield(val)
+            let cbs = objCallbacks.value
+            for cb in cbs.values { cb(val) }
+        }
+
         let valEvents = await ws.objectValuationEvents()
         let midsStream = await ws.midsEvents()
 
@@ -215,7 +233,7 @@ extension Arca {
                             let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                             valBox.update { $0 = revalued }
                             state.update { $0 = .connected }
-                            continuation.yield(revalued)
+                            yieldValuation(continuation, revalued)
                         }
                         continue
                     }
@@ -224,7 +242,7 @@ extension Arca {
                     let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                     valBox.update { $0 = revalued }
                     state.update { $0 = .connected }
-                    continuation.yield(revalued)
+                    yieldValuation(continuation, revalued)
                 }
                 continuation.finish()
             }
@@ -237,7 +255,7 @@ extension Arca {
                     guard let base = valBox.value else { continue }
                     let revalued = base.revalued(with: midsBox.value)
                     valBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    yieldValuation(continuation, revalued)
                 }
             }
 
@@ -262,7 +280,8 @@ extension Arca {
                 await ws.removeGapHandler(gapId)
                 await ws.releaseMids()
                 await ws.unwatchPath(path)
-            }
+            },
+            updateCallbacks: objCallbacks
         )
     }
 
@@ -323,6 +342,14 @@ extension Arca {
 
         await ws.acquireMids(exchange: exchange)
 
+        let aggCallbacks = SendableBox<[UUID: @Sendable (PathAggregation) -> Void]>([:])
+
+        let yieldAgg: @Sendable (AsyncStream<PathAggregation>.Continuation, PathAggregation) -> Void = { cont, agg in
+            cont.yield(agg)
+            let cbs = aggCallbacks.value
+            for cb in cbs.values { cb(agg) }
+        }
+
         let aggEvents = await ws.aggregationEvents()
         let midsStream = await ws.midsEvents()
 
@@ -337,7 +364,7 @@ extension Arca {
                     let revalued = currentMids.isEmpty ? agg : agg.revalued(with: currentMids)
                     aggBox.update { $0 = revalued }
                     state.update { $0 = .connected }
-                    continuation.yield(revalued)
+                    yieldAgg(continuation, revalued)
                 }
                 continuation.finish()
             }
@@ -350,7 +377,7 @@ extension Arca {
                     guard let base = structuralBox.value else { continue }
                     let revalued = base.revalued(with: midsBox.value)
                     aggBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    yieldAgg(continuation, revalued)
                 }
             }
 
@@ -373,7 +400,8 @@ extension Arca {
                 statusTask.cancel()
                 await ws.releaseMids()
                 try? await self.destroyAggregationWatch(watchId: widBox.value)
-            }
+            },
+            updateCallbacks: aggCallbacks
         )
 
         return stream
