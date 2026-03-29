@@ -30,6 +30,7 @@ extension Arca {
         let candlesBox = SendableBox<[Candle]>([])
         let continuationBox = SendableBox<AsyncStream<CandleChartUpdate>.Continuation?>(nil)
         let loadingMore = SendableBox<Bool>(false)
+        let stoppedBox = SendableBox<Bool>(false)
 
         // Subscribe to WS candles BEFORE fetching history so we don't miss
         // events that arrive between the HTTP snapshot and subscription.
@@ -176,6 +177,7 @@ extension Arca {
         }
 
         let loadMore: @Sendable () async -> Bool = { [weak self] in
+            guard !stoppedBox.value else { return false }
             var alreadyLoading = false
             loadingMore.update { val in
                 alreadyLoading = val
@@ -219,6 +221,8 @@ extension Arca {
             updates: updates,
             loadMore: loadMore,
             stop: { [ws] in
+                stoppedBox.update { $0 = true }
+                continuationBox.update { $0 = nil }
                 await ws.releaseCandles(coins: [coin], intervals: [interval])
             }
         )

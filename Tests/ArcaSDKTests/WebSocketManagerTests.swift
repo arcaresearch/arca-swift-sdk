@@ -124,4 +124,42 @@ final class WebSocketManagerTests: XCTestCase {
         group.wait()
         XCTAssertEqual(box.value, 100)
     }
+
+    // MARK: - StoppedBox guard prevents yield after stop
+
+    func testStoppedBoxPreventsYieldAfterStop() async {
+        let continuationBox = SendableBox<AsyncStream<Int>.Continuation?>(nil)
+        let stoppedBox = SendableBox<Bool>(false)
+        var received = [Int]()
+
+        let stream = AsyncStream<Int> { continuation in
+            continuationBox.update { $0 = continuation }
+        }
+
+        let consumer = Task {
+            for await value in stream {
+                received.append(value)
+            }
+        }
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        continuationBox.value?.yield(1)
+
+        stoppedBox.update { $0 = true }
+        continuationBox.update { $0 = nil }
+
+        // Simulate a gap handler Task that checks stoppedBox before yielding
+        // (the pattern we fixed). This should be a no-op.
+        if !stoppedBox.value {
+            continuationBox.value?.yield(2)
+        }
+        // Also verify that nil continuation prevents yield even without the guard
+        continuationBox.value?.yield(3)
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        consumer.cancel()
+
+        XCTAssertEqual(received, [1], "Only pre-stop yield should have been received")
+    }
 }

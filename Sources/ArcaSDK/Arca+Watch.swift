@@ -164,6 +164,7 @@ extension Arca {
         let retryAttemptBox = SendableBox<Int>(0)
         let retryTaskBox = SendableBox<Task<Void, Never>?>(nil)
         let continuationBox = SendableBox<AsyncStream<ObjectValuation>.Continuation?>(nil)
+        let stoppedBox = SendableBox<Bool>(false)
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
@@ -181,8 +182,9 @@ extension Arca {
 
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, !stoppedBox.value else { return }
                 guard let val = try? await self.getObjectValuation(path: path) else { return }
+                guard !stoppedBox.value else { return }
                 let currentMids = midsBox.value
                 let revalued = currentMids.isEmpty ? val : val.revalued(with: currentMids)
                 valBox.update { $0 = revalued }
@@ -250,6 +252,8 @@ extension Arca {
             valuation: valBox,
             updates: updates,
             stop: { [ws] in
+                stoppedBox.update { $0 = true }
+                continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
                 await ws.releaseMids()
@@ -279,6 +283,7 @@ extension Arca {
         let widBox = SendableBox<String>(watchResponse.watchId.rawValue)
         let continuationBox = SendableBox<AsyncStream<PathAggregation>.Continuation?>(nil)
         let refreshingBox = SendableBox<Bool>(false)
+        let stoppedBox = SendableBox<Bool>(false)
 
         let statusStream = await ws.statusStream
         let statusTask = Task { [weak self] in
@@ -286,12 +291,16 @@ extension Arca {
                 if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
                 } else if s == .connected && state.value == .reconnecting {
-                    guard let self = self else { continue }
+                    guard let self = self, !stoppedBox.value else { continue }
                     guard !refreshingBox.value else { continue }
                     refreshingBox.update { $0 = true }
                     do {
                         let oldWatchId = widBox.value
                         let newWatch = try await self.createAggregationWatch(sources: sources)
+                        guard !stoppedBox.value else {
+                            refreshingBox.update { $0 = false }
+                            continue
+                        }
                         widBox.update { $0 = newWatch.watchId.rawValue }
                         try? await self.destroyAggregationWatch(watchId: oldWatchId)
                         structuralBox.update { $0 = newWatch.aggregation }
@@ -355,6 +364,8 @@ extension Arca {
             aggregation: aggBox,
             updates: updates,
             stop: { [ws] in
+                stoppedBox.update { $0 = true }
+                continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 await ws.releaseMids()
                 try? await self.destroyAggregationWatch(watchId: widBox.value)
