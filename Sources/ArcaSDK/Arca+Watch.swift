@@ -163,6 +163,7 @@ extension Arca {
         let midsBox = SendableBox<[String: String]>([:])
         let retryAttemptBox = SendableBox<Int>(0)
         let retryTaskBox = SendableBox<Task<Void, Never>?>(nil)
+        let continuationBox = SendableBox<AsyncStream<ObjectValuation>.Continuation?>(nil)
 
         let statusStream = await ws.statusStream
         let statusTask = Task {
@@ -178,12 +179,25 @@ extension Arca {
             }
         }
 
+        let gapId = await ws.onGap { [weak self] _ in
+            Task { [weak self] in
+                guard let self = self else { return }
+                guard let val = try? await self.getObjectValuation(path: path) else { return }
+                let currentMids = midsBox.value
+                let revalued = currentMids.isEmpty ? val : val.revalued(with: currentMids)
+                valBox.update { $0 = revalued }
+                continuationBox.value?.yield(revalued)
+            }
+        }
+
         await ws.acquireMids(exchange: exchange)
 
         let valEvents = await ws.objectValuationEvents()
         let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<ObjectValuation> { continuation in
+            continuationBox.update { $0 = continuation }
+
             let valTask = Task {
                 for await (valuation, eventPath, wid) in valEvents {
                     guard eventPath == path else { continue }
@@ -237,6 +251,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                await ws.removeGapHandler(gapId)
                 await ws.releaseMids()
                 await ws.unwatchPath(path)
             }
