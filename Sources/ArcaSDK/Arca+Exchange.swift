@@ -378,25 +378,31 @@ extension Arca {
     ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
     ///   - startTime: Optional start time in epoch milliseconds
     ///   - endTime: Optional end time in epoch milliseconds
+    ///   - skipBackfill: When true, the server returns only cached data without
+    ///     waiting for synchronous Hyperliquid backfill. Use for fast initial renders.
     public func getCandles(
         coin: String,
         interval: CandleInterval,
         startTime: Int? = nil,
-        endTime: Int? = nil
+        endTime: Int? = nil,
+        skipBackfill: Bool = false
     ) async throws -> CandlesResponse {
+        let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+        let dur = interval.milliseconds
+        let effectiveEnd = endTime ?? (nowMs / dur * dur)
         let key = buildCacheKey("candles", [
             "coin": coin,
             "interval": interval.rawValue,
             "startTime": startTime.map(String.init),
-            "endTime": endTime.map(String.init),
+            "endTime": String(effectiveEnd),
         ])
         if let cached: CandlesResponse = await historyCache.get(key) {
             return cached
         }
 
-        // Use CDN path when configured and interval supports chunks
         if let cdnBase = candleCdnBaseUrl, interval != .fifteenSeconds,
-           let start = startTime, let end = endTime {
+           let start = startTime {
+            let end = effectiveEnd
             let candles = try await CandleCDN.fetchCandlesFromCDN(
                 baseUrl: cdnBase,
                 coin: coin,
@@ -407,6 +413,7 @@ extension Arca {
                     var q: [String: String] = ["interval": interval.rawValue]
                     q["startTime"] = String(s)
                     q["endTime"] = String(e)
+                    if skipBackfill { q["skipBackfill"] = "true" }
                     let resp: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: q)
                     return resp.candles
                 }
@@ -419,6 +426,7 @@ extension Arca {
         var query: [String: String] = ["interval": interval.rawValue]
         if let startTime = startTime { query["startTime"] = String(startTime) }
         if let endTime = endTime { query["endTime"] = String(endTime) }
+        if skipBackfill { query["skipBackfill"] = "true" }
         let result: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: query)
         await historyCache.set(key, value: result)
         return result

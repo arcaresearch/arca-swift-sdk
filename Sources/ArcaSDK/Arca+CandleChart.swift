@@ -47,7 +47,8 @@ extension Arca {
             history = try await getCandles(
                 coin: coin,
                 interval: interval,
-                startTime: startTime
+                startTime: startTime,
+                skipBackfill: true
             )
         } catch {
             #if DEBUG
