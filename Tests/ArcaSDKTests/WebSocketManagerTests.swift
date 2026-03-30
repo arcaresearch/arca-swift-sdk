@@ -125,6 +125,92 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(box.value, 100)
     }
 
+    // MARK: - mids.snapshot normalization
+
+    func testMidsSnapshotNormalizedToMidsUpdated() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let midsStream = await manager.midsEvents()
+
+        let snapshotJSON = #"{"type":"mids.snapshot","mids":{"hl:BTC":"97000.5","hl:ETH":"3500.25"}}"#
+        await manager.injectMessage(snapshotJSON)
+
+        var received: [String: String]?
+        let consumer = Task {
+            for await mids in midsStream {
+                received = mids
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        consumer.cancel()
+
+        XCTAssertNotNil(received, "mids.snapshot should flow through midsEvents()")
+        XCTAssertEqual(received?["hl:BTC"], "97000.5")
+        XCTAssertEqual(received?["hl:ETH"], "3500.25")
+    }
+
+    func testMidsSnapshotEmptyMapStillDelivered() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let events = await manager.events
+
+        let snapshotJSON = #"{"type":"mids.snapshot","mids":{}}"#
+        await manager.injectMessage(snapshotJSON)
+
+        var received: RealmEvent?
+        let consumer = Task {
+            for await event in events {
+                received = event
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertNotNil(received, "Empty mids.snapshot should still be delivered")
+        XCTAssertEqual(received?.type, EventType.midsUpdated.rawValue,
+                       "mids.snapshot should be rewritten to mids.updated type")
+        XCTAssertEqual(received?.mids, [:])
+    }
+
+    func testMidsUpdatedStillPassesThroughNormally() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let midsStream = await manager.midsEvents()
+
+        let updateJSON = #"{"type":"mids.updated","mids":{"hl:BTC":"97100"},"deliverySeq":1}"#
+        await manager.injectMessage(updateJSON)
+
+        var received: [String: String]?
+        let consumer = Task {
+            for await mids in midsStream {
+                received = mids
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertNotNil(received, "mids.updated should still pass through midsEvents()")
+        XCTAssertEqual(received?["hl:BTC"], "97100")
+    }
+
     // MARK: - StoppedBox guard prevents yield after stop
 
     func testStoppedBoxPreventsYieldAfterStop() async {

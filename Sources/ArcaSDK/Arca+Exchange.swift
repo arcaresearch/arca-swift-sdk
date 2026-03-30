@@ -607,7 +607,9 @@ extension Arca {
             }
         }
 
-        streamState.update { $0 = .connected }
+        if activeAssetBox.value != nil {
+            streamState.update { $0 = .connected }
+        }
 
         let stream = MaxOrderSizeWatchStream(
             state: streamState,

@@ -488,6 +488,13 @@ public actor WebSocketManager {
         }
     }
 
+    // MARK: - Internal: Testing
+
+    /// Inject a raw WebSocket message for testing. Not for production use.
+    internal func injectMessage(_ text: String) {
+        handleMessage(text)
+    }
+
     // MARK: - Private: Connection
 
     private func doConnect() {
@@ -610,6 +617,17 @@ public actor WebSocketManager {
                 webSocketTask = nil
                 if shouldReconnect {
                     scheduleReconnect()
+                }
+                return
+            }
+
+            // Normalize mids.snapshot → mids.updated so midsEvents() receives
+            // the initial price map (mirrors TypeScript SDK behavior).
+            if msgType == "mids.snapshot",
+               let midsRaw = json["mids"] as? [String: String] {
+                let syntheticEvent = RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw)
+                for continuation in eventContinuations.values {
+                    continuation.yield(syntheticEvent)
                 }
                 return
             }
