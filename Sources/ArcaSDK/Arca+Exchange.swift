@@ -119,7 +119,8 @@ extension Arca {
     ///   - tpsl: Take profit (`.takeProfit`) or stop loss (`.stopLoss`)
     ///   - grouping: Lifecycle grouping (`.standalone`, `.normalTpsl`, `.positionTpsl`)
     ///   - useMax: When true, the server resolves max order size at execution time. `size` serves as the reference.
-    ///   - maxSizeTolerance: Max allowed downside deviation as a fraction (0.02 = 2%). Defaults to 0.02. Server max: 0.25.
+    ///   - sizeTolerance: Max allowed downward size adjustment as a fraction (0.01 = 1%). Server may reduce `size` by up to this percentage to fit available margin. Never increases size. Recommended: 0.01 for interactive, 0.02 for retail. Server max: 0.25.
+    ///   - maxSizeTolerance: Deprecated — use `sizeTolerance` instead.
     public func placeOrder(
         path: String,
         objectId: String,
@@ -139,8 +140,10 @@ extension Arca {
         tpsl: TpslType? = nil,
         grouping: TpslGrouping? = nil,
         useMax: Bool? = nil,
+        sizeTolerance: Double? = nil,
         maxSizeTolerance: Double? = nil
     ) -> OrderHandle {
+        let effectiveTolerance = sizeTolerance ?? maxSizeTolerance
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
             try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
@@ -161,7 +164,7 @@ extension Arca {
                 tpsl: tpsl?.rawValue,
                 grouping: grouping?.rawValue,
                 useMax: useMax,
-                maxSizeTolerance: maxSizeTolerance
+                sizeTolerance: effectiveTolerance
             ))
         }
 
@@ -289,7 +292,7 @@ extension Arca {
                 tpsl: nil,
                 grouping: nil,
                 useMax: nil,
-                maxSizeTolerance: nil
+                sizeTolerance: nil
             ))
         }
 
@@ -718,5 +721,5 @@ private struct PlaceOrderRequest: Encodable {
     let tpsl: String?
     let grouping: String?
     let useMax: Bool?
-    let maxSizeTolerance: Double?
+    let sizeTolerance: Double?
 }

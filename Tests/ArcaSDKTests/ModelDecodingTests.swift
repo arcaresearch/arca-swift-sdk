@@ -923,7 +923,7 @@ final class ModelDecodingTests: XCTestCase {
             "maxSellSize": "-0.1538",
             "maxBuyUsd": "10000",
             "maxSellUsd": "-10000",
-            "availableToTrade": ["0.1538", "-0.1538"],
+            "availableToTrade": "5000",
             "markPx": "65000",
             "feeRate": "0.00045"
         }
@@ -934,7 +934,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(data.leverage.type, .cross)
         XCTAssertEqual(data.leverage.value, 5)
         XCTAssertEqual(data.maxBuySize, "0.1538")
-        XCTAssertEqual(data.availableToTrade?.first, "0.1538")
+        XCTAssertEqual(data.availableToTrade, "5000")
         XCTAssertEqual(data.markPx, "65000")
     }
 

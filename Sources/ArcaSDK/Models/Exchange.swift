@@ -224,9 +224,60 @@ public struct ActiveAssetData: Codable, Sendable {
     public let maxBuyUsd: String
     /// Max sell size in USD (positive).
     public let maxSellUsd: String
-    /// Buy/sell token amounts currently available to trade [buy, sell].
-    public let availableToTrade: [String]?
+    /// Raw available margin in USD (equity minus margin in use). Direction-agnostic.
+    /// Use for "buying power" display. Per-side max exposure uses maxBuyUsd/maxSellUsd.
+    public let availableToTrade: String
     public let markPx: String
+    /// Effective fee rate as a decimal (all-in: exchange taker + platform + builder fee).
+    public let feeRate: String
+}
+
+// MARK: - Order Breakdown
+
+/// How the `amount` should be interpreted by ``Arca/orderBreakdown(options:)``.
+public enum OrderBreakdownAmountType: String, Sendable {
+    case spend
+    case notional
+    case tokens
+}
+
+/// Input options for ``Arca/orderBreakdown(options:)``.
+public struct OrderBreakdownOptions: Sendable {
+    public let amount: String
+    public let amountType: OrderBreakdownAmountType
+    public let leverage: Int
+    public let feeRate: String
+    public let price: String
+    public let side: OrderSide
+    public let szDecimals: Int
+
+    public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
+                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5) {
+        self.amount = amount
+        self.amountType = amountType
+        self.leverage = leverage
+        self.feeRate = feeRate
+        self.price = price
+        self.side = side
+        self.szDecimals = szDecimals
+    }
+}
+
+/// Result of ``Arca/orderBreakdown(options:)``.
+public struct OrderBreakdown: Sendable {
+    /// Position size in tokens (committed quantity).
+    public let tokens: String
+    /// Position exposure in USD (tokens * price).
+    public let notionalUsd: String
+    /// Margin required from balance (notional / leverage).
+    public let marginRequired: String
+    /// Estimated fee from balance (notional * feeRate).
+    public let estimatedFee: String
+    /// Total deducted from balance (margin + fee).
+    public let totalSpend: String
+    /// Price used for the calculation.
+    public let price: String
+    /// Fee rate used for the calculation.
     public let feeRate: String
 }
 

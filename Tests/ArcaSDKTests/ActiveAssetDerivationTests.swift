@@ -264,4 +264,52 @@ final class ActiveAssetDerivationTests: XCTestCase {
         guard let a = explicit, let b = implicit else { XCTFail("expected non-nil"); return }
         XCTAssertEqual(a.maxBuySize, b.maxBuySize, "omitting feeScale should behave like feeScale=1")
     }
+
+    // MARK: - orderBreakdown tests
+
+    func testOrderBreakdown_SpendMode() {
+        let result = Arca.orderBreakdown(options: OrderBreakdownOptions(
+            amount: "200", amountType: .spend, leverage: 10,
+            feeRate: "0.00045", price: "70.87", side: .buy, szDecimals: 5
+        ))
+        let total = Double(result.totalSpend)!
+        XCTAssertTrue(abs(total - 200) < 1, "totalSpend (\(total)) should be ~200")
+        let notional = Double(result.notionalUsd)!
+        XCTAssertTrue(notional > 1900 && notional < 2000, "notional (\(notional)) should be ~1991")
+        XCTAssertTrue(Double(result.tokens)! > 0)
+        XCTAssertEqual(result.price, "70.87")
+        XCTAssertEqual(result.feeRate, "0.00045")
+    }
+
+    func testOrderBreakdown_NotionalMode() {
+        let result = Arca.orderBreakdown(options: OrderBreakdownOptions(
+            amount: "2000", amountType: .notional, leverage: 10,
+            feeRate: "0.00045", price: "100", side: .sell, szDecimals: 3
+        ))
+        XCTAssertEqual(Double(result.tokens)!, 20, accuracy: 0.001)
+        XCTAssertEqual(Double(result.notionalUsd)!, 2000, accuracy: 0.01)
+        XCTAssertEqual(Double(result.marginRequired)!, 200, accuracy: 0.01)
+        XCTAssertTrue(abs(Double(result.estimatedFee)! - 0.9) < 0.1)
+    }
+
+    func testOrderBreakdown_TokensMode() {
+        let result = Arca.orderBreakdown(options: OrderBreakdownOptions(
+            amount: "5", amountType: .tokens, leverage: 2,
+            feeRate: "0.001", price: "50", side: .buy, szDecimals: 2
+        ))
+        XCTAssertEqual(Double(result.tokens)!, 5, accuracy: 0.01)
+        XCTAssertEqual(Double(result.notionalUsd)!, 250, accuracy: 0.01)
+        XCTAssertEqual(Double(result.marginRequired)!, 125, accuracy: 0.01)
+        XCTAssertEqual(Double(result.estimatedFee)!, 0.25, accuracy: 0.001)
+        XCTAssertEqual(Double(result.totalSpend)!, 125.25, accuracy: 0.01)
+    }
+
+    func testOrderBreakdown_ZeroAmount_ReturnsZeros() {
+        let result = Arca.orderBreakdown(options: OrderBreakdownOptions(
+            amount: "0", amountType: .spend, leverage: 10,
+            feeRate: "0.001", price: "100", side: .buy
+        ))
+        XCTAssertEqual(result.tokens, "0")
+        XCTAssertEqual(result.totalSpend, "0")
+    }
 }

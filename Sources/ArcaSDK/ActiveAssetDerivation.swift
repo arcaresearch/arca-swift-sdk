@@ -89,6 +89,8 @@ public func deriveActiveAssetData(
     buyMax = floorToDecimals(buyMax, szDecimals)
     sellMax = floorToDecimals(sellMax, szDecimals)
 
+    let rawAvailableUsd = max(0, equity - initialMarginUsed)
+
     return ActiveAssetData(
         coin: coin,
         leverage: LeverageInfo(type: .cross, value: leverage),
@@ -96,10 +98,7 @@ public func deriveActiveAssetData(
         maxSellSize: toDecimalString(sellMax, decimals: szDecimals),
         maxBuyUsd: toDecimalString(buyMax * markPx),
         maxSellUsd: toDecimalString(sellMax * markPx),
-        availableToTrade: [
-            toDecimalString(buyMax, decimals: szDecimals),
-            toDecimalString(sellMax, decimals: szDecimals),
-        ],
+        availableToTrade: toDecimalString(rawAvailableUsd),
         markPx: toDecimalString(markPx),
         feeRate: toDecimalString(feeRate)
     )

@@ -233,6 +233,64 @@ public final class Arca: Sendable {
         }
         return components.url!
     }
+
+    // MARK: - Order Breakdown
+
+    /// Pure calculator that converts between spend (gross), notional (net), and
+    /// token representations of an order. No network call.
+    ///
+    /// `tokens` in the result is the committed quantity submitted to the exchange.
+    /// Dollar values are estimates at the provided `price`. For limit orders the
+    /// breakdown is exact contingent on fill; for market orders, actual fill
+    /// price may differ.
+    public static func orderBreakdown(options opts: OrderBreakdownOptions) -> OrderBreakdown {
+        let price = Double(opts.price) ?? 0
+        let feeRate = Double(opts.feeRate) ?? 0
+        let leverage = Double(opts.leverage)
+        let amount = Double(opts.amount) ?? 0
+        let szDecimals = opts.szDecimals
+
+        let zero = OrderBreakdown(tokens: "0", notionalUsd: "0", marginRequired: "0",
+                                  estimatedFee: "0", totalSpend: "0", price: opts.price, feeRate: opts.feeRate)
+        guard price > 0, leverage > 0, feeRate >= 0, amount > 0 else { return zero }
+
+        let notional: Double
+        switch opts.amountType {
+        case .spend:
+            notional = amount / (1 / leverage + feeRate)
+        case .notional:
+            notional = amount
+        case .tokens:
+            notional = amount * price
+        }
+
+        let factor = pow(10.0, Double(szDecimals))
+        let tokens = floor(notional / price * factor) / factor
+        let actualNotional = tokens * price
+        let marginRequired = actualNotional / leverage
+        let estimatedFee = actualNotional * feeRate
+        let totalSpend = marginRequired + estimatedFee
+
+        func fmt(_ v: Double, _ d: Int = 8) -> String {
+            guard v.isFinite else { return "0" }
+            var s = String(format: "%.\(d)f", v)
+            if s.contains(".") {
+                while s.hasSuffix("0") { s.removeLast() }
+                if s.hasSuffix(".") { s.removeLast() }
+            }
+            return s
+        }
+
+        return OrderBreakdown(
+            tokens: fmt(tokens, szDecimals),
+            notionalUsd: fmt(actualNotional),
+            marginRequired: fmt(marginRequired),
+            estimatedFee: fmt(estimatedFee),
+            totalSpend: fmt(totalSpend),
+            price: opts.price,
+            feeRate: opts.feeRate
+        )
+    }
 }
 
 /// Validate that a path argument starts with "/".
