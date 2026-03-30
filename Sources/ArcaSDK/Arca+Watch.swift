@@ -285,6 +285,127 @@ extension Arca {
         )
     }
 
+    /// Watch real-time valuations for multiple Arca objects.
+    /// Creates one ``ObjectWatchStream`` per path and merges updates into a
+    /// dictionary keyed by object path. Duplicate paths are ignored (first wins).
+    /// Call `stop()` when done.
+    ///
+    /// - Parameters:
+    ///   - paths: Arca object paths to watch
+    ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
+    public func watchObjects(paths: [String], exchange: String = "sim") async throws -> ObjectsWatchStream {
+        var seen = Set<String>()
+        let uniquePaths = paths.filter { seen.insert($0).inserted }
+
+        if uniquePaths.isEmpty {
+            let streamState = SendableBox<WatchStreamState>(.connected)
+            let valuations = SendableBox<[String: ObjectValuation]>([:])
+            let mergedCallbacks = SendableBox<[UUID: @Sendable ([String: ObjectValuation]) -> Void]>([:])
+            let updates = AsyncStream<[String: ObjectValuation]> { continuation in
+                continuation.yield([:])
+                continuation.finish()
+            }
+            return ObjectsWatchStream(
+                state: streamState,
+                valuations: valuations,
+                childStreams: [],
+                updates: updates,
+                stop: {},
+                updateCallbacks: mergedCallbacks
+            )
+        }
+
+        var builtStreams: [ObjectWatchStream] = []
+        builtStreams.reserveCapacity(uniquePaths.count)
+        for path in uniquePaths {
+            builtStreams.append(try await watchObject(path: path, exchange: exchange))
+        }
+        let childStreams = builtStreams
+
+        let streamState = SendableBox<WatchStreamState>(.loading)
+        let valuations = SendableBox<[String: ObjectValuation]>([:])
+        let continuationBox = SendableBox<AsyncStream<[String: ObjectValuation]>.Continuation?>(nil)
+        let mergedCallbacks = SendableBox<[UUID: @Sendable ([String: ObjectValuation]) -> Void]>([:])
+        let stoppedBox = SendableBox<Bool>(false)
+
+        let refreshMergedState: @Sendable () -> Void = {
+            let states = childStreams.map { $0.state.value }
+            if states.contains(.reconnecting) {
+                streamState.update { $0 = .reconnecting }
+            } else if states.contains(.loading) {
+                streamState.update { $0 = .loading }
+            } else {
+                streamState.update { $0 = .connected }
+            }
+        }
+
+        let emit: @Sendable () -> Void = {
+            refreshMergedState()
+            let snap = valuations.value
+            continuationBox.value?.yield(snap)
+            let cbs = mergedCallbacks.value
+            for cb in cbs.values { cb(snap) }
+        }
+
+        let updates = AsyncStream<[String: ObjectValuation]> { continuation in
+            continuationBox.update { $0 = continuation }
+
+            for stream in childStreams {
+                let path = stream.path
+                if let v = stream.valuation.value {
+                    valuations.update { $0[path] = v }
+                }
+                _ = stream.onUpdate { val in
+                    valuations.update { $0[path] = val }
+                    emit()
+                }
+                _ = stream.state.onChange { _ in
+                    refreshMergedState()
+                }
+            }
+            emit()
+
+            continuation.onTermination = { _ in
+                var shouldStop = false
+                stoppedBox.update {
+                    if !$0 {
+                        $0 = true
+                        shouldStop = true
+                    }
+                }
+                guard shouldStop else { return }
+                continuationBox.update { $0 = nil }
+                for s in childStreams {
+                    Task { await s.stop() }
+                }
+            }
+        }
+
+        let stopMerged: @Sendable () async -> Void = {
+            var shouldStop = false
+            stoppedBox.update {
+                if !$0 {
+                    $0 = true
+                    shouldStop = true
+                }
+            }
+            guard shouldStop else { return }
+            continuationBox.update { $0 = nil }
+            for s in childStreams {
+                await s.stop()
+            }
+        }
+
+        return ObjectsWatchStream(
+            state: streamState,
+            valuations: valuations,
+            childStreams: childStreams,
+            updates: updates,
+            stop: stopMerged,
+            updateCallbacks: mergedCallbacks
+        )
+    }
+
     /// Watch real-time aggregation updates for a set of sources.
     /// Creates a standalone aggregation watch (not path-scoped); handles
     /// structural change events and client-side revaluation from mid prices.
@@ -414,7 +535,7 @@ extension Arca {
     /// Call `stop()` when done.
     ///
     /// - Parameter objectId: Exchange Arca object ID
-    public func watchExchangeState(objectId: String) async throws -> ExchangeStateWatchStream {
+    public func watchExchangeState(objectId: String, exchange: String = "sim") async throws -> ExchangeStateWatchStream {
         await ws.ensureConnected()
 
         let detail = try await getObjectDetail(objectId: objectId)
@@ -422,8 +543,11 @@ extension Arca {
 
         let streamState = SendableBox<WatchStreamState>(.loading)
         let stateBox = SendableBox<ExchangeState?>(nil)
+        let structuralBox = SendableBox<ExchangeState?>(nil)
+        let midsBox = SendableBox<[String: String]>([:])
 
         let initialState = try await getExchangeState(objectId: objectId)
+        structuralBox.update { $0 = initialState }
         stateBox.update { $0 = initialState }
         streamState.update { $0 = .connected }
 
@@ -435,33 +559,59 @@ extension Arca {
                 } else if s == .connected && streamState.value == .reconnecting {
                     guard let self = self else { continue }
                     if let refreshed = try? await self.getExchangeState(objectId: objectId) {
-                        stateBox.update { $0 = refreshed }
+                        structuralBox.update { $0 = refreshed }
+                        let currentMids = midsBox.value
+                        let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
+                        stateBox.update { $0 = revalued }
                     }
                     streamState.update { $0 = .connected }
                 }
             }
         }
 
+        await ws.acquireMids(exchange: exchange)
         await ws.watchPath(objectPath)
 
         let exchangeStream = await ws.exchangeEvents()
+        let midsStream = await ws.midsEvents()
+
         let updates = AsyncStream<ExchangeState> { [weak self] continuation in
-            let task = Task { [weak self] in
+            let exchangeTask = Task { [weak self] in
                 for await (state, event) in exchangeStream {
                     guard event.entityId == objectId else { continue }
+                    let structural: ExchangeState
                     if state.positions.isEmpty && state.openOrders.isEmpty {
                         guard let self = self,
                               let fetched = try? await self.getExchangeState(objectId: objectId) else { continue }
-                        stateBox.update { $0 = fetched }
-                        continuation.yield(fetched)
+                        structural = fetched
                     } else {
-                        stateBox.update { $0 = state }
-                        continuation.yield(state)
+                        structural = state
                     }
+                    structuralBox.update { $0 = structural }
+                    let currentMids = midsBox.value
+                    let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
+                    stateBox.update { $0 = revalued }
+                    continuation.yield(revalued)
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+
+            let midsTask = Task {
+                for await mids in midsStream {
+                    midsBox.update { current in
+                        for (key, value) in mids { current[key] = value }
+                    }
+                    guard let base = structuralBox.value else { continue }
+                    let revalued = base.revalued(with: midsBox.value)
+                    stateBox.update { $0 = revalued }
+                    continuation.yield(revalued)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                exchangeTask.cancel()
+                midsTask.cancel()
+            }
         }
 
         return ExchangeStateWatchStream(
@@ -471,6 +621,7 @@ extension Arca {
             stop: { [ws] in
                 statusTask.cancel()
                 await ws.unwatchPath(objectPath)
+                await ws.releaseMids()
             }
         )
     }

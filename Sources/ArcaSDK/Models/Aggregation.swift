@@ -66,7 +66,6 @@ public struct PathAggregation: Codable, Sendable {
     public let departingUsd: String
     public let arrivingUsd: String?
     public let breakdown: [AssetBreakdown]
-    public let objects: [ObjectValuation]
     public let asOf: String?
 }
 
@@ -147,25 +146,37 @@ extension ObjectValuation {
 }
 
 extension PathAggregation {
-    /// Returns a copy with all objects revalued and totals recomputed.
+    /// Returns a copy with totals recomputed from ``breakdown`` using mid prices.
+    /// Spot rows use `amount × mid`; perp and exchange rows keep server ``AssetBreakdown/valueUsd``.
+    /// ``departingUsd`` and ``arrivingUsd`` are USD-denominated and pass through unchanged.
     public func revalued(with mids: [String: String]) -> PathAggregation {
-        let newObjects = objects.map { $0.revalued(with: mids) }
-        let totalEquity = newObjects.reduce(Decimal(0)) { sum, obj in
-            sum + (Decimal(string: obj.valueUsd) ?? 0)
+        let newBreakdown = breakdown.map { entry -> AssetBreakdown in
+            guard entry.category == .spot else { return entry }
+            guard let mid = mids[entry.asset] else { return entry }
+            let amountDec = Decimal(string: entry.amount) ?? 0
+            let priceDec = Decimal(string: mid) ?? 1
+            let value = amountDec * priceDec
+            return AssetBreakdown(
+                asset: entry.asset,
+                category: entry.category,
+                amount: entry.amount,
+                price: mid,
+                valueUsd: "\(value)",
+                weightedAvgLeverage: entry.weightedAvgLeverage,
+                avgEntryPrice: entry.avgEntryPrice
+            )
         }
-        let departing = newObjects.reduce(Decimal(0)) { sum, obj in
-            sum + (obj.reservedBalances?.reduce(Decimal(0)) { s, r in
-                s + (Decimal(string: r.valueUsd) ?? 0)
-            } ?? 0)
+        let totalEquity = newBreakdown.reduce(Decimal(0)) { sum, entry in
+            sum + (Decimal(string: entry.valueUsd) ?? 0)
         }
-        let arriving = newObjects.reduce(Decimal(0)) { sum, obj in
-            sum + (obj.pendingInbound?.reduce(Decimal(0)) { s, r in
-                s + (Decimal(string: r.valueUsd) ?? 0)
-            } ?? 0)
-        }
-        return PathAggregation(prefix: prefix, totalEquityUsd: "\(totalEquity)",
-                               departingUsd: "\(departing)", arrivingUsd: "\(arriving)",
-                               breakdown: breakdown, objects: newObjects, asOf: asOf)
+        return PathAggregation(
+            prefix: prefix,
+            totalEquityUsd: "\(totalEquity)",
+            departingUsd: departingUsd,
+            arrivingUsd: arrivingUsd,
+            breakdown: newBreakdown,
+            asOf: asOf
+        )
     }
 }
 

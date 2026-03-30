@@ -954,8 +954,7 @@ final class ModelDecodingTests: XCTestCase {
                     "price": "1",
                     "valueUsd": "50000"
                 }
-            ],
-            "objects": []
+            ]
         }
         """.data(using: .utf8)!
 
@@ -999,17 +998,13 @@ final class ModelDecodingTests: XCTestCase {
                 "totalEquityUsd": "1000",
                 "departingUsd": "0",
                 "arrivingUsd": "0",
-                "breakdown": [],
-                "objects": [
+                "breakdown": [
                     {
-                        "objectId": "obj_01abc",
-                        "path": "/users/u1/wallet",
-                        "type": "denominated",
-                        "denomination": "USD",
-                        "valueUsd": "1000",
-                        "balances": [
-                            {"denomination": "USD", "amount": "1000", "price": "1.0", "valueUsd": "1000"}
-                        ]
+                        "asset": "USD",
+                        "category": "spot",
+                        "amount": "1000",
+                        "price": "1.0",
+                        "valueUsd": "1000"
                     }
                 ]
             }
@@ -1019,8 +1014,57 @@ final class ModelDecodingTests: XCTestCase {
         let resp = try decoder.decode(CreateWatchResponse.self, from: json)
         XCTAssertEqual(resp.watchId.rawValue, "req_01abc")
         XCTAssertEqual(resp.aggregation.totalEquityUsd, "1000")
-        XCTAssertEqual(resp.aggregation.objects.count, 1)
-        XCTAssertNil(resp.aggregation.objects[0].reservedBalances)
+        XCTAssertEqual(resp.aggregation.breakdown.count, 1)
+        XCTAssertEqual(resp.aggregation.breakdown[0].valueUsd, "1000")
+    }
+
+    func testPathAggregationRevalued_FromBreakdown() {
+        let breakdown = [
+            AssetBreakdown(
+                asset: "hl:BTC",
+                category: .spot,
+                amount: "2",
+                price: "50000",
+                valueUsd: "100000",
+                weightedAvgLeverage: nil,
+                avgEntryPrice: nil
+            ),
+            AssetBreakdown(
+                asset: "hl:ETH",
+                category: .perp,
+                amount: "1",
+                price: "3000",
+                valueUsd: "500",
+                weightedAvgLeverage: nil,
+                avgEntryPrice: nil
+            ),
+            AssetBreakdown(
+                asset: "ex",
+                category: .exchange,
+                amount: "0",
+                price: nil,
+                valueUsd: "200",
+                weightedAvgLeverage: nil,
+                avgEntryPrice: nil
+            ),
+        ]
+        let agg = PathAggregation(
+            prefix: "/",
+            totalEquityUsd: "100700",
+            departingUsd: "10",
+            arrivingUsd: "5",
+            breakdown: breakdown,
+            asOf: nil
+        )
+        let mids = ["hl:BTC": "60000"]
+        let re = agg.revalued(with: mids)
+        XCTAssertEqual(re.departingUsd, "10")
+        XCTAssertEqual(re.arrivingUsd, "5")
+        XCTAssertEqual(re.breakdown[0].valueUsd, "120000")
+        XCTAssertEqual(re.breakdown[0].price, "60000")
+        XCTAssertEqual(re.breakdown[1].valueUsd, "500")
+        XCTAssertEqual(re.breakdown[2].valueUsd, "200")
+        XCTAssertEqual(re.totalEquityUsd, "120700")
     }
 
     // MARK: - Summary
@@ -1861,5 +1905,176 @@ final class ModelDecodingTests: XCTestCase {
         let pos = try decoder.decode(ArcaPositionCurrent.self, from: json)
         XCTAssertEqual(pos.entryPx, "65000")
         XCTAssertEqual(pos.market, "hl:BTC")
+    }
+
+    // MARK: - ExchangeState.revalued(with:)
+
+    private func makeTestExchangeState(
+        positions: [SimPosition] = [],
+        equity: String = "10000",
+        totalRawUsd: String = "10000",
+        maintenanceMarginRequired: String = "100"
+    ) -> ExchangeState {
+        let summary = SimMarginSummary(
+            equity: equity, initialMarginUsed: "500",
+            maintenanceMarginRequired: maintenanceMarginRequired,
+            availableToWithdraw: "9900", totalNtlPos: "5000",
+            totalUnrealizedPnl: "0", totalRawUsd: totalRawUsd
+        )
+        return ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"),
+                                name: "test", createdAt: "2026-01-01T00:00:00.000000Z",
+                                updatedAt: "2026-01-01T00:00:00.000000Z"),
+            marginSummary: summary, crossMarginSummary: summary,
+            crossMaintenanceMarginUsed: "100",
+            positions: positions, openOrders: [],
+            feeRates: nil, pendingIntents: nil
+        )
+    }
+
+    private func makeTestPosition(
+        coin: String, side: PositionSide, size: String,
+        entryPrice: String, marginUsed: String
+    ) -> SimPosition {
+        SimPosition(
+            id: SimPositionID("sps_1"), accountId: SimAccountID("act_1"),
+            realmId: RealmID("rlm_1"), coin: coin, side: side,
+            size: size, entryPrice: entryPrice, leverage: 10,
+            marginUsed: marginUsed, liquidationPrice: nil,
+            unrealizedPnl: "0", returnOnEquity: "0",
+            positionValue: nil, error: nil,
+            createdAt: nil, updatedAt: nil
+        )
+    }
+
+    func testExchangeStateRevalued_LongPositionPnl() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "0.5",
+                                   entryPrice: "50000", marginUsed: "2500")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:BTC": "60000"])
+
+        // LONG 0.5, entry 50000, mark 60000 → pnl = 0.5 * (60000 - 50000) = 5000
+        XCTAssertEqual(result.positions[0].unrealizedPnl, "5000")
+        XCTAssertEqual(result.positions[0].positionValue, "30000")
+    }
+
+    func testExchangeStateRevalued_ShortPositionPnl() {
+        let pos = makeTestPosition(coin: "hl:ETH", side: .short, size: "2",
+                                   entryPrice: "3200", marginUsed: "1280")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:ETH": "3000"])
+
+        // SHORT 2, entry 3200, mark 3000 → pnl = -2 * (3000 - 3200) = 400
+        XCTAssertEqual(result.positions[0].unrealizedPnl, "400")
+    }
+
+    func testExchangeStateRevalued_ReturnOnEquity() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:BTC": "55000"])
+
+        // pnl = 5000, margin = 5000 → roe = 1.0
+        let roe = Decimal(string: result.positions[0].returnOnEquity ?? "0") ?? 0
+        XCTAssertEqual(roe, 1)
+    }
+
+    func testExchangeStateRevalued_MarginSummaryRecomputed() {
+        let pos1 = makeTestPosition(coin: "hl:BTC", side: .long, size: "0.5",
+                                    entryPrice: "50000", marginUsed: "2500")
+        let pos2 = makeTestPosition(coin: "hl:ETH", side: .short, size: "2",
+                                    entryPrice: "3200", marginUsed: "1280")
+        let state = makeTestExchangeState(positions: [pos1, pos2])
+        let result = state.revalued(with: ["hl:BTC": "60000", "hl:ETH": "3000"])
+
+        // totalUnrealizedPnl = 5000 + 400 = 5400
+        XCTAssertEqual(result.marginSummary.totalUnrealizedPnl, "5400")
+        // equity = totalRawUsd + totalPnl = 10000 + 5400 = 15400
+        XCTAssertEqual(result.marginSummary.equity, "15400")
+        // availableToWithdraw = equity - maintenance = 15400 - 100 = 15300
+        XCTAssertEqual(result.marginSummary.availableToWithdraw, "15300")
+    }
+
+    func testExchangeStateRevalued_CrossMarginSummaryAlsoRevalued() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:BTC": "55000"])
+
+        XCTAssertEqual(result.crossMarginSummary?.totalUnrealizedPnl, "5000")
+        XCTAssertEqual(result.crossMarginSummary?.equity, "15000")
+    }
+
+    func testExchangeStateRevalued_PreservesWhenMidMissing() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:ETH": "3000"])
+
+        // No mid for BTC → position preserved as-is
+        XCTAssertEqual(result.positions[0].unrealizedPnl, "0")
+    }
+
+    func testExchangeStateRevalued_ClearsError() {
+        let pos = SimPosition(
+            id: SimPositionID("sps_1"), accountId: SimAccountID("act_1"),
+            realmId: RealmID("rlm_1"), coin: "hl:BTC", side: .long,
+            size: "1", entryPrice: "50000", leverage: 10,
+            marginUsed: "5000", liquidationPrice: nil,
+            unrealizedPnl: nil, returnOnEquity: nil,
+            positionValue: nil, error: "market_data_unavailable",
+            createdAt: nil, updatedAt: nil
+        )
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:BTC": "55000"])
+
+        XCTAssertNil(result.positions[0].error)
+        XCTAssertEqual(result.positions[0].unrealizedPnl, "5000")
+    }
+
+    func testExchangeStateRevalued_PreservesStructuralFields() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos])
+        let result = state.revalued(with: ["hl:BTC": "55000"])
+
+        XCTAssertEqual(result.account.id.rawValue, "act_1")
+        XCTAssertEqual(result.openOrders.count, 0)
+        XCTAssertEqual(result.marginSummary.initialMarginUsed, "500")
+        XCTAssertEqual(result.marginSummary.totalRawUsd, "10000")
+    }
+
+    func testExchangeStateRevalued_EmptyPositions() {
+        let state = makeTestExchangeState(positions: [])
+        let result = state.revalued(with: ["hl:BTC": "60000"])
+
+        XCTAssertTrue(result.positions.isEmpty)
+        XCTAssertEqual(result.marginSummary.totalUnrealizedPnl, "0")
+        XCTAssertEqual(result.marginSummary.equity, "10000")
+    }
+
+    func testExchangeStateRevalued_Idempotent() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos])
+        let mids = ["hl:BTC": "55000"]
+        let first = state.revalued(with: mids)
+        let second = first.revalued(with: mids)
+
+        XCTAssertEqual(first.marginSummary.equity, second.marginSummary.equity)
+        XCTAssertEqual(first.positions[0].unrealizedPnl, second.positions[0].unrealizedPnl)
+    }
+
+    func testExchangeStateRevalued_FloorsAvailableToWithdrawAtZero() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(
+            positions: [pos], equity: "100", totalRawUsd: "100",
+            maintenanceMarginRequired: "200"
+        )
+        let result = state.revalued(with: ["hl:BTC": "50000"])
+
+        // equity = 100 + 0 = 100, maintenance = 200 → floor at 0
+        XCTAssertEqual(result.marginSummary.availableToWithdraw, "0")
     }
 }

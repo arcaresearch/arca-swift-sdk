@@ -467,3 +467,68 @@ public struct TradeSummaryResponse: Codable, Sendable {
     public let markets: [MarketTradeSummaryItem]
     public let totals: TradeSummaryTotals
 }
+
+// MARK: - Client-Side Mid-Price Revaluation
+
+extension SimPosition {
+    /// Returns a copy with `unrealizedPnl`, `positionValue`, and `returnOnEquity`
+    /// recomputed from the mid price for this position's coin.
+    public func revalued(with mids: [String: String]) -> SimPosition {
+        guard let mid = mids[coin], let markDec = Decimal(string: mid) else { return self }
+        let sizeDec = Decimal(string: size) ?? 0
+        let entryDec = Decimal(string: entryPrice) ?? 0
+        let signedSize: Decimal = (side == .short) ? -sizeDec : sizeDec
+        let pnl = signedSize * (markDec - entryDec)
+        let posVal = sizeDec * markDec
+        let marginDec = Decimal(string: marginUsed) ?? 0
+        let roe: Decimal = marginDec > 0 ? pnl / marginDec : 0
+        return SimPosition(
+            id: id, accountId: accountId, realmId: realmId, coin: coin,
+            side: side, size: size, entryPrice: entryPrice, leverage: leverage,
+            marginUsed: marginUsed, liquidationPrice: liquidationPrice,
+            unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
+            positionValue: "\(posVal)", error: nil,
+            createdAt: createdAt, updatedAt: updatedAt)
+    }
+}
+
+extension SimMarginSummary {
+    /// Returns a copy with `totalUnrealizedPnl`, `equity`, and `availableToWithdraw`
+    /// recomputed from revalued positions.
+    func revalued(positions: [SimPosition]) -> SimMarginSummary {
+        let totalPnl = positions.reduce(Decimal(0)) { sum, pos in
+            sum + (Decimal(string: pos.unrealizedPnl ?? "0") ?? 0)
+        }
+        let rawUsd = Decimal(string: totalRawUsd ?? "") ?? 0
+        let eq: Decimal
+        if rawUsd > 0 {
+            eq = rawUsd + totalPnl
+        } else {
+            eq = Decimal(string: equity) ?? 0
+        }
+        let maintenance = Decimal(string: maintenanceMarginRequired) ?? 0
+        let withdrawable = max(0, eq - maintenance)
+        return SimMarginSummary(
+            equity: "\(eq)", initialMarginUsed: initialMarginUsed,
+            maintenanceMarginRequired: maintenanceMarginRequired,
+            availableToWithdraw: "\(withdrawable)", totalNtlPos: totalNtlPos,
+            totalUnrealizedPnl: "\(totalPnl)", totalRawUsd: totalRawUsd)
+    }
+}
+
+extension ExchangeState {
+    /// Returns a copy with all price-derived fields recomputed from mid prices.
+    /// Position P&L, margin summary totals, and equity are updated.
+    /// Structural data (orders, account, margins, intents) is preserved unchanged.
+    public func revalued(with mids: [String: String]) -> ExchangeState {
+        let newPositions = positions.map { $0.revalued(with: mids) }
+        let newSummary = marginSummary.revalued(positions: newPositions)
+        let newCross = crossMarginSummary?.revalued(positions: newPositions)
+        return ExchangeState(
+            account: account, marginSummary: newSummary,
+            crossMarginSummary: newCross,
+            crossMaintenanceMarginUsed: crossMaintenanceMarginUsed,
+            positions: newPositions, openOrders: openOrders,
+            feeRates: feeRates, pendingIntents: pendingIntents)
+    }
+}

@@ -180,6 +180,43 @@ public struct ObjectWatchStream: Sendable {
     }
 }
 
+// MARK: - ObjectsWatchStream
+
+/// Merges multiple ``ObjectWatchStream`` instances into one dictionary keyed by
+/// object path. Each valuation update from any child emits the full merged snapshot.
+public struct ObjectsWatchStream: Sendable {
+    /// Aggregate lifecycle state derived from child streams (reconnecting if any child is reconnecting, else loading if any is still loading, else connected).
+    public let state: SendableBox<WatchStreamState>
+    /// Latest valuations keyed by Arca object path.
+    public let valuations: SendableBox<[String: ObjectValuation]>
+    /// Underlying per-path streams (same order as deduplicated paths).
+    public let childStreams: [ObjectWatchStream]
+    /// Async stream of merged valuation dictionaries.
+    public let updates: AsyncStream<[String: ObjectValuation]>
+    /// Stop all child streams and release subscriptions.
+    public let stop: @Sendable () async -> Void
+
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable ([String: ObjectValuation]) -> Void]>
+
+    /// Register a callback invoked on each merged snapshot. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable ([String: ObjectValuation]) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
+
+    /// Returns when every child stream has received its first valuation. Never throws.
+    /// For an empty path list, returns immediately.
+    public func ready() async {
+        for s in childStreams {
+            await s.ready()
+        }
+    }
+}
+
 // MARK: - AggregationWatchStream
 
 /// A stream of real-time aggregation updates with client-side revaluation.
