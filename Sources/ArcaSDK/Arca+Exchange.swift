@@ -279,7 +279,9 @@ extension Arca {
                 triggerPx: nil,
                 isMarket: nil,
                 tpsl: nil,
-                grouping: nil
+                grouping: nil,
+                useMax: nil,
+                maxSizeTolerance: nil
             ))
         }
 
