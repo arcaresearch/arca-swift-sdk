@@ -273,6 +273,40 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertNil(received, "watch_snapshot without valuation should not emit object.valuation")
     }
 
+    func testWatchSnapshotMultiObjectValuationsEmitPerPath() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let valEvents = await manager.objectValuationEvents()
+
+        let snapshotJSON = """
+        {"type":"watch_snapshot","path":"/","watchId":"req_multi","valuations":{"/exchanges/s1":{"objectId":"obj_1","path":"/exchanges/s1","type":"exchange","denomination":"USD","valueUsd":"500.00","balances":[{"denomination":"USD","amount":"500.00","valueUsd":"500.00"}]},"/exchanges/s2":{"objectId":"obj_2","path":"/exchanges/s2","type":"exchange","denomination":"USD","valueUsd":"300.00","balances":[{"denomination":"USD","amount":"300.00","valueUsd":"300.00"}]}}}
+        """
+        await manager.injectMessage(snapshotJSON)
+
+        var received: [(ObjectValuation, String, String)] = []
+        let consumer = Task {
+            for await (val, path, watchId, _) in valEvents {
+                received.append((val, path, watchId))
+                if received.count >= 2 { break }
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        consumer.cancel()
+
+        XCTAssertEqual(received.count, 2, "should emit one object.valuation per entry in valuations map")
+        let paths = Set(received.map { $0.1 })
+        XCTAssertTrue(paths.contains("/exchanges/s1"))
+        XCTAssertTrue(paths.contains("/exchanges/s2"))
+        for (_, _, watchId) in received {
+            XCTAssertEqual(watchId, "req_multi")
+        }
+    }
+
     // MARK: - StoppedBox guard prevents yield after stop
 
     func testStoppedBoxPreventsYieldAfterStop() async {
