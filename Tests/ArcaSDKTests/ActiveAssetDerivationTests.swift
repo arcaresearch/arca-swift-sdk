@@ -232,6 +232,26 @@ final class ActiveAssetDerivationTests: XCTestCase {
                        "higher feeScale should reduce max size")
     }
 
+    func testLeverage10x_200Account_YieldsApprox2KNotional() {
+        // Regression: builder reported ~2.8 tokens ($198 notional) at 10x leverage,
+        // which matches 1x behavior. At 10x the notional should be ~$2,000.
+        let state = makeState(equity: "200")
+        let result = deriveActiveAssetData(
+            from: state, coin: "hl:1:SILVER", markPx: 70.87, leverage: 10,
+            side: .buy, builderFeeBps: 40, szDecimals: 5
+        )
+
+        guard let data = result else { XCTFail("expected non-nil"); return }
+        let maxBuy = Double(data.maxBuySize)!
+        let maxBuyUsd = Double(data.maxBuyUsd)!
+
+        XCTAssertTrue(maxBuy > 25,
+            "at 10x leverage, max buy (\(maxBuy)) must be well above 2.8 (1x level)")
+        XCTAssertTrue(maxBuyUsd > 1800 && maxBuyUsd < 2100,
+            "notional buying power (\(maxBuyUsd)) should be ~$2,000, not ~$200")
+        XCTAssertEqual(data.leverage.value, 10)
+    }
+
     func testFeeScale_DefaultsToOne() {
         let state = makeState(equity: "1000")
         let explicit = deriveActiveAssetData(

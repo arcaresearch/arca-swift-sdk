@@ -43,16 +43,24 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
-    ///   - coin: Coin/asset (e.g. `BTC`, `ETH`)
+    ///   - coin: Coin/asset in canonical format (e.g. `"hl:BTC"`, `"hl:1:SILVER"`)
     ///   - builderFeeBps: Optional builder fee in tenths of a basis point
+    ///   - leverage: Optional leverage override. When provided, the server uses
+    ///     this value instead of the stored leverage setting. When `nil`, the
+    ///     server reads the leverage from the account's per-coin setting
+    ///     (defaulting to 1x if none has been set via ``updateLeverage``).
     public func getActiveAssetData(
         objectId: String,
         coin: String,
-        builderFeeBps: Int? = nil
+        builderFeeBps: Int? = nil,
+        leverage: Int? = nil
     ) async throws -> ActiveAssetData {
         var query: [String: String] = ["coin": coin]
         if let bps = builderFeeBps, bps > 0 {
             query["builderFeeBps"] = String(bps)
+        }
+        if let lev = leverage, lev > 0 {
+            query["leverage"] = String(lev)
         }
         return try await client.get("/objects/\(objectId)/exchange/active-asset-data", query: query)
     }
