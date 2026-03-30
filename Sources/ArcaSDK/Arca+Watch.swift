@@ -227,17 +227,6 @@ extension Arca {
                         print("[Arca] Warning: Valuation drift corrected for \(eventPath) (watchId: \(wid)). Previous value was stale.")
                     }
 
-                    if valuation.computed == false {
-                        if valBox.value == nil {
-                            let currentMids = midsBox.value
-                            let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
-                            valBox.update { $0 = revalued }
-                            state.update { $0 = .connected }
-                            yieldValuation(continuation, revalued)
-                        }
-                        continue
-                    }
-
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                     valBox.update { $0 = revalued }

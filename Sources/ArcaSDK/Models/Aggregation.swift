@@ -31,8 +31,8 @@ public struct PositionValue: Codable, Sendable {
     public let size: String
     public let entryPrice: String
     public let markPrice: String?
-    public let unrealizedPnl: String
-    public let valueUsd: String
+    public let unrealizedPnl: String?
+    public let valueUsd: String?
 }
 
 public struct ReservedValue: Codable, Sendable {
@@ -57,7 +57,6 @@ public struct ObjectValuation: Codable, Sendable {
     public let reservedBalances: [ReservedValue]?
     public let pendingInbound: [ReservedValue]?
     public let positions: [PositionValue]?
-    public let computed: Bool?
 }
 
 public struct PathAggregation: Codable, Sendable {
@@ -119,7 +118,7 @@ extension ObjectValuation {
             let cashStr = balances.first?.amount ?? "0"
             let cashDec = Decimal(string: cashStr) ?? 0
             let totalPnl = newPositions?.reduce(Decimal(0)) { sum, pos in
-                sum + (Decimal(string: pos.unrealizedPnl) ?? 0)
+                sum + (Decimal(string: pos.unrealizedPnl ?? "0") ?? 0)
             } ?? 0
             let equity = cashDec + totalPnl
             let newReserved = reservedBalances?.map { $0.revalued(with: mids) }
@@ -127,8 +126,7 @@ extension ObjectValuation {
             return ObjectValuation(objectId: objectId, path: path, type: type,
                                    denomination: denomination, valueUsd: "\(equity)",
                                    balances: balances, reservedBalances: newReserved,
-                                   pendingInbound: newInbound, positions: newPositions,
-                                   computed: computed)
+                                   pendingInbound: newInbound, positions: newPositions)
         }
 
         let newBalances = balances.map { $0.revalued(with: mids) }
@@ -140,8 +138,7 @@ extension ObjectValuation {
         return ObjectValuation(objectId: objectId, path: path, type: type,
                                denomination: denomination, valueUsd: "\(objValue)",
                                balances: newBalances, reservedBalances: newReserved,
-                               pendingInbound: newInbound, positions: positions,
-                               computed: computed)
+                               pendingInbound: newInbound, positions: positions)
     }
 }
 

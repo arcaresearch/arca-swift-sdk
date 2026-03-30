@@ -223,7 +223,7 @@ final class WebSocketManagerTests: XCTestCase {
         let valEvents = await manager.objectValuationEvents()
 
         let snapshotJSON = """
-        {"type":"watch_snapshot","path":"/exchanges/strategy-1","watchId":"req_abc123","valuation":{"objectId":"obj_001","path":"/exchanges/strategy-1","type":"exchange","denomination":"USD","valueUsd":"200.00","balances":[{"denomination":"USD","amount":"200.00","valueUsd":"200.00"}],"computed":true}}
+        {"type":"watch_snapshot","path":"/exchanges/strategy-1","watchId":"req_abc123","valuation":{"objectId":"obj_001","path":"/exchanges/strategy-1","type":"exchange","denomination":"USD","valueUsd":"200.00","balances":[{"denomination":"USD","amount":"200.00","valueUsd":"200.00"}]}}
         """
         await manager.injectMessage(snapshotJSON)
 

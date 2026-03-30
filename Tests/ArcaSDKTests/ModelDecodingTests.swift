@@ -1590,54 +1590,6 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(book.asks[0].orderCount, 5)
     }
 
-    // MARK: - computed:false must not replace valid valuation
-
-    func testObjectValuation_ComputedFalseNotUsedAsReplacement() throws {
-        // Simulate the scenario: client has a valid valuation, then receives
-        // a computed:false valuation. The computed:false payload should NOT
-        // replace the prior value in a well-behaved consumer.
-        let goodJSON = """
-        {
-            "objectId": "obj_exchange",
-            "path": "/exchanges/main",
-            "type": "exchange",
-            "valueUsd": "1700",
-            "balances": [
-                {"denomination": "USD", "amount": "1700", "price": "1.0", "valueUsd": "1700"}
-            ],
-            "computed": true
-        }
-        """.data(using: .utf8)!
-
-        let badJSON = """
-        {
-            "objectId": "",
-            "path": "/exchanges/main",
-            "type": "unknown",
-            "valueUsd": "0",
-            "balances": [],
-            "computed": false
-        }
-        """.data(using: .utf8)!
-
-        let good = try decoder.decode(ObjectValuation.self, from: goodJSON)
-        let bad = try decoder.decode(ObjectValuation.self, from: badJSON)
-
-        XCTAssertEqual(good.computed, true, "valid valuation must have computed=true")
-        XCTAssertEqual(bad.computed, false, "placeholder valuation must have computed=false")
-        XCTAssertEqual(good.valueUsd, "1700")
-        XCTAssertEqual(bad.valueUsd, "0")
-
-        // The key invariant: revaluing a computed:false valuation still
-        // produces $0 — it must never be yielded to consumers as a replacement
-        // for a previously valid valuation.
-        let revalued = bad.revalued(with: ["USD": "1.0"])
-        XCTAssertEqual(revalued.valueUsd, "0",
-            "revaluing a computed:false placeholder should not produce a non-zero value")
-        XCTAssertEqual(revalued.computed, false,
-            "computed flag must survive revaluation")
-    }
-
     // MARK: - SimFill Preview (exchange.fill WS event)
 
     func testSimFillDecoding_PreviewWithoutAccountRealmCreatedAt() throws {
