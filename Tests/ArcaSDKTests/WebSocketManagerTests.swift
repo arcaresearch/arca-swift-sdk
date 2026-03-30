@@ -211,6 +211,68 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(received?["hl:BTC"], "97100")
     }
 
+    // MARK: - watch_snapshot normalization
+
+    func testWatchSnapshotValuationNormalizedToObjectValuation() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let valEvents = await manager.objectValuationEvents()
+
+        let snapshotJSON = """
+        {"type":"watch_snapshot","path":"/exchanges/strategy-1","watchId":"req_abc123","valuation":{"objectId":"obj_001","path":"/exchanges/strategy-1","type":"exchange","denomination":"USD","valueUsd":"200.00","balances":[{"denomination":"USD","amount":"200.00","valueUsd":"200.00"}],"computed":true}}
+        """
+        await manager.injectMessage(snapshotJSON)
+
+        var received: (ObjectValuation, String, String, RealmEvent)?
+        let consumer = Task {
+            for await item in valEvents {
+                received = item
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertNotNil(received, "watch_snapshot should flow through objectValuationEvents()")
+        let (valuation, path, watchId, _) = received!
+        XCTAssertEqual(path, "/exchanges/strategy-1")
+        XCTAssertEqual(watchId, "req_abc123")
+        XCTAssertEqual(valuation.valueUsd, "200.00")
+        XCTAssertEqual(valuation.objectId, "obj_001")
+        XCTAssertEqual(valuation.type, "exchange")
+    }
+
+    func testWatchSnapshotWithoutValuationDoesNotEmit() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let valEvents = await manager.objectValuationEvents()
+
+        let snapshotJSON = #"{"type":"watch_snapshot","path":"/wallets/main","watchId":"req_xyz"}"#
+        await manager.injectMessage(snapshotJSON)
+
+        var received: (ObjectValuation, String, String, RealmEvent)?
+        let consumer = Task {
+            for await item in valEvents {
+                received = item
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertNil(received, "watch_snapshot without valuation should not emit object.valuation")
+    }
+
     // MARK: - StoppedBox guard prevents yield after stop
 
     func testStoppedBoxPreventsYieldAfterStop() async {

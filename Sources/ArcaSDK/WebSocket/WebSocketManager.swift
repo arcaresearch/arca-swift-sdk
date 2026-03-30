@@ -632,6 +632,27 @@ public actor WebSocketManager {
                 return
             }
 
+            // Normalize watch_snapshot → object.valuation so objectValuationEvents()
+            // receives the initial valuation (mirrors TypeScript SDK behavior where
+            // watchPath resolves with the snapshot valuation as the first value).
+            if msgType == "watch_snapshot",
+               let valRaw = json["valuation"],
+               let pathStr = json["path"] as? String,
+               let watchIdStr = json["watchId"] as? String {
+                if let valData = try? JSONSerialization.data(withJSONObject: valRaw),
+                   let valuation = try? JSONDecoder().decode(ObjectValuation.self, from: valData) {
+                    let syntheticEvent = RealmEvent(
+                        type: EventType.objectValuation.rawValue,
+                        valuation: valuation,
+                        path: pathStr,
+                        watchId: watchIdStr
+                    )
+                    for continuation in eventContinuations.values {
+                        continuation.yield(syntheticEvent)
+                    }
+                }
+            }
+
         }
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
