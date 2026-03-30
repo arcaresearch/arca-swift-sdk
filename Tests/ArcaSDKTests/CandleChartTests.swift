@@ -621,6 +621,76 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(secondCount, 1, "Second callback should not fire after unsub")
     }
 
+    // MARK: - Sparse initial data (skipBackfill coverage)
+
+    func testSparseInitialDataDoesNotMarkCoverage() {
+        let coverage = CoverageTracker()
+        let count = 300
+        let startTime = 0
+        let endTime = 300 * 60_000
+
+        let sparseCandles = [makeCandle(t: 150 * 60_000, c: "150")]
+        let needsRetry = sparseCandles.count < count / 2
+
+        XCTAssertTrue(needsRetry, "1 candle out of 300 should trigger retry")
+
+        if !needsRetry && !sparseCandles.isEmpty {
+            coverage.add(from: startTime, to: endTime)
+        }
+
+        let gaps = coverage.gaps(from: startTime, to: endTime)
+        XCTAssertEqual(gaps.count, 1, "Sparse data must not mark coverage — full range should be a gap")
+        XCTAssertEqual(gaps[0].from, startTime)
+        XCTAssertEqual(gaps[0].to, endTime)
+    }
+
+    func testSufficientInitialDataMarksCoverage() {
+        let coverage = CoverageTracker()
+        let count = 300
+        let startTime = 0
+        let endTime = 300 * 60_000
+
+        let candles = (0..<200).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let needsRetry = candles.count < count / 2
+
+        XCTAssertFalse(needsRetry, "200 candles out of 300 should not trigger retry")
+
+        if !needsRetry && !candles.isEmpty {
+            coverage.add(from: startTime, to: endTime)
+        }
+
+        let gaps = coverage.gaps(from: startTime, to: endTime)
+        XCTAssertTrue(gaps.isEmpty, "Sufficient data should mark coverage with no gaps")
+    }
+
+    func testBoundaryExactlyHalfDoesNotTriggerRetry() {
+        let count = 300
+        let threshold = count / 2 // 150
+
+        let candles = (0..<threshold).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let needsRetry = candles.count < count / 2
+
+        XCTAssertFalse(needsRetry, "Exactly count/2 candles should not trigger retry")
+    }
+
+    func testBoundaryOneUnderHalfTriggersRetry() {
+        let count = 300
+        let threshold = count / 2 - 1 // 149
+
+        let candles = (0..<threshold).map { makeCandle(t: $0 * 60_000, c: "\($0)") }
+        let needsRetry = candles.count < count / 2
+
+        XCTAssertTrue(needsRetry, "count/2 - 1 candles should trigger retry")
+    }
+
+    func testEmptyInitialDataTriggersRetry() {
+        let count = 300
+        let candles: [Candle] = []
+        let needsRetry = candles.count < count / 2
+
+        XCTAssertTrue(needsRetry, "Empty candles should trigger retry")
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

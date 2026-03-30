@@ -114,9 +114,9 @@ extension Arca {
 
         candlesBox.update { $0 = dedupCandles(history.candles) }
         state.update { $0 = .connected }
-        let needsRetry = history.candles.isEmpty
+        let needsRetry = history.candles.count < count / 2
 
-        if !history.candles.isEmpty {
+        if !needsRetry && !history.candles.isEmpty {
             coverage.add(from: startTime, to: nowMs)
         }
 
