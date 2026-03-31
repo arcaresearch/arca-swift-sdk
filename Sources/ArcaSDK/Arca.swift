@@ -26,7 +26,7 @@ import Foundation
 /// }
 /// ```
 public final class Arca: Sendable {
-    static let defaultCdnBaseUrl = "https://data.arcaos.io"
+    public static let defaultCdnBaseUrl = "https://data.arcaos.io"
 
     public let client: ArcaClient
     public let ws: WebSocketManager
@@ -57,7 +57,7 @@ public final class Arca: Sendable {
         tokenProvider: TokenProvider? = nil,
         cache: CacheConfig = CacheConfig(),
         urlSessionConfiguration: URLSessionConfiguration = .default,
-        candleCdnBaseUrl: String? = Self.defaultCdnBaseUrl
+        candleCdnBaseUrl: String? = Arca.defaultCdnBaseUrl
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
