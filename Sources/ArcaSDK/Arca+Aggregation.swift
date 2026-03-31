@@ -136,7 +136,7 @@ extension Arca {
         exchange: String = "sim"
     ) async throws -> EquityChartStream {
         try validatePath(path)
-        let history: EquityHistoryResponse
+        var history: EquityHistoryResponse
         do {
             history = try await getEquityHistory(path: path, from: from, to: to, points: points)
         } catch {
@@ -146,6 +146,23 @@ extension Arca {
             sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange
         )
+
+        // If live equity is non-zero but cached history is all zeros (new
+        // account after deposit), drop the stale cache and refetch.
+        if let liveAgg = aggStream.aggregation.value,
+           let live = Double(liveAgg.totalEquityUsd), live > 0.01 {
+            let allZero = history.equityPoints.isEmpty ||
+                history.equityPoints.allSatisfy { abs(Double($0.equityUsd) ?? 0) < 0.01 }
+            if allZero {
+                let key = buildCacheKey("equityHistory", [
+                    "prefix": path, "from": from, "to": to, "points": String(points),
+                ])
+                await historyCache.delete(key)
+                if let fresh = try? await getEquityHistory(path: path, from: from, to: to, points: points) {
+                    history = fresh
+                }
+            }
+        }
 
         let state = SendableBox<WatchStreamState>(.connected)
         let historicalBox = SendableBox<[EquityPoint]>(history.equityPoints)

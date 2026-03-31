@@ -33,6 +33,12 @@ public actor HistoryCache {
         return node.value as? T
     }
 
+    public func delete(_ key: String) {
+        guard let node = dict[key] else { return }
+        removeNode(node)
+        dict.removeValue(forKey: key)
+    }
+
     public func set(_ key: String, value: Any) {
         guard maxEntries > 0 else { return }
 
