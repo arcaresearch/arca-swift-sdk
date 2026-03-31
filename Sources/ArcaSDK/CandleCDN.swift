@@ -116,8 +116,11 @@ public enum CandleCDN {
         let results: [[Candle]] = try await withThrowingTaskGroup(of: (Int, [Candle]).self) { group in
             for (index, chunk) in chunks.enumerated() {
                 group.addTask {
+                    try Task.checkCancellation()
+
                     let isClosed = nowMs >= chunk.endMs
                     if !isClosed {
+                        try Task.checkCancellation()
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
                         let candles = try await apiFallback(s, e)
@@ -128,11 +131,13 @@ public enum CandleCDN {
                     do {
                         let (data, response) = try await session.data(from: url)
                         if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+                            try Task.checkCancellation()
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
                             return (index, try await apiFallback(s, e))
                         }
                         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                            try Task.checkCancellation()
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
                             return (index, try await apiFallback(s, e))
@@ -140,7 +145,10 @@ public enum CandleCDN {
                         let candles = try JSONDecoder().decode([Candle].self, from: data)
                         let filtered = candles.filter { $0.t >= startMs && $0.t < endMs }
                         return (index, filtered)
+                    } catch is CancellationError {
+                        throw CancellationError()
                     } catch {
+                        try Task.checkCancellation()
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
                         return (index, try await apiFallback(s, e))

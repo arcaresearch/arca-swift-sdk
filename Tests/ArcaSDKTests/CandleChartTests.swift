@@ -691,6 +691,80 @@ final class CandleChartTests: XCTestCase {
         XCTAssertTrue(needsRetry, "Empty candles should trigger retry")
     }
 
+    // MARK: - CandleCDN cancellation
+
+    func testFetchCandlesFromCDN_cancellationBeforeFetchExitsImmediately() async {
+        var fallbackCalls = 0
+        let apiFallback: @Sendable (Int, Int) async throws -> [Candle] = { _, _ in
+            fallbackCalls += 1
+            return [self.makeCandle(t: 1000, c: "100")]
+        }
+
+        let task = Task {
+            try await CandleCDN.fetchCandlesFromCDN(
+                baseUrl: "https://cdn.example.com",
+                coin: "hl:BTC",
+                interval: .oneHour,
+                startMs: 0,
+                endMs: 30 * 24 * 3_600_000,
+                apiFallback: apiFallback
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(fallbackCalls, 0, "API fallback must not be called when task is cancelled")
+    }
+
+    func testFetchCandlesFromCDN_cancellationDoesNotFallbackToAPI() async {
+        var fallbackCalls = 0
+
+        let slowSession = URLSession(configuration: {
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForResource = 1
+            return config
+        }())
+
+        let apiFallback: @Sendable (Int, Int) async throws -> [Candle] = { _, _ in
+            fallbackCalls += 1
+            return []
+        }
+
+        let task = Task {
+            try await CandleCDN.fetchCandlesFromCDN(
+                baseUrl: "https://invalid.test.example",
+                coin: "hl:BTC",
+                interval: .oneHour,
+                startMs: 0,
+                endMs: 14 * 24 * 3_600_000,
+                session: slowSession,
+                apiFallback: apiFallback
+            )
+        }
+
+        try? await Task.sleep(nanoseconds: 10_000_000) // 10ms — let child tasks spawn
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            // URLSession errors wrapped in task group are acceptable too
+        }
+
+        XCTAssertEqual(fallbackCalls, 0, "API fallback must not be called after cancellation")
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {

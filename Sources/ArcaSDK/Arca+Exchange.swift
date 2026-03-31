@@ -419,6 +419,8 @@ extension Arca {
             return cached
         }
 
+        try Task.checkCancellation()
+
         if let cdnBase = candleCdnBaseUrl, interval != .fifteenSeconds,
            let start = startTime {
             let end = effectiveEnd

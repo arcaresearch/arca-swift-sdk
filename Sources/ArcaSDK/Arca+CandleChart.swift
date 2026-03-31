@@ -80,6 +80,7 @@ extension Arca {
         interval: CandleInterval,
         count: Int = 300
     ) async throws -> CandleChartStream {
+        try Task.checkCancellation()
         await ws.ensureConnected()
 
         let state = SendableBox<WatchStreamState>(.loading)
@@ -91,6 +92,13 @@ extension Arca {
         let coverage = CoverageTracker()
 
         await ws.acquireCandles(coins: [coin], intervals: [interval])
+
+        do {
+            try Task.checkCancellation()
+        } catch {
+            await ws.releaseCandles(coins: [coin], intervals: [interval])
+            throw error
+        }
 
         let candleStream = await ws.candleEvents()
         let statusStream = await ws.statusStream
@@ -105,6 +113,9 @@ extension Arca {
                 startTime: startTime,
                 skipBackfill: true
             )
+        } catch is CancellationError {
+            await ws.releaseCandles(coins: [coin], intervals: [interval])
+            throw CancellationError()
         } catch {
             #if DEBUG
             print("[ArcaSDK] initial getCandles failed: \(error)")

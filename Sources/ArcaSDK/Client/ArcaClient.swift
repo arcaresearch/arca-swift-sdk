@@ -100,6 +100,7 @@ public actor ArcaClient {
         var lastError: Error?
 
         for attempt in 0...Self.maxRetries {
+            try Task.checkCancellation()
             do {
                 return try await requestOnce(method: method, path: path, query: query, body: body)
             } catch {
