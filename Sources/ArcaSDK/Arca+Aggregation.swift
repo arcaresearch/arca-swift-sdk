@@ -292,7 +292,7 @@ extension Arca {
             let opTask = Task {
                 for await (op, _) in opStream {
                     guard op.state == .completed else { continue }
-                    guard op.type == .deposit || op.type == .transfer else { continue }
+                    guard op.type == .deposit || op.type == .transfer || op.type == .withdrawal else { continue }
                     guard let inputStr = op.input,
                           let inputData = inputStr.data(using: .utf8),
                           let inputJSON = try? JSONSerialization.jsonObject(with: inputData) as? [String: Any],
@@ -319,6 +319,8 @@ extension Arca {
                     var direction: String?
                     if op.type == .deposit && targetIn {
                         direction = "inflow"
+                    } else if op.type == .withdrawal && sourceIn {
+                        direction = "outflow"
                     } else if op.type == .transfer {
                         if sourceIn && !targetIn { direction = "outflow" }
                         else if !sourceIn && targetIn { direction = "inflow" }
