@@ -729,7 +729,7 @@ final class CandleChartTests: XCTestCase {
 
         let slowSession = URLSession(configuration: {
             let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForResource = 1
+            config.timeoutIntervalForResource = 5
             return config
         }())
 
@@ -740,7 +740,7 @@ final class CandleChartTests: XCTestCase {
 
         let task = Task {
             try await CandleCDN.fetchCandlesFromCDN(
-                baseUrl: "https://invalid.test.example",
+                baseUrl: "http://10.255.255.1:1",
                 coin: "hl:BTC",
                 interval: .oneHour,
                 startMs: 0,
