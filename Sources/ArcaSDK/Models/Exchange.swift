@@ -328,6 +328,7 @@ public struct SimMetaAsset: Codable, Sendable {
     public let dex: String?
     public let symbol: String
     public let displayName: String?
+    public let logoUrl: String?
     public let exchange: String
     public let isHip3: Bool?
     public let deployerDisplayName: String?
