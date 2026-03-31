@@ -26,13 +26,17 @@ import Foundation
 /// }
 /// ```
 public final class Arca: Sendable {
+    static let defaultCdnBaseUrl = "https://data.arcaos.io"
+
     public let client: ArcaClient
     public let ws: WebSocketManager
     public let tokenManager: TokenManager
     public let historyCache: HistoryCache
 
-    /// Base URL for the candle CDN (e.g. `https://cdn.arcaos.io`).
-    /// When set, `getCandles` fetches from CDN chunks for historical data.
+    /// Base URL for the candle CDN. Defaults to `https://data.arcaos.io`.
+    /// `getCandles` fetches finalized chunks from the CDN and falls back to
+    /// the REST API for the current (in-progress) period.
+    /// Pass `""` to disable CDN and use the REST API exclusively.
     public let candleCdnBaseUrl: String?
 
     private let realmId: String
@@ -53,12 +57,12 @@ public final class Arca: Sendable {
         tokenProvider: TokenProvider? = nil,
         cache: CacheConfig = CacheConfig(),
         urlSessionConfiguration: URLSessionConfiguration = .default,
-        candleCdnBaseUrl: String? = nil
+        candleCdnBaseUrl: String? = Self.defaultCdnBaseUrl
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
         self.realmId = resolved
-        self.candleCdnBaseUrl = candleCdnBaseUrl
+        self.candleCdnBaseUrl = candleCdnBaseUrl?.isEmpty == true ? nil : candleCdnBaseUrl
         self.tokenManager = TokenManager(provider: tokenProvider)
         self.historyCache = HistoryCache(config: cache)
 
@@ -133,7 +137,7 @@ public final class Arca: Sendable {
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
         realmId: String? = nil,
         cache: CacheConfig = CacheConfig(),
-        candleCdnBaseUrl: String? = nil
+        candleCdnBaseUrl: String? = defaultCdnBaseUrl
     ) async throws -> Arca {
         let token = try await tokenProvider()
         return try Arca(
