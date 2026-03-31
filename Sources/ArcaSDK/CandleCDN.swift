@@ -28,7 +28,8 @@ public enum CandleCDN {
     }
 
     private static func dailyChunk(_ date: Date) -> ChunkPeriod {
-        let cal = Calendar(identifier: .iso8601)
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = TimeZone(identifier: "UTC")!
         var comps = cal.dateComponents(in: TimeZone(identifier: "UTC")!, from: date)
         comps.hour = 0; comps.minute = 0; comps.second = 0; comps.nanosecond = 0
         let start = cal.date(from: comps)!
@@ -46,13 +47,14 @@ public enum CandleCDN {
         let week = comps.weekOfYear!
 
         let monday = isoWeekStart(year: year, week: week)
-        let end = Calendar(identifier: .iso8601).date(byAdding: .day, value: 7, to: monday)!
+        let end = cal.date(byAdding: .day, value: 7, to: monday)!
         let key = String(format: "%04d-W%02d", year, week)
         return ChunkPeriod(key: key, startMs: Int(monday.timeIntervalSince1970 * 1000), endMs: Int(end.timeIntervalSince1970 * 1000))
     }
 
     private static func monthlyChunk(_ date: Date) -> ChunkPeriod {
-        let cal = Calendar(identifier: .iso8601)
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = TimeZone(identifier: "UTC")!
         var comps = cal.dateComponents(in: TimeZone(identifier: "UTC")!, from: date)
         comps.day = 1; comps.hour = 0; comps.minute = 0; comps.second = 0; comps.nanosecond = 0
         let start = cal.date(from: comps)!

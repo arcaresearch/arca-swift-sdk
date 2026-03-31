@@ -765,6 +765,120 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(fallbackCalls, 0, "API fallback must not be called after cancellation")
     }
 
+    // MARK: - CandleCDN chunk boundary tests (DST spring-forward)
+
+    func testDailyChunkOnDSTDay() {
+        let march8Ms = 1_772_928_000_000
+        let march9Ms = 1_773_014_400_000
+        let chunk = CandleCDN.chunkForTime(interval: .fiveMinutes, ms: march8Ms)
+        XCTAssertEqual(chunk.key, "2026-03-08")
+        XCTAssertEqual(chunk.startMs, march8Ms)
+        XCTAssertEqual(chunk.endMs, march9Ms, "Daily chunk end must be March 9 00:00 UTC regardless of DST")
+    }
+
+    func testWeeklyChunkAcrossDST() {
+        let march2Ms = 1_772_409_600_000
+        let march9Ms = 1_773_014_400_000
+        let chunk = CandleCDN.chunkForTime(interval: .oneHour, ms: march2Ms)
+        XCTAssertEqual(chunk.key, "2026-W10")
+        XCTAssertEqual(chunk.startMs, march2Ms)
+        XCTAssertEqual(chunk.endMs, march9Ms, "Weekly chunk end must be March 9 00:00 UTC despite DST transition on March 8")
+    }
+
+    func testMonthlyChunkAcrossDST() {
+        let march1Ms = 1_772_323_200_000
+        let april1Ms = 1_775_001_600_000
+        let chunk = CandleCDN.chunkForTime(interval: .oneDay, ms: march1Ms)
+        XCTAssertEqual(chunk.key, "2026-03")
+        XCTAssertEqual(chunk.startMs, march1Ms)
+        XCTAssertEqual(chunk.endMs, april1Ms, "Monthly chunk end must be April 1 00:00 UTC despite DST transition in March")
+    }
+
+    // MARK: - CandleCDN chunk boundary tests (DST fall-back)
+
+    func testDailyChunkOnFallBack() {
+        let nov1Ms = 1_793_491_200_000
+        let nov2Ms = 1_793_577_600_000
+        let chunk = CandleCDN.chunkForTime(interval: .fiveMinutes, ms: nov1Ms)
+        XCTAssertEqual(chunk.key, "2026-11-01")
+        XCTAssertEqual(chunk.startMs, nov1Ms)
+        XCTAssertEqual(chunk.endMs, nov2Ms, "Daily chunk end must be Nov 2 00:00 UTC regardless of fall-back DST")
+    }
+
+    func testWeeklyChunkAcrossFallBack() {
+        let oct26Ms = 1_792_972_800_000
+        let nov2Ms  = 1_793_577_600_000
+        let chunk = CandleCDN.chunkForTime(interval: .oneHour, ms: oct26Ms)
+        XCTAssertEqual(chunk.key, "2026-W44")
+        XCTAssertEqual(chunk.startMs, oct26Ms)
+        XCTAssertEqual(chunk.endMs, nov2Ms, "Weekly chunk end must be Nov 2 00:00 UTC despite fall-back DST on Nov 1")
+    }
+
+    func testMonthlyChunkAcrossFallBack() {
+        let nov1Ms = 1_793_491_200_000
+        let dec1Ms = 1_796_083_200_000
+        let chunk = CandleCDN.chunkForTime(interval: .oneDay, ms: nov1Ms)
+        XCTAssertEqual(chunk.key, "2026-11")
+        XCTAssertEqual(chunk.startMs, nov1Ms)
+        XCTAssertEqual(chunk.endMs, dec1Ms, "Monthly chunk end must be Dec 1 00:00 UTC despite fall-back DST in November")
+    }
+
+    // MARK: - chunksForRange termination tests
+
+    func testChunksForRangeWeekly_NoInfiniteLoop() {
+        let march1Ms = 1_772_323_200_000
+        let april1Ms = 1_775_001_600_000
+        let chunks = CandleCDN.chunksForRange(interval: .oneHour, startMs: march1Ms, endMs: april1Ms)
+        XCTAssertGreaterThan(chunks.count, 0, "Should produce at least one chunk")
+        XCTAssertLessThanOrEqual(chunks.count, 7, "One month should need at most 7 weekly chunks")
+
+        for i in 1..<chunks.count {
+            XCTAssertEqual(chunks[i].startMs, chunks[i-1].endMs,
+                "Chunks must be contiguous: chunk \(i) start should equal chunk \(i-1) end")
+        }
+        XCTAssertLessThanOrEqual(chunks.first!.startMs, march1Ms)
+        XCTAssertGreaterThanOrEqual(chunks.last!.endMs, april1Ms)
+    }
+
+    func testChunksForRangeMonthly_NoInfiniteLoop() {
+        let jan1Ms  = 1_767_225_600_000
+        let jan1_2027Ms = 1_798_761_600_000
+        let chunks = CandleCDN.chunksForRange(interval: .oneDay, startMs: jan1Ms, endMs: jan1_2027Ms)
+        XCTAssertEqual(chunks.count, 12, "Full year at 1d interval should produce 12 monthly chunks")
+
+        for i in 1..<chunks.count {
+            XCTAssertEqual(chunks[i].startMs, chunks[i-1].endMs,
+                "Chunks must be contiguous: chunk \(i) start should equal chunk \(i-1) end")
+        }
+        XCTAssertEqual(chunks.first!.key, "2026-01")
+        XCTAssertEqual(chunks.last!.key, "2026-12")
+    }
+
+    // MARK: - Cross-SDK chunk key verification
+
+    func testChunkKeysMatchGoBackend() {
+        let march15NoonMs = 1_773_576_000_000
+
+        let daily = CandleCDN.chunkForTime(interval: .fiveMinutes, ms: march15NoonMs)
+        XCTAssertEqual(daily.key, "2026-03-15")
+
+        let weekly = CandleCDN.chunkForTime(interval: .oneHour, ms: march15NoonMs)
+        XCTAssertEqual(weekly.key, "2026-W11")
+
+        let monthly = CandleCDN.chunkForTime(interval: .oneDay, ms: march15NoonMs)
+        XCTAssertEqual(monthly.key, "2026-03")
+
+        let jan1Ms = 1_767_225_600_000
+        let janDaily = CandleCDN.chunkForTime(interval: .oneMinute, ms: jan1Ms)
+        XCTAssertEqual(janDaily.key, "2026-01-01")
+
+        let janWeekly = CandleCDN.chunkForTime(interval: .fourHours, ms: jan1Ms)
+        XCTAssertEqual(janWeekly.key, "2026-W01")
+
+        let janMonthly = CandleCDN.chunkForTime(interval: .oneDay, ms: jan1Ms)
+        XCTAssertEqual(janMonthly.key, "2026-01")
+    }
+
     // MARK: - Helpers
 
     private func makeCandle(t: Int, c: String) -> Candle {
