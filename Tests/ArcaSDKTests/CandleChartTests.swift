@@ -828,6 +828,105 @@ final class CandleChartTests: XCTestCase {
         XCTAssertTrue(needsRetry, "Empty candles should trigger retry")
     }
 
+    // MARK: - Parallel ensureRange gap fetching
+
+    func testEnsureRangeFetchesGapsConcurrently() async throws {
+        let arca = makeArca()
+        let intervalMs = CandleInterval.oneMinute.milliseconds
+        var initialStart: Int = 0
+
+        CandleChartWatchProtocol.handler = { request, index in
+            switch index {
+            case 0:
+                initialStart = Self.queryValue("startTime", in: request) ?? 0
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart + intervalMs * 3, c: "300"),
+                        self.makeCandle(t: initialStart + intervalMs * 7, c: "700"),
+                    ])
+                )
+            default:
+                return CandleChartProtocolResponse(
+                    delay: 0.15,
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: Self.queryValue("startTime", in: request)! + intervalMs, c: "\(index)"),
+                    ])
+                )
+            }
+        }
+
+        let stream = try await arca.watchCandleChart(coin: "hl:BTC", interval: .oneMinute, count: 2)
+
+        let gapStart = initialStart - intervalMs * 2
+        let gapEnd = initialStart + intervalMs * 10
+
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = await stream.ensureRange(gapStart, gapEnd)
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+
+        XCTAssertGreaterThan(result.loadedCount, 0, "Should have loaded candles for the gaps")
+
+        let requestCount = CandleChartWatchProtocol.requests.count - 1
+        XCTAssertGreaterThanOrEqual(requestCount, 2, "Should have fetched at least 2 gaps")
+
+        let sequentialTime = Double(requestCount) * 0.15
+        XCTAssertLessThan(elapsed, sequentialTime,
+            "Gaps should be fetched concurrently: elapsed \(elapsed)s < sequential \(sequentialTime)s")
+
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testEnsureRangeEmitsIncrementalSnapshots() async throws {
+        let arca = makeArca()
+        let intervalMs = CandleInterval.oneMinute.milliseconds
+        var initialStart: Int = 0
+
+        CandleChartWatchProtocol.handler = { request, index in
+            switch index {
+            case 0:
+                initialStart = Self.queryValue("startTime", in: request) ?? 0
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart + intervalMs, c: "100"),
+                        self.makeCandle(t: initialStart + intervalMs * 2, c: "200"),
+                    ])
+                )
+            default:
+                let st = Self.queryValue("startTime", in: request) ?? 0
+                return CandleChartProtocolResponse(
+                    delay: Double(index) * 0.05,
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: st + intervalMs, c: "\(index * 100)"),
+                    ])
+                )
+            }
+        }
+
+        let stream = try await arca.watchCandleChart(coin: "hl:BTC", interval: .oneMinute, count: 2)
+
+        var updateCounts: [Int] = []
+        let unsub = stream.onUpdate { update in
+            updateCounts.append(update.candles.count)
+        }
+
+        let gapStart = initialStart - intervalMs * 3
+        let gapEnd = initialStart + intervalMs * 5
+        _ = await stream.ensureRange(gapStart, gapEnd)
+
+        XCTAssertGreaterThanOrEqual(updateCounts.count, 2,
+            "Should have emitted at least 2 incremental snapshots, got \(updateCounts.count)")
+
+        for i in 1..<updateCounts.count {
+            XCTAssertGreaterThanOrEqual(updateCounts[i], updateCounts[i - 1],
+                "Snapshot candle count must not decrease: \(updateCounts[i-1]) → \(updateCounts[i])")
+        }
+
+        unsub()
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     // MARK: - CandleCDN cancellation
 
     func testFetchCandlesFromCDN_cancellationBeforeFetchExitsImmediately() async {
