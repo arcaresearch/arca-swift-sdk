@@ -387,6 +387,8 @@ public struct CandleChartStream: Sendable {
     /// Ensure candles are loaded for the given time range. The SDK tracks
     /// which ranges have already been fetched and only requests the gaps.
     /// Calling with an already-loaded range is a no-op (idempotent).
+    /// Overlapping calls are coalesced into the pending range instead of
+    /// being dropped.
     ///
     /// Use this when the chart viewport changes (zoom, resize, scroll, or
     /// jumping to a specific date).

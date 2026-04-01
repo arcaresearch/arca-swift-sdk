@@ -221,12 +221,13 @@ await chart.stop()
 
 ### Loading a specific range
 
-When the chart viewport changes (zoom, resize, jump to date), call `ensureRange` with the time range you need. The SDK tracks which ranges have already been fetched, loads only the gaps, and merges everything into the sorted candle array.
+When the chart viewport changes (zoom, resize, jump to date), call `ensureRange` with the time range you need. The SDK tracks which ranges have already been fetched, loads only the gaps, coalesces overlapping calls, and merges everything into the sorted candle array.
 
 ```swift
 // Chart zoom-out — tell the SDK what range is now visible:
 let result = await chart.ensureRange(newVisibleStart, newVisibleEnd)
-// result.loadedCount == 0 means the range was already loaded (no network request)
+// result.loadedCount == 0 means the range was already loaded, or an overlapping
+// in-flight ensureRange finished covering it before this call completed.
 // result.reachedStart == true means no more history exists before the array start
 ```
 

@@ -3,6 +3,28 @@ import Foundation
 private let gapRecoveryCandles = 50
 private let defaultLoadCount = 300
 
+private struct PendingCandleRange: Sendable {
+    let from: Int
+    let to: Int
+}
+
+private struct RangeLoadState: Sendable {
+    var loading = false
+    var pendingRange: PendingCandleRange?
+    var task: Task<Int, Never>?
+}
+
+private func mergePendingRange(
+    _ current: PendingCandleRange?,
+    with next: PendingCandleRange
+) -> PendingCandleRange {
+    guard let current else { return next }
+    return PendingCandleRange(
+        from: min(current.from, next.from),
+        to: max(current.to, next.to)
+    )
+}
+
 // MARK: - CoverageTracker
 
 /// Tracks which time ranges have been loaded as a sorted, non-overlapping
@@ -90,6 +112,7 @@ extension Arca {
         let stoppedBox = SendableBox<Bool>(false)
         let reachedStartBox = SendableBox<Bool>(false)
         let coverage = CoverageTracker()
+        let rangeLoadState = SendableBox(RangeLoadState())
 
         await ws.acquireCandles(coins: [coin], intervals: [interval])
 
@@ -250,9 +273,61 @@ extension Arca {
             }
         }
 
+        let drainPendingRanges: @Sendable () async -> Int = { [weak self] in
+            guard let self = self else { return 0 }
+
+            var totalLoaded = 0
+            while !stoppedBox.value {
+                var requested: PendingCandleRange?
+                rangeLoadState.update { state in
+                    requested = state.pendingRange
+                    state.pendingRange = nil
+                }
+                guard let requested else { break }
+
+                let gaps = coverage.gaps(from: requested.from, to: requested.to)
+                for gap in gaps {
+                    do {
+                        let res = try await self.getCandles(
+                            coin: coin,
+                            interval: interval,
+                            startTime: gap.from,
+                            endTime: gap.to
+                        )
+                        guard !stoppedBox.value else { return totalLoaded }
+
+                        if !res.candles.isEmpty {
+                            candlesBox.update { arr in
+                                arr.append(contentsOf: res.candles)
+                                arr = dedupCandles(arr)
+                            }
+                            totalLoaded += res.candles.count
+                            coverage.add(from: gap.from, to: gap.to)
+                        } else {
+                            let earliest = candlesBox.value.first?.t ?? Int.max
+                            if gap.from <= earliest {
+                                reachedStartBox.update { $0 = true }
+                                coverage.add(from: gap.from, to: gap.to)
+                            }
+                        }
+                    } catch is CancellationError {
+                        return totalLoaded
+                    } catch {
+                        // Best-effort: leave the gap uncovered so a later ensureRange can retry it.
+                    }
+                }
+            }
+
+            let snapshot = candlesBox.value
+            if totalLoaded > 0, let cont = continuationBox.value, let last = snapshot.last {
+                yieldSnapshot(cont, snapshot, last)
+            }
+            return totalLoaded
+        }
+
         // MARK: ensureRange
 
-        let ensureRange: @Sendable (_ start: Int, _ end: Int) async -> LoadRangeResult = { [weak self] start, end in
+        let ensureRange: @Sendable (_ start: Int, _ end: Int) async -> LoadRangeResult = { start, end in
             let makeResult: ([Candle], Int) -> LoadRangeResult = { candles, loaded in
                 LoadRangeResult(
                     loadedCount: loaded,
@@ -263,55 +338,67 @@ extension Arca {
                 )
             }
 
-            guard !stoppedBox.value, let self = self else {
+            guard !stoppedBox.value else {
+                return makeResult(candlesBox.value, 0)
+            }
+            guard start <= end else {
+                return makeResult(candlesBox.value, 0)
+            }
+            if coverage.gaps(from: start, to: end).isEmpty {
                 return makeResult(candlesBox.value, 0)
             }
 
-            var alreadyLoading = false
-            loadingMore.update { val in
-                alreadyLoading = val
-                val = true
+            let requestedRange = PendingCandleRange(from: start, to: end)
+            let enqueueRequestedRange = {
+                rangeLoadState.update { state in
+                    state.pendingRange = mergePendingRange(state.pendingRange, with: requestedRange)
+                }
             }
-            if alreadyLoading {
-                return makeResult(candlesBox.value, 0)
-            }
-            defer { loadingMore.update { $0 = false } }
+            enqueueRequestedRange()
 
-            let gaps = coverage.gaps(from: start, to: end)
-            if gaps.isEmpty {
-                return makeResult(candlesBox.value, 0)
-            }
-
-            var totalLoaded = 0
-            for gap in gaps {
-                let res = try? await self.getCandles(
-                    coin: coin,
-                    interval: interval,
-                    startTime: gap.from,
-                    endTime: gap.to
-                )
-
-                if let res = res, !res.candles.isEmpty {
-                    candlesBox.update { arr in
-                        arr.append(contentsOf: res.candles)
-                        arr = dedupCandles(arr)
-                    }
-                    totalLoaded += res.candles.count
-                } else {
-                    let earliest = candlesBox.value.first?.t ?? Int.max
-                    if gap.from <= earliest {
-                        reachedStartBox.update { $0 = true }
+            while true {
+                var existingTask: Task<Int, Never>?
+                var shouldStartTask = false
+                rangeLoadState.update { state in
+                    if state.loading {
+                        existingTask = state.task
+                    } else {
+                        state.loading = true
+                        shouldStartTask = true
                     }
                 }
-                coverage.add(from: gap.from, to: gap.to)
-            }
 
-            let snapshot = candlesBox.value
-            if totalLoaded > 0, let cont = continuationBox.value, let last = snapshot.last {
-                yieldSnapshot(cont, snapshot, last)
-            }
+                if shouldStartTask {
+                    let task = Task {
+                        await drainPendingRanges()
+                    }
+                    rangeLoadState.update { $0.task = task }
+                    loadingMore.update { $0 = true }
 
-            return makeResult(snapshot, totalLoaded)
+                    let loaded = await task.value
+
+                    rangeLoadState.update { state in
+                        state.loading = false
+                        state.task = nil
+                    }
+                    loadingMore.update { $0 = false }
+                    return makeResult(candlesBox.value, loaded)
+                }
+
+                if let existingTask {
+                    _ = await existingTask.value
+                } else {
+                    await Task.yield()
+                }
+
+                guard !stoppedBox.value else {
+                    return makeResult(candlesBox.value, 0)
+                }
+                if coverage.gaps(from: start, to: end).isEmpty {
+                    return makeResult(candlesBox.value, 0)
+                }
+                enqueueRequestedRange()
+            }
         }
 
         // MARK: loadMore

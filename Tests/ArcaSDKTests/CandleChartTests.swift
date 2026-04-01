@@ -2,6 +2,20 @@ import XCTest
 @testable import ArcaSDK
 
 final class CandleChartTests: XCTestCase {
+    private var sessionConfig: URLSessionConfiguration!
+
+    override func setUp() {
+        super.setUp()
+        sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [CandleChartWatchProtocol.self] + (sessionConfig.protocolClasses ?? [])
+        CandleChartWatchProtocol.reset()
+    }
+
+    override func tearDown() {
+        sessionConfig = nil
+        CandleChartWatchProtocol.reset()
+        super.tearDown()
+    }
 
     // MARK: - CandleInterval.milliseconds
 
@@ -673,6 +687,129 @@ final class CandleChartTests: XCTestCase {
         XCTAssertFalse(needsRetry, "Exactly count/2 candles should not trigger retry")
     }
 
+    func testWatchCandleChartEnsureRangeCoalescesOverlappingRequests() async throws {
+        let arca = makeArca()
+        let intervalMs = CandleInterval.oneMinute.milliseconds
+        var initialStart: Int = 0
+
+        CandleChartWatchProtocol.handler = { request, index in
+            switch index {
+            case 0:
+                initialStart = Self.queryValue("startTime", in: request) ?? 0
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart + intervalMs, c: "100"),
+                        self.makeCandle(t: initialStart + intervalMs * 2, c: "200"),
+                        self.makeCandle(t: initialStart + intervalMs * 3, c: "300"),
+                    ])
+                )
+            case 1:
+                return CandleChartProtocolResponse(
+                    delay: 0.1,
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart, c: "90"),
+                    ])
+                )
+            case 2:
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart - intervalMs, c: "80"),
+                    ])
+                )
+            default:
+                XCTFail("Unexpected request index \(index)")
+                return CandleChartProtocolResponse(body: self.makeCandlesEnvelope([]))
+            }
+        }
+
+        let stream = try await arca.watchCandleChart(
+            coin: "hl:BTC",
+            interval: .oneMinute,
+            count: 3
+        )
+        let firstStart = initialStart - intervalMs
+        let firstEnd = initialStart - 1
+        let secondStart = initialStart - intervalMs * 2
+
+        let firstTask = Task { await stream.ensureRange(firstStart, firstEnd) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let secondTask = Task { await stream.ensureRange(secondStart, firstEnd) }
+
+        let first = await firstTask.value
+        let second = await secondTask.value
+
+        XCTAssertEqual(CandleChartWatchProtocol.requests.count, 3)
+        XCTAssertEqual(first.loadedCount, 2)
+        XCTAssertEqual(second.totalCount, 5)
+        XCTAssertEqual(stream.candles.value.map(\.t), [
+            initialStart - intervalMs,
+            initialStart,
+            initialStart + intervalMs,
+            initialStart + intervalMs * 2,
+            initialStart + intervalMs * 3,
+        ])
+
+        let secondRequest = CandleChartWatchProtocol.requests[1]
+        XCTAssertEqual(Self.queryValue("startTime", in: secondRequest), firstStart)
+        XCTAssertEqual(Self.queryValue("endTime", in: secondRequest), firstEnd)
+
+        let thirdRequest = CandleChartWatchProtocol.requests[2]
+        XCTAssertEqual(Self.queryValue("startTime", in: thirdRequest), secondStart)
+        XCTAssertEqual(Self.queryValue("endTime", in: thirdRequest), initialStart - intervalMs - 1)
+
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testWatchCandleChartEnsureRangeRetriesFailedGap() async throws {
+        let arca = makeArca()
+        let intervalMs = CandleInterval.oneMinute.milliseconds
+        var initialStart: Int = 0
+
+        CandleChartWatchProtocol.handler = { request, index in
+            switch index {
+            case 0:
+                initialStart = Self.queryValue("startTime", in: request) ?? 0
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart + intervalMs, c: "100"),
+                        self.makeCandle(t: initialStart + intervalMs * 2, c: "200"),
+                    ])
+                )
+            case 1:
+                return CandleChartProtocolResponse(error: URLError(.cannotConnectToHost))
+            case 2:
+                return CandleChartProtocolResponse(
+                    body: self.makeCandlesEnvelope([
+                        self.makeCandle(t: initialStart - intervalMs, c: "90"),
+                    ])
+                )
+            default:
+                XCTFail("Unexpected request index \(index)")
+                return CandleChartProtocolResponse(body: self.makeCandlesEnvelope([]))
+            }
+        }
+
+        let stream = try await arca.watchCandleChart(
+            coin: "hl:BTC",
+            interval: .oneMinute,
+            count: 2
+        )
+        let rangeStart = initialStart - intervalMs
+        let rangeEnd = initialStart - 1
+
+        let first = await stream.ensureRange(rangeStart, rangeEnd)
+        let second = await stream.ensureRange(rangeStart, rangeEnd)
+
+        XCTAssertEqual(first.loadedCount, 0)
+        XCTAssertEqual(second.loadedCount, 1)
+        XCTAssertEqual(CandleChartWatchProtocol.requests.count, 3)
+        XCTAssertEqual(stream.candles.value.first?.t, initialStart - intervalMs)
+
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     func testBoundaryOneUnderHalfTriggersRetry() {
         let count = 300
         let threshold = count / 2 - 1 // 149
@@ -884,4 +1021,122 @@ final class CandleChartTests: XCTestCase {
     private func makeCandle(t: Int, c: String) -> Candle {
         Candle(t: t, o: "100", h: "200", l: "50", c: c, v: "1000", n: 10, s: nil)
     }
+
+    private func makeArca() -> Arca {
+        try! Arca(
+            token: fakeJwt(),
+            baseURL: URL(string: "http://localhost:19998")!,
+            urlSessionConfiguration: sessionConfig,
+            candleCdnBaseUrl: nil
+        )
+    }
+
+    private func fakeJwt() -> String {
+        let header = base64url(#"{"alg":"HS256","typ":"JWT"}"#)
+        let payload = base64url(#"{"realmId":"rlm_test","sub":"usr_test"}"#)
+        return "\(header).\(payload).fakesig"
+    }
+
+    private func base64url(_ string: String) -> String {
+        Data(string.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func makeCandlesEnvelope(_ candles: [Candle]) -> String {
+        let candleJSON = candles.map { candle in
+            """
+            {"t":\(candle.t),"o":"\(candle.o)","h":"\(candle.h)","l":"\(candle.l)","c":"\(candle.c)","v":"\(candle.v)","n":\(candle.n)}
+            """
+        }.joined(separator: ",")
+        return "{\"success\":true,\"data\":{\"coin\":\"hl:BTC\",\"interval\":\"1m\",\"candles\":[\(candleJSON)]}}"
+    }
+
+    private static func queryValue(_ name: String, in request: URLRequest) -> Int? {
+        guard
+            let url = request.url,
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let value = components.queryItems?.first(where: { $0.name == name })?.value
+        else {
+            return nil
+        }
+        return Int(value)
+    }
+}
+
+private struct CandleChartProtocolResponse {
+    var delay: TimeInterval = 0
+    var body: String? = nil
+    var error: Error? = nil
+}
+
+private final class CandleChartWatchProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var requestIndex = 0
+    private static var _requests: [URLRequest] = []
+    static var handler: ((URLRequest, Int) -> CandleChartProtocolResponse)?
+
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _requests
+    }
+
+    static func reset() {
+        lock.lock()
+        requestIndex = 0
+        _requests = []
+        handler = nil
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard let url = request.url else { return false }
+        return url.host == "localhost" && url.path.hasPrefix("/api/v1/exchange/market/candles/")
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let responseInfo: CandleChartProtocolResponse
+        CandleChartWatchProtocol.lock.lock()
+        let index = CandleChartWatchProtocol.requestIndex
+        CandleChartWatchProtocol.requestIndex += 1
+        CandleChartWatchProtocol._requests.append(request)
+        responseInfo = CandleChartWatchProtocol.handler?(request, index) ?? CandleChartProtocolResponse(error: URLError(.badServerResponse))
+        CandleChartWatchProtocol.lock.unlock()
+
+        let sendResponse = {
+            if let error = responseInfo.error {
+                self.client?.urlProtocol(self, didFailWithError: error)
+                return
+            }
+
+            let response = HTTPURLResponse(
+                url: self.request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if let body = responseInfo.body {
+                self.client?.urlProtocol(self, didLoad: Data(body.utf8))
+            }
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+
+        if responseInfo.delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + responseInfo.delay) {
+                sendResponse()
+            }
+        } else {
+            sendResponse()
+        }
+    }
+
+    override func stopLoading() {}
 }
