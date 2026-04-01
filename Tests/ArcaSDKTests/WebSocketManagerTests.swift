@@ -211,6 +211,32 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(received?["hl:BTC"], "97100")
     }
 
+    func testExchangeNotificationsDeliverBareExchangeUpdated() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let exchangeNotifications = await manager.exchangeNotifications()
+        await manager.injectMessage(#"{"type":"exchange.updated","entityId":"obj_1","entityPath":"/exchanges/main"}"#)
+
+        var received: RealmEvent?
+        let consumer = Task {
+            for await event in exchangeNotifications {
+                received = event
+                break
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertEqual(received?.type, EventType.exchangeUpdated.rawValue)
+        XCTAssertEqual(received?.entityId, "obj_1")
+        XCTAssertNil(received?.exchangeState)
+    }
+
     // MARK: - watch_snapshot normalization
 
     func testWatchSnapshotValuationNormalizedToObjectValuation() async throws {

@@ -1,5 +1,9 @@
 import Foundation
 
+private func hasInlineStructuralExchangeState(_ state: ExchangeState?) -> Bool {
+    state?.pendingIntents != nil
+}
+
 extension Arca {
 
     /// Watch real-time operation events under a path prefix.
@@ -561,20 +565,21 @@ extension Arca {
         await ws.acquireMids(exchange: exchange)
         await ws.watchPath(objectPath)
 
-        let exchangeStream = await ws.exchangeEvents()
+        let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
 
         let updates = AsyncStream<ExchangeState> { [weak self] continuation in
             let exchangeTask = Task { [weak self] in
-                for await (state, event) in exchangeStream {
-                    guard event.entityId == objectId else { continue }
+                for await event in exchangeStream {
+                    guard event.entityId == objectId || event.entityPath == objectPath else { continue }
                     let structural: ExchangeState
-                    if state.positions.isEmpty && state.openOrders.isEmpty {
+                    if let state = event.exchangeState,
+                       hasInlineStructuralExchangeState(state) {
+                        structural = state
+                    } else {
                         guard let self = self,
                               let fetched = try? await self.getExchangeState(objectId: objectId) else { continue }
                         structural = fetched
-                    } else {
-                        structural = state
                     }
                     structuralBox.update { $0 = structural }
                     let currentMids = midsBox.value

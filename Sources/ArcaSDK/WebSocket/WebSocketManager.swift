@@ -365,6 +365,14 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of raw exchange update notifications, including events without inline state.
+    public func exchangeNotifications() -> AsyncStream<RealmEvent> {
+        filteredStream { event in
+            guard event.type == EventType.exchangeUpdated.rawValue else { return nil }
+            return event
+        }
+    }
+
     /// Stream of mid price updates.
     public func midsEvents() -> AsyncStream<[String: String]> {
         filteredStream { event in

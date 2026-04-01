@@ -581,7 +581,7 @@ extension Arca {
         let objectPath = detail.object.path
         await ws.watchPath(objectPath)
 
-        let exchangeStream = await ws.exchangeEvents()
+        let exchangeStream = await ws.exchangeNotifications()
         let midsUpdates = priceStream.updates
 
         let statusStream = await ws.statusStream
@@ -594,10 +594,18 @@ extension Arca {
         }
 
         let updates = AsyncStream<ActiveAssetData> { continuation in
-            let exchangeTask = Task {
-                for await (state, event) in exchangeStream {
-                    guard event.entityId == opts.objectId else { continue }
-                    exchangeStateBox.update { $0 = state }
+            let exchangeTask = Task { [weak self] in
+                for await event in exchangeStream {
+                    guard event.entityId == opts.objectId || event.entityPath == objectPath else { continue }
+                    let nextState: ExchangeState
+                    if let state = event.exchangeState {
+                        nextState = state
+                    } else {
+                        guard let self = self,
+                              let fetched = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
+                        nextState = fetched
+                    }
+                    exchangeStateBox.update { $0 = nextState }
                     if let data = recompute() {
                         activeAssetBox.update { $0 = data }
                         streamState.update { $0 = .connected }
