@@ -1738,6 +1738,147 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(pnl.externalFlows?[0].direction, "inflow")
     }
 
+    // MARK: - PnlPoint valueUsd
+
+    func testPnlPointDecoding_WithoutValueUsd() throws {
+        let json = """
+        { "timestamp": "2026-01-01T00:00:00Z", "pnlUsd": "100.00", "equityUsd": "5100.00" }
+        """.data(using: .utf8)!
+        let point = try decoder.decode(PnlPoint.self, from: json)
+        XCTAssertEqual(point.pnlUsd, "100.00")
+        XCTAssertNil(point.valueUsd)
+    }
+
+    func testPnlPointDecoding_WithValueUsd() throws {
+        let json = """
+        { "timestamp": "2026-01-01T00:00:00Z", "pnlUsd": "100.00", "equityUsd": "5100.00", "valueUsd": "5100.00" }
+        """.data(using: .utf8)!
+        let point = try decoder.decode(PnlPoint.self, from: json)
+        XCTAssertEqual(point.valueUsd, "5100.00")
+    }
+
+    func testPnlPointMemberwiseInit_DefaultValueUsd() {
+        let point = PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "200.00", equityUsd: "5200.00")
+        XCTAssertNil(point.valueUsd)
+    }
+
+    func testPnlPointMemberwiseInit_WithValueUsd() {
+        var point = PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "200.00", equityUsd: "5200.00")
+        point.valueUsd = "5200.00"
+        XCTAssertEqual(point.valueUsd, "5200.00")
+    }
+
+    func testPnlAnchorEnum() {
+        let zero: PnlAnchor = .zero
+        let equity: PnlAnchor = .equity
+        XCTAssertNotEqual("\(zero)", "\(equity)")
+    }
+
+    // MARK: - applyEquityAnchor
+
+    func testEquityAnchor_LivePointValueUsdEqualsEquity() {
+        var points = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+            PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "500.00", equityUsd: "5500.00"),
+        ]
+        applyEquityAnchor(to: &points, liveEquity: 5500, livePnl: 500)
+
+        XCTAssertEqual(points[1].valueUsd, "5500.00")
+    }
+
+    func testEquityAnchor_HistoricalPointsGetCorrectOffset() {
+        var points = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+            PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "200.00", equityUsd: "5200.00"),
+            PnlPoint(timestamp: "2026-01-01T02:00:00Z", pnlUsd: "800.00", equityUsd: "5800.00"),
+        ]
+        // offset = 5800 - 800 = 5000
+        applyEquityAnchor(to: &points, liveEquity: 5800, livePnl: 800)
+
+        XCTAssertEqual(points[0].valueUsd, "5000.00")
+        XCTAssertEqual(points[1].valueUsd, "5200.00")
+        XCTAssertEqual(points[2].valueUsd, "5800.00")
+    }
+
+    func testEquityAnchor_OffsetStableAcrossMidPriceUpdates() {
+        let history = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+        ]
+        let startingEquity = 5000.0
+
+        // First price tick: equity = 5500, pnl = 500
+        var points1 = history
+        let pnl1 = 5500.0 - startingEquity
+        points1.append(PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "500.00", equityUsd: "5500.00"))
+        applyEquityAnchor(to: &points1, liveEquity: 5500, livePnl: pnl1)
+        let hist1ValueUsd = points1[0].valueUsd
+
+        // Second price tick: equity = 5300, pnl = 300
+        var points2 = history
+        let pnl2 = 5300.0 - startingEquity
+        points2.append(PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "300.00", equityUsd: "5300.00"))
+        applyEquityAnchor(to: &points2, liveEquity: 5300, livePnl: pnl2)
+
+        XCTAssertEqual(points2[0].valueUsd, hist1ValueUsd, "Historical point valueUsd must be identical across price ticks")
+        XCTAssertEqual(points2.last?.valueUsd, "5300.00", "Live point valueUsd must equal current equity")
+    }
+
+    func testEquityAnchor_OffsetShiftsOnFlowChange() {
+        let history = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+        ]
+        let startingEquity = 5000.0
+        let liveEquity = 7000.0
+        let cumInflows = 2000.0
+        // pnl = 7000 - 5000 - 2000 = 0 (deposit doesn't create P&L)
+        let pnl = liveEquity - startingEquity - cumInflows
+
+        var points = history
+        points.append(PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: String(format: "%.2f", pnl), equityUsd: "7000.00"))
+        applyEquityAnchor(to: &points, liveEquity: liveEquity, livePnl: pnl)
+
+        // offset = 7000 - 0 = 7000
+        XCTAssertEqual(points[0].valueUsd, "7000.00")
+        XCTAssertEqual(points[1].valueUsd, "7000.00")
+        XCTAssertEqual(points[1].pnlUsd, "0.00")
+    }
+
+    func testEquityAnchor_DoesNotMutateOriginalHistoricalPoints() {
+        let original = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+            PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "100.00", equityUsd: "5100.00"),
+        ]
+        var copy = original
+        copy.append(PnlPoint(timestamp: "2026-01-01T02:00:00Z", pnlUsd: "500.00", equityUsd: "5500.00"))
+        applyEquityAnchor(to: &copy, liveEquity: 5500, livePnl: 500)
+
+        XCTAssertNil(original[0].valueUsd, "Original array must not be mutated")
+        XCTAssertNil(original[1].valueUsd, "Original array must not be mutated")
+        XCTAssertNotNil(copy[0].valueUsd, "Copy should have valueUsd set")
+    }
+
+    func testEquityAnchor_ZeroAnchorDefaultProducesNoValueUsd() {
+        let points = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "100.00", equityUsd: "5100.00"),
+            PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "200.00", equityUsd: "5200.00"),
+        ]
+        for p in points {
+            XCTAssertNil(p.valueUsd, "Without applyEquityAnchor, points must not have valueUsd")
+        }
+    }
+
+    func testEquityAnchor_NegativePnlProducesCorrectValues() {
+        var points = [
+            PnlPoint(timestamp: "2026-01-01T00:00:00Z", pnlUsd: "0.00", equityUsd: "5000.00"),
+            PnlPoint(timestamp: "2026-01-01T01:00:00Z", pnlUsd: "-300.00", equityUsd: "4700.00"),
+        ]
+        // offset = 4700 - (-300) = 5000
+        applyEquityAnchor(to: &points, liveEquity: 4700, livePnl: -300)
+
+        XCTAssertEqual(points[0].valueUsd, "5000.00")
+        XCTAssertEqual(points[1].valueUsd, "4700.00")
+    }
+
     // MARK: - ArcaObjectType resilience
 
     func testArcaObjectTypeInfoDecoding() throws {

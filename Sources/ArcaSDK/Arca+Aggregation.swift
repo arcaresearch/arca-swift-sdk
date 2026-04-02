@@ -229,12 +229,16 @@ extension Arca {
     ///   - to: End timestamp (RFC 3339)
     ///   - points: Number of historical samples (default 200, max 1000)
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
+    ///   - anchor: `.zero` (default) for standard P&L; `.equity` to shift the
+    ///     chart so the live (rightmost) value equals the current account equity.
+    ///     When `.equity`, each `PnlPoint` includes `valueUsd`.
     public func watchPnlChart(
         path: String,
         from: String,
         to: String,
         points: Int = 200,
-        exchange: String = "sim"
+        exchange: String = "sim",
+        anchor: PnlAnchor = .zero
     ) async throws -> PnlChartStream {
         try validatePath(path)
         let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
@@ -290,13 +294,18 @@ extension Arca {
                     }
 
                     let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
+                    let livePnlStr = String(format: "%.2f", pnl)
                     let livePoint = PnlPoint(
                         timestamp: iso.string(from: Date()),
-                        pnlUsd: String(format: "%.2f", pnl),
+                        pnlUsd: livePnlStr,
                         equityUsd: agg.totalEquityUsd
                     )
                     var allPoints = historicalBox.value
                     allPoints.append(livePoint)
+
+                    if anchor == .equity {
+                        applyEquityAnchor(to: &allPoints, liveEquity: liveEquity, livePnl: pnl)
+                    }
                     chartBox.update { $0 = allPoints }
 
                     continuation.yield(PnlChartUpdate(
