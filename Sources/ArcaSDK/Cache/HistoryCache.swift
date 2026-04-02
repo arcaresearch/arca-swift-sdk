@@ -15,9 +15,11 @@ public struct CacheConfig: Sendable {
 
 /// Thread-safe LRU cache for historical data responses (equity history, PnL history, candles).
 ///
-/// Uses an actor for safe concurrent access and a doubly-linked list + dictionary
-/// for O(1) LRU operations.
-public actor HistoryCache {
+/// Uses NSLock for safe concurrent access and a doubly-linked list + dictionary
+/// for O(1) LRU operations. Synchronous (no actor hop) so parallel callers
+/// don't serialize through an actor mailbox.
+public final class HistoryCache: @unchecked Sendable {
+    private let lock = NSLock()
     private var dict: [String: Node] = [:]
     private var head: Node?
     private var tail: Node?
@@ -28,18 +30,24 @@ public actor HistoryCache {
     }
 
     public func get<T>(_ key: String) -> T? {
+        lock.lock()
+        defer { lock.unlock() }
         guard maxEntries > 0, let node = dict[key] else { return nil }
         moveToHead(node)
         return node.value as? T
     }
 
     public func delete(_ key: String) {
+        lock.lock()
+        defer { lock.unlock() }
         guard let node = dict[key] else { return }
         removeNode(node)
         dict.removeValue(forKey: key)
     }
 
     public func set(_ key: String, value: Any) {
+        lock.lock()
+        defer { lock.unlock() }
         guard maxEntries > 0 else { return }
 
         if let existing = dict[key] {
@@ -60,14 +68,20 @@ public actor HistoryCache {
     }
 
     public func clear() {
+        lock.lock()
+        defer { lock.unlock() }
         dict.removeAll()
         head = nil
         tail = nil
     }
 
-    public var size: Int { dict.count }
+    public var size: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return dict.count
+    }
 
-    // MARK: - Linked list operations
+    // MARK: - Linked list operations (caller must hold lock)
 
     private func addToHead(_ node: Node) {
         node.next = head

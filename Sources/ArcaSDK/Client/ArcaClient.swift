@@ -8,9 +8,16 @@ import Foundation
 /// - Automatic retries for transient errors (502/503/504 and network failures)
 /// - Single 401 retry via `onUnauthorized` (token provider refresh)
 ///
-/// This is an actor to ensure thread-safe token updates from any concurrency context.
-public actor ArcaClient {
-    private var token: String
+/// Thread-safe via NSLock on the mutable token. HTTP methods run concurrently
+/// (no actor mailbox serialization) so parallel CDN fallback and gap fetches
+/// are truly parallel.
+public final class ArcaClient: @unchecked Sendable {
+    private let tokenLock = NSLock()
+    private var _token: String
+    private var token: String {
+        get { tokenLock.lock(); defer { tokenLock.unlock() }; return _token }
+        set { tokenLock.lock(); defer { tokenLock.unlock() }; _token = newValue }
+    }
     private let baseURL: URL
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -29,7 +36,7 @@ public actor ArcaClient {
         onUnauthorized: (@Sendable () async throws -> String)? = nil,
         onAuthError: (@Sendable (Error) -> Void)? = nil
     ) {
-        self.token = token
+        self._token = token
         self.baseURL = baseURL.appendingPathComponent("api/v1")
         self.session = URLSession(configuration: urlSessionConfiguration)
         self.decoder = JSONDecoder()

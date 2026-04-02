@@ -956,7 +956,6 @@ final class CandleChartTests: XCTestCase {
         } catch {
             XCTFail("Expected CancellationError, got \(error)")
         }
-
         XCTAssertEqual(fallbackCalls, 0, "API fallback must not be called when task is cancelled")
     }
 
@@ -995,9 +994,8 @@ final class CandleChartTests: XCTestCase {
         } catch is CancellationError {
             // expected
         } catch {
-            // URLSession errors wrapped in task group are acceptable too
+            XCTFail("Expected CancellationError, got \(error)")
         }
-
         XCTAssertEqual(fallbackCalls, 0, "API fallback must not be called after cancellation")
     }
 

@@ -99,7 +99,7 @@ public final class Arca: Sendable {
             let weakWS = self.ws
             Task {
                 await self.tokenManager.scheduleProactiveRefresh(token: token) { newToken in
-                    await weakClient.updateToken(newToken)
+                    weakClient.updateToken(newToken)
                     await weakWS.updateToken(newToken)
                 }
             }
@@ -154,13 +154,13 @@ public final class Arca: Sendable {
     /// Updates both the HTTP client and WebSocket manager.
     /// The WebSocket reconnects immediately if currently disconnected.
     public func updateToken(_ newToken: String) async {
-        await client.updateToken(newToken)
+        client.updateToken(newToken)
         await ws.updateToken(newToken)
 
         let weakClient = self.client
         let weakWS = self.ws
         await tokenManager.scheduleProactiveRefresh(token: newToken) { token in
-            await weakClient.updateToken(token)
+            weakClient.updateToken(token)
             await weakWS.updateToken(token)
         }
     }
@@ -179,8 +179,8 @@ public final class Arca: Sendable {
 
     /// Clear the in-memory cache of historical data responses
     /// (equity history, PnL history, candles).
-    public func clearHistoryCache() async {
-        await historyCache.clear()
+    public func clearHistoryCache() {
+        historyCache.clear()
     }
 
     /// The resolved realm ID for this SDK instance.

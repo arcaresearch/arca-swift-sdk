@@ -103,6 +103,10 @@ public enum CandleCDN {
 
     /// Fetches candles from CDN for a time range, falling back to the REST API
     /// for chunks that return 404 (not yet published) or for open (current) chunks.
+    ///
+    /// Each chunk is fetched independently via a non-throwing task group so a
+    /// failure in one chunk does not cancel sibling fetches. CancellationError
+    /// is still propagated to the caller.
     public static func fetchCandlesFromCDN(
         baseUrl: String,
         coin: String,
@@ -112,20 +116,22 @@ public enum CandleCDN {
         session: URLSession = .shared,
         apiFallback: @escaping @Sendable (_ startMs: Int, _ endMs: Int) async throws -> [Candle]
     ) async throws -> [Candle] {
+        try Task.checkCancellation()
+
         let nowMs = Int(Date().timeIntervalSince1970 * 1000)
         let chunks = chunksForRange(interval: interval, startMs: startMs, endMs: endMs)
 
-        let results: [[Candle]] = try await withThrowingTaskGroup(of: (Int, [Candle]).self) { group in
+        let results: [[Candle]] = await withTaskGroup(of: (Int, [Candle])?.self) { group in
             for (index, chunk) in chunks.enumerated() {
                 group.addTask {
-                    try Task.checkCancellation()
+                    guard !Task.isCancelled else { return nil }
 
                     let isClosed = nowMs >= chunk.endMs
                     if !isClosed {
-                        try Task.checkCancellation()
+                        guard !Task.isCancelled else { return nil }
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
-                        let candles = try await apiFallback(s, e)
+                        guard let candles = try? await apiFallback(s, e) else { return nil }
                         return (index, candles)
                     }
 
@@ -133,38 +139,42 @@ public enum CandleCDN {
                     do {
                         let (data, response) = try await session.data(from: url)
                         if let http = response as? HTTPURLResponse, http.statusCode == 404 {
-                            try Task.checkCancellation()
+                            guard !Task.isCancelled else { return nil }
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
-                            return (index, try await apiFallback(s, e))
+                            guard let candles = try? await apiFallback(s, e) else { return nil }
+                            return (index, candles)
                         }
                         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                            try Task.checkCancellation()
+                            guard !Task.isCancelled else { return nil }
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
-                            return (index, try await apiFallback(s, e))
+                            guard let candles = try? await apiFallback(s, e) else { return nil }
+                            return (index, candles)
                         }
                         let candles = try JSONDecoder().decode([Candle].self, from: data)
                         let filtered = candles.filter { $0.t >= startMs && $0.t < endMs }
                         return (index, filtered)
-                    } catch is CancellationError {
-                        throw CancellationError()
                     } catch {
-                        try Task.checkCancellation()
+                        guard !Task.isCancelled else { return nil }
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
-                        return (index, try await apiFallback(s, e))
+                        guard let candles = try? await apiFallback(s, e) else { return nil }
+                        return (index, candles)
                     }
                 }
             }
 
             var ordered = [(Int, [Candle])]()
-            for try await result in group {
+            for await result in group {
+                guard let result else { continue }
                 ordered.append(result)
             }
             ordered.sort { $0.0 < $1.0 }
             return ordered.map { $0.1 }
         }
+
+        try Task.checkCancellation()
 
         var merged: [Candle] = []
         for batch in results {
@@ -172,7 +182,6 @@ public enum CandleCDN {
         }
         merged.sort { $0.t < $1.t }
 
-        // Deduplicate by timestamp (keep last)
         var deduped: [Candle] = []
         for candle in merged {
             if let last = deduped.last, last.t == candle.t {

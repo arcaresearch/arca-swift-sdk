@@ -415,7 +415,7 @@ extension Arca {
             "startTime": startTime.map(String.init),
             "endTime": String(effectiveEnd),
         ])
-        if let cached: CandlesResponse = await historyCache.get(key) {
+        if let cached: CandlesResponse = historyCache.get(key) {
             return cached
         }
 
@@ -440,7 +440,9 @@ extension Arca {
                 }
             )
             let result = CandlesResponse(coin: coin, interval: interval.rawValue, candles: candles)
-            await historyCache.set(key, value: result)
+            if !candles.isEmpty {
+                historyCache.set(key, value: result)
+            }
             return result
         }
 
@@ -449,7 +451,7 @@ extension Arca {
         if let endTime = endTime { query["endTime"] = String(endTime) }
         if skipBackfill { query["skipBackfill"] = "true" }
         let result: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: query)
-        await historyCache.set(key, value: result)
+        historyCache.set(key, value: result)
         return result
     }
 

@@ -66,7 +66,7 @@ extension Arca {
         let key = buildCacheKey("pnlHistory", [
             "prefix": path, "from": from, "to": to, "points": String(points),
         ])
-        if let cached: PnlHistoryResponse = await historyCache.get(key) {
+        if let cached: PnlHistoryResponse = historyCache.get(key) {
             return cached
         }
         let result: PnlHistoryResponse = try await client.get("/objects/pnl/history", query: [
@@ -76,7 +76,7 @@ extension Arca {
             "to": to,
             "points": String(points),
         ])
-        await historyCache.set(key, value: result)
+        historyCache.set(key, value: result)
         return result
     }
 
@@ -100,7 +100,7 @@ extension Arca {
         let key = buildCacheKey("equityHistory", [
             "prefix": path, "from": from, "to": to, "points": String(points),
         ])
-        if let cached: EquityHistoryResponse = await historyCache.get(key) {
+        if let cached: EquityHistoryResponse = historyCache.get(key) {
             return cached
         }
         let result: EquityHistoryResponse = try await client.get("/objects/aggregate/history", query: [
@@ -110,7 +110,7 @@ extension Arca {
             "to": to,
             "points": String(points),
         ])
-        await historyCache.set(key, value: result)
+        historyCache.set(key, value: result)
         return result
     }
 
@@ -157,7 +157,7 @@ extension Arca {
                 let key = buildCacheKey("equityHistory", [
                     "prefix": path, "from": from, "to": to, "points": String(points),
                 ])
-                await historyCache.delete(key)
+                historyCache.delete(key)
                 if let fresh = try? await getEquityHistory(path: path, from: from, to: to, points: points) {
                     history = fresh
                 }

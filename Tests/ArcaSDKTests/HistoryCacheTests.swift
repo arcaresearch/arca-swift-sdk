@@ -3,110 +3,115 @@ import XCTest
 
 final class HistoryCacheTests: XCTestCase {
 
-    func testCacheMissReturnsNil() async {
+    func testCacheMissReturnsNil() {
         let cache = HistoryCache()
-        let result: String? = await cache.get("missing")
+        let result: String? = cache.get("missing")
         XCTAssertNil(result)
     }
 
-    func testStoreAndRetrieve() async {
+    func testStoreAndRetrieve() {
         let cache = HistoryCache()
-        await cache.set("key1", value: "hello")
-        let result: String? = await cache.get("key1")
+        cache.set("key1", value: "hello")
+        let result: String? = cache.get("key1")
         XCTAssertEqual(result, "hello")
     }
 
-    func testEvictsLeastRecentlyUsed() async {
+    func testEvictsLeastRecentlyUsed() {
         let cache = HistoryCache(config: CacheConfig(maxEntries: 3))
-        await cache.set("a", value: 1)
-        await cache.set("b", value: 2)
-        await cache.set("c", value: 3)
-        let size = await cache.size
-        XCTAssertEqual(size, 3)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        cache.set("c", value: 3)
+        XCTAssertEqual(cache.size, 3)
 
-        await cache.set("d", value: 4)
-        let sizeAfter = await cache.size
-        XCTAssertEqual(sizeAfter, 3)
+        cache.set("d", value: 4)
+        XCTAssertEqual(cache.size, 3)
 
-        let evicted: Int? = await cache.get("a")
+        let evicted: Int? = cache.get("a")
         XCTAssertNil(evicted)
-        let b: Int? = await cache.get("b")
+        let b: Int? = cache.get("b")
         XCTAssertEqual(b, 2)
-        let c: Int? = await cache.get("c")
+        let c: Int? = cache.get("c")
         XCTAssertEqual(c, 3)
-        let d: Int? = await cache.get("d")
+        let d: Int? = cache.get("d")
         XCTAssertEqual(d, 4)
     }
 
-    func testAccessPromotesEntry() async {
+    func testAccessPromotesEntry() {
         let cache = HistoryCache(config: CacheConfig(maxEntries: 3))
-        await cache.set("a", value: 1)
-        await cache.set("b", value: 2)
-        await cache.set("c", value: 3)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        cache.set("c", value: 3)
 
-        let _: Int? = await cache.get("a")
+        let _: Int? = cache.get("a")
 
-        await cache.set("d", value: 4)
-        let a: Int? = await cache.get("a")
+        cache.set("d", value: 4)
+        let a: Int? = cache.get("a")
         XCTAssertEqual(a, 1, "Accessed entry should not be evicted")
-        let b: Int? = await cache.get("b")
+        let b: Int? = cache.get("b")
         XCTAssertNil(b, "Oldest untouched entry should be evicted")
     }
 
-    func testUpdateExistingKeyDoesNotGrow() async {
+    func testUpdateExistingKeyDoesNotGrow() {
         let cache = HistoryCache(config: CacheConfig(maxEntries: 2))
-        await cache.set("a", value: 1)
-        await cache.set("b", value: 2)
-        await cache.set("a", value: 10)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        cache.set("a", value: 10)
 
-        let size = await cache.size
-        XCTAssertEqual(size, 2)
-        let a: Int? = await cache.get("a")
+        XCTAssertEqual(cache.size, 2)
+        let a: Int? = cache.get("a")
         XCTAssertEqual(a, 10)
     }
 
-    func testClear() async {
+    func testClear() {
         let cache = HistoryCache()
-        await cache.set("a", value: 1)
-        await cache.set("b", value: 2)
-        let sizeBefore = await cache.size
-        XCTAssertEqual(sizeBefore, 2)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        XCTAssertEqual(cache.size, 2)
 
-        await cache.clear()
-        let sizeAfter = await cache.size
-        XCTAssertEqual(sizeAfter, 0)
-        let a: Int? = await cache.get("a")
+        cache.clear()
+        XCTAssertEqual(cache.size, 0)
+        let a: Int? = cache.get("a")
         XCTAssertNil(a)
     }
 
-    func testDisabledCacheIsNoop() async {
+    func testDisabledCacheIsNoop() {
         let cache = HistoryCache(config: .disabled)
-        await cache.set("a", value: 1)
-        let size = await cache.size
-        XCTAssertEqual(size, 0)
-        let a: Int? = await cache.get("a")
+        cache.set("a", value: 1)
+        XCTAssertEqual(cache.size, 0)
+        let a: Int? = cache.get("a")
         XCTAssertNil(a)
     }
 
-    func testZeroMaxEntriesIsNoop() async {
+    func testZeroMaxEntriesIsNoop() {
         let cache = HistoryCache(config: CacheConfig(maxEntries: 0))
-        await cache.set("a", value: 1)
-        let size = await cache.size
-        XCTAssertEqual(size, 0)
+        cache.set("a", value: 1)
+        XCTAssertEqual(cache.size, 0)
     }
 
-    func testDefaultMaxEntries() async {
+    func testDefaultMaxEntries() {
         let cache = HistoryCache()
         for i in 0..<55 {
-            await cache.set("key-\(i)", value: i)
+            cache.set("key-\(i)", value: i)
         }
-        let size = await cache.size
-        XCTAssertEqual(size, 50)
+        XCTAssertEqual(cache.size, 50)
 
-        let evicted: Int? = await cache.get("key-0")
+        let evicted: Int? = cache.get("key-0")
         XCTAssertNil(evicted)
-        let kept: Int? = await cache.get("key-54")
+        let kept: Int? = cache.get("key-54")
         XCTAssertEqual(kept, 54)
+    }
+
+    func testConcurrentAccess() async {
+        let cache = HistoryCache(config: CacheConfig(maxEntries: 100))
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<50 {
+                group.addTask {
+                    cache.set("key-\(i)", value: i)
+                    let _: Int? = cache.get("key-\(i)")
+                }
+            }
+        }
+        XCTAssertEqual(cache.size, 50)
     }
 }
 

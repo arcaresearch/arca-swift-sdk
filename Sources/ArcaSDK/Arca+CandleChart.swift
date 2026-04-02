@@ -286,10 +286,10 @@ extension Arca {
                 guard let requested else { break }
 
                 let gaps = coverage.gaps(from: requested.from, to: requested.to)
-                do {
-                    try await withThrowingTaskGroup(of: (Int, Int, [Candle]).self) { group in
-                        for gap in gaps {
-                            group.addTask { [self] in
+                await withTaskGroup(of: (Int, Int, [Candle])?.self) { group in
+                    for gap in gaps {
+                        group.addTask { [self] in
+                            do {
                                 let res = try await self.getCandles(
                                     coin: coin,
                                     interval: interval,
@@ -297,37 +297,37 @@ extension Arca {
                                     endTime: gap.to
                                 )
                                 return (gap.from, gap.to, res.candles)
-                            }
-                        }
-                        for try await (from, to, candles) in group {
-                            guard !stoppedBox.value else { return }
-
-                            if !candles.isEmpty {
-                                candlesBox.update { arr in
-                                    arr.append(contentsOf: candles)
-                                    arr = dedupCandles(arr)
-                                }
-                                totalLoaded += candles.count
-                                coverage.add(from: from, to: to)
-                            } else {
-                                let earliest = candlesBox.value.first?.t ?? Int.max
-                                if from <= earliest {
-                                    reachedStartBox.update { $0 = true }
-                                    coverage.add(from: from, to: to)
-                                }
-                            }
-
-                            let snapshot = candlesBox.value
-                            if let cont = continuationBox.value, let last = snapshot.last {
-                                yieldSnapshot(cont, snapshot, last)
+                            } catch {
+                                return nil
                             }
                         }
                     }
-                } catch is CancellationError {
-                    return totalLoaded
-                } catch {
-                    // Best-effort: leave uncovered gaps for a later ensureRange retry.
+                    for await result in group {
+                        guard !stoppedBox.value, !Task.isCancelled else { return }
+                        guard let (from, to, candles) = result else { continue }
+
+                        if !candles.isEmpty {
+                            candlesBox.update { arr in
+                                arr.append(contentsOf: candles)
+                                arr = dedupCandles(arr)
+                            }
+                            totalLoaded += candles.count
+                            coverage.add(from: from, to: to)
+                        } else {
+                            let earliest = candlesBox.value.first?.t ?? Int.max
+                            if from <= earliest {
+                                reachedStartBox.update { $0 = true }
+                                coverage.add(from: from, to: to)
+                            }
+                        }
+
+                        let snapshot = candlesBox.value
+                        if let cont = continuationBox.value, let last = snapshot.last {
+                            yieldSnapshot(cont, snapshot, last)
+                        }
+                    }
                 }
+                guard !Task.isCancelled else { break }
             }
 
             return totalLoaded
