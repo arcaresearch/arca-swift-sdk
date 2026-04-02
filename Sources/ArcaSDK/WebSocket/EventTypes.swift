@@ -26,6 +26,11 @@ public enum EventType: String, Sendable {
     case fillRecorded = "fill.recorded"
     case exchangeFunding = "exchange.funding"
     case objectValuation = "object.valuation"
+    case twapStarted = "twap.started"
+    case twapProgress = "twap.progress"
+    case twapCompleted = "twap.completed"
+    case twapCancelled = "twap.cancelled"
+    case twapFailed = "twap.failed"
 }
 
 /// Channel groups for WebSocket subscriptions.

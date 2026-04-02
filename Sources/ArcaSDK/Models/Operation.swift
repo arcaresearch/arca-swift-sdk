@@ -75,6 +75,7 @@ public enum OperationType: String, Codable, Sendable {
     case feeDistribution = "fee_distribution"
     case adjustment
     case funding
+    case twap
 }
 
 public enum OperationState: String, Codable, Sendable {
