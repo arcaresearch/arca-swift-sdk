@@ -457,20 +457,16 @@ extension Arca {
 
     /// Get sparkline close-price arrays for all tracked coins in a single request.
     /// Returns a map of coin name to an array of recent close prices at the
-    /// requested interval and point count.
+    /// 24 hourly close prices. Sparkline data is pre-computed every ~5 minutes;
+    /// for real-time prices use ``watchPrices(exchange:)``.
     ///
-    /// - Parameters:
-    ///   - interval: Candle interval (default: `.oneHour`)
-    ///   - points: Number of data points per coin (default: 24, max: 48)
+    /// The `interval` and `points` parameters are accepted for backward
+    /// compatibility but ignored — sparklines always return 24 hourly close prices.
     public func getSparklines(
         interval: CandleInterval = .oneHour,
         points: Int = 24
     ) async throws -> SparklinesResponse {
-        let query: [String: String] = [
-            "interval": interval.rawValue,
-            "points": String(points),
-        ]
-        return try await client.get("/exchange/market/sparklines", query: query)
+        return try await client.get("/exchange/market/sparklines")
     }
 
     /// Subscribe to real-time mid prices for all assets.
