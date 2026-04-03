@@ -245,11 +245,10 @@ extension Arca {
         await ws.watchPath(path)
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: path)],
-            exchange: exchange
+            exchange: exchange,
+            flowsSince: from
         )
-        let opStream = await ws.operationEvents()
 
-        let cachedMids = history.midPrices ?? [:]
         let startingEquity = Double(history.startingEquityUsd) ?? 0
 
         var initCumInflows = 0.0
@@ -271,6 +270,31 @@ extension Arca {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
+        // Override flow seed with server-provided cumulative flows from the
+        // initial aggregation snapshot (authoritative, covers from..now).
+        if let agg = aggStream.aggregation.value {
+            if let inStr = agg.cumInflowsUsd, let inVal = Double(inStr) {
+                cumInflowsBox.update { $0 = inVal }
+            }
+            if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
+                cumOutflowsBox.update { $0 = outVal }
+            }
+        }
+
+        // Trim trailing points within the current time bucket. The server's
+        // response may include a live-equity-based point for timestamps after
+        // lastClosed. Removing it prevents a discontinuity between the server's
+        // live equity (Redis at HTTP time) and the SDK's live equity
+        // (aggregation watch, potentially revalued with latest mids).
+        let trimBoundary = hourBoundaryBox.value
+        historicalBox.update { pts in
+            while let last = pts.last,
+                  let ts = iso.date(from: last.timestamp),
+                  Int64(ts.timeIntervalSince1970) > trimBoundary {
+                pts.removeLast()
+            }
+        }
+
         let updates = AsyncStream<PnlChartUpdate> { continuation in
             let aggTask = Task {
                 for await agg in aggStream.updates {
@@ -291,6 +315,13 @@ extension Arca {
                             ))
                         }
                         hourBoundaryBox.update { $0 = currentHourBoundary }
+                    }
+
+                    if let inStr = agg.cumInflowsUsd, let inVal = Double(inStr) {
+                        cumInflowsBox.update { $0 = inVal }
+                    }
+                    if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
+                        cumOutflowsBox.update { $0 = outVal }
                     }
 
                     let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
@@ -315,68 +346,8 @@ extension Arca {
                 }
             }
 
-            let opTask = Task {
-                for await (op, _) in opStream {
-                    guard op.state == .completed else { continue }
-                    guard op.type == .deposit || op.type == .transfer || op.type == .withdrawal else { continue }
-                    guard let inputStr = op.input,
-                          let inputData = inputStr.data(using: .utf8),
-                          let inputJSON = try? JSONSerialization.jsonObject(with: inputData) as? [String: Any],
-                          let amountStr = inputJSON["amount"] as? String,
-                          let amount = Double(amountStr), amount > 0 else { continue }
-
-                    let denomination = (inputJSON["denomination"] as? String) ?? "USD"
-                    var price = 1.0
-                    if denomination != "USD" {
-                        guard let midStr = cachedMids[denomination],
-                              let mid = Double(midStr), mid > 0 else { continue }
-                        price = mid
-                    }
-                    let valueUsd = amount * price
-
-                    let prefixMode = path.hasSuffix("/")
-                    let sourceIn = op.sourceArcaPath.map {
-                        prefixMode ? $0.hasPrefix(path) : $0 == path
-                    } ?? false
-                    let targetIn = op.targetArcaPath.map {
-                        prefixMode ? $0.hasPrefix(path) : $0 == path
-                    } ?? false
-
-                    var direction: String?
-                    if op.type == .deposit && targetIn {
-                        direction = "inflow"
-                    } else if op.type == .withdrawal && sourceIn {
-                        direction = "outflow"
-                    } else if op.type == .transfer {
-                        if sourceIn && !targetIn { direction = "outflow" }
-                        else if !sourceIn && targetIn { direction = "inflow" }
-                    }
-                    guard let dir = direction else { continue }
-
-                    if dir == "inflow" {
-                        cumInflowsBox.update { $0 += valueUsd }
-                    } else {
-                        cumOutflowsBox.update { $0 += valueUsd }
-                    }
-
-                    let flow = ExternalFlowEntry(
-                        operationId: op.id,
-                        type: op.type.rawValue,
-                        direction: dir,
-                        amount: amountStr,
-                        denomination: denomination,
-                        valueUsd: String(format: "%.2f", valueUsd),
-                        sourceArcaPath: op.sourceArcaPath,
-                        targetArcaPath: op.targetArcaPath,
-                        timestamp: op.updatedAt
-                    )
-                    flowsBox.update { $0.append(flow) }
-                }
-            }
-
             continuation.onTermination = { _ in
                 aggTask.cancel()
-                opTask.cancel()
             }
         }
 
@@ -397,10 +368,11 @@ extension Arca {
     /// are pushed via WebSocket.
     ///
     /// - Parameter sources: Sources to track
-    public func createAggregationWatch(sources: [AggregationSource]) async throws -> CreateWatchResponse {
+    public func createAggregationWatch(sources: [AggregationSource], flowsSince: String? = nil) async throws -> CreateWatchResponse {
         try await client.post("/aggregations/watch", body: CreateWatchRequest(
             realmId: realm,
-            sources: sources
+            sources: sources,
+            flowsSince: flowsSince
         ))
     }
 
@@ -421,6 +393,7 @@ extension Arca {
 private struct CreateWatchRequest: Encodable {
     let realmId: String
     let sources: [AggregationSource]
+    let flowsSince: String?
 }
 
 private struct GetWatchAggregationResponse: Decodable {

@@ -407,10 +407,10 @@ extension Arca {
     /// - Parameters:
     ///   - sources: Aggregation sources to track
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
-    public func watchAggregation(sources: [AggregationSource], exchange: String = "sim") async throws -> AggregationWatchStream {
+    public func watchAggregation(sources: [AggregationSource], exchange: String = "sim", flowsSince: String? = nil) async throws -> AggregationWatchStream {
         await ws.ensureConnected()
 
-        let watchResponse = try await createAggregationWatch(sources: sources)
+        let watchResponse = try await createAggregationWatch(sources: sources, flowsSince: flowsSince)
         let initialAgg = watchResponse.aggregation
 
         let state = SendableBox<WatchStreamState>(.loading)
@@ -433,7 +433,7 @@ extension Arca {
                     refreshingBox.update { $0 = true }
                     do {
                         let oldWatchId = widBox.value
-                        let newWatch = try await self.createAggregationWatch(sources: sources)
+                        let newWatch = try await self.createAggregationWatch(sources: sources, flowsSince: flowsSince)
                         guard !stoppedBox.value else {
                             refreshingBox.update { $0 = false }
                             continue

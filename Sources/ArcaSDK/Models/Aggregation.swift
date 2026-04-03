@@ -66,6 +66,8 @@ public struct PathAggregation: Codable, Sendable {
     public let arrivingUsd: String?
     public let breakdown: [AssetBreakdown]
     public let asOf: String?
+    public let cumInflowsUsd: String?
+    public let cumOutflowsUsd: String?
 }
 
 // MARK: - Client-Side Revaluation
@@ -172,7 +174,9 @@ extension PathAggregation {
             departingUsd: departingUsd,
             arrivingUsd: arrivingUsd,
             breakdown: newBreakdown,
-            asOf: asOf
+            asOf: asOf,
+            cumInflowsUsd: cumInflowsUsd,
+            cumOutflowsUsd: cumOutflowsUsd
         )
     }
 }
