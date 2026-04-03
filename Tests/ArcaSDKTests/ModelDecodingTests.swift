@@ -1054,7 +1054,9 @@ final class ModelDecodingTests: XCTestCase {
             departingUsd: "10",
             arrivingUsd: "5",
             breakdown: breakdown,
-            asOf: nil
+            asOf: nil,
+            cumInflowsUsd: nil,
+            cumOutflowsUsd: nil
         )
         let mids = ["hl:BTC": "60000"]
         let re = agg.revalued(with: mids)
