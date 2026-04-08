@@ -2090,6 +2090,7 @@ final class ModelDecodingTests: XCTestCase {
             marginUsed: marginUsed, liquidationPrice: nil,
             unrealizedPnl: "0", returnOnEquity: "0",
             positionValue: nil, error: nil,
+            cumulativeFunding: nil,
             createdAt: nil, updatedAt: nil
         )
     }
@@ -2170,6 +2171,7 @@ final class ModelDecodingTests: XCTestCase {
             marginUsed: "5000", liquidationPrice: nil,
             unrealizedPnl: nil, returnOnEquity: nil,
             positionValue: nil, error: "market_data_unavailable",
+            cumulativeFunding: nil,
             createdAt: nil, updatedAt: nil
         )
         let state = makeTestExchangeState(positions: [pos])
