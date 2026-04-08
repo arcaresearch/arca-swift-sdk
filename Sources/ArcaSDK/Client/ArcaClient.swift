@@ -5,7 +5,7 @@ import Foundation
 /// Uses `URLSession` for networking. Handles:
 /// - Bearer token injection on every request
 /// - Standard `{ success, data, error }` envelope unwrapping
-/// - Automatic retries for transient errors (204/502/503/504 and network failures)
+/// - Automatic retries for transient errors (502/503/504 and network failures)
 /// - Single 401 retry via `onUnauthorized` (token provider refresh)
 ///
 /// Thread-safe via NSLock on the mutable token. HTTP methods run concurrently
@@ -25,7 +25,7 @@ public final class ArcaClient: @unchecked Sendable {
     private let onUnauthorized: (@Sendable () async throws -> String)?
     private let onAuthError: (@Sendable (Error) -> Void)?
 
-    private static let transientStatuses: Set<Int> = [204, 502, 503, 504]
+    private static let transientStatuses: Set<Int> = [502, 503, 504]
     private static let maxRetries = 2
     private static let retryDelay: UInt64 = 1_000_000_000 // 1 second in nanoseconds
 
@@ -221,7 +221,7 @@ public final class ArcaClient: @unchecked Sendable {
 
 // MARK: - Internal Helpers
 
-/// Sentinel error for transient HTTP status codes (204/502/503/504).
+/// Sentinel error for transient HTTP status codes (502/503/504).
 private struct TransientHTTPError: Error {
     let statusCode: Int
 }
