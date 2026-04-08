@@ -48,6 +48,7 @@ private func makeFill(
         size: size,
         fee: "0.50",
         builderFee: nil,
+        platformFee: nil,
         realizedPnl: nil,
         isLiquidation: false,
         createdAt: "2026-03-08T00:00:00.000000Z"
