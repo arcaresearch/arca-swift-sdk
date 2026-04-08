@@ -42,6 +42,22 @@ public struct OperationWatchStream: Sendable {
             try? await Task.sleep(nanoseconds: 50_000_000) // 50ms poll
         }
     }
+
+    /// Track a mutation's operation: when the HTTP response arrives,
+    /// the operation is immediately injected into the `operations` list,
+    /// giving instant UI feedback before the server-side WebSocket event.
+    func trackSubmission<T: OperationResponse>(_ handle: OperationHandle<T>) {
+        let ops = self.operations
+        Task { [ops] in
+            guard let response = try? await handle.submitted else { return }
+            let op = response.operation
+            ops.update { list in
+                if !list.contains(where: { $0.id == op.id }) {
+                    list.insert(op, at: 0)
+                }
+            }
+        }
+    }
 }
 
 /// Thread-safe mutable wrapper for use in Sendable stream types.

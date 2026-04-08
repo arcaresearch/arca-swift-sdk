@@ -25,6 +25,13 @@ import Foundation
 ///     return try JSONDecoder().decode(TokenResponse.self, from: data).token
 /// }
 /// ```
+/// Holds references to watch streams for optimistic auto-tracking.
+struct AutoTrackingState: Sendable {
+    var operations: OperationWatchStream?
+    var balances: BalanceWatchStream?
+    var exchange: ExchangeStateWatchStream?
+}
+
 public final class Arca: Sendable {
     public static let defaultCdnBaseUrl = "https://data.arcaos.io"
 
@@ -38,6 +45,8 @@ public final class Arca: Sendable {
     /// the REST API for the current (in-progress) period.
     /// Pass `""` to disable CDN and use the REST API exclusively.
     public let candleCdnBaseUrl: String?
+
+    let autoTracking = SendableBox(AutoTrackingState())
 
     private let realmId: String
 
@@ -186,6 +195,40 @@ public final class Arca: Sendable {
     /// The resolved realm ID for this SDK instance.
     public var realm: String { realmId }
 
+    // MARK: - Auto-Tracking
+
+    /// Enable optimistic tracking: mutation methods will immediately inject
+    /// submitted operations into the provided watch streams, giving instant
+    /// UI feedback before server-side events arrive.
+    ///
+    /// Call once at session startup after creating your watch streams:
+    /// ```swift
+    /// let ops = try await arca.watchOperations(path: "/")
+    /// let bal = try await arca.watchBalances(path: "/")
+    /// let xch = try await arca.watchExchangeState(objectId: id)
+    /// arca.enableAutoTracking(operations: ops, balances: bal, exchange: xch)
+    /// ```
+    public func enableAutoTracking(
+        operations: OperationWatchStream? = nil,
+        balances: BalanceWatchStream? = nil,
+        exchange: ExchangeStateWatchStream? = nil
+    ) {
+        autoTracking.update { state in
+            state.operations = operations
+            state.balances = balances
+            state.exchange = exchange
+        }
+    }
+
+    /// Disable optimistic tracking and release stream references.
+    public func disableAutoTracking() {
+        autoTracking.update { state in
+            state.operations = nil
+            state.balances = nil
+            state.exchange = nil
+        }
+    }
+
     // MARK: - Operation Handle Factory
 
     /// Create an ``OperationHandle`` that starts the HTTP call eagerly
@@ -193,12 +236,19 @@ public final class Arca: Sendable {
     func operationHandle<T: OperationResponse>(
         _ submit: @escaping @Sendable () async throws -> T
     ) -> OperationHandle<T> {
-        OperationHandle(
+        let handle = OperationHandle(
             submit: submit,
             waitForSettlement: { [self] operationId in
                 try await self.waitForSettlement(operationId)
             }
         )
+
+        let tracking = autoTracking.value
+        if let opStream = tracking.operations {
+            opStream.trackSubmission(handle)
+        }
+
+        return handle
     }
 
     // MARK: - JWT Payload Decoding

@@ -65,6 +65,17 @@ extension Arca {
         return try await client.get("/objects/\(objectId)/exchange/active-asset-data", query: query)
     }
 
+    /// Get per-asset fee rates for an exchange object.
+    /// Returns fully-composed taker/maker rates accounting for volume tier, HIP-3 fee scale,
+    /// platform fee, and builder fee.
+    public func getAssetFees(objectId: String, builderFeeBps: Int? = nil) async throws -> [AssetFeeEntry] {
+        var query: [String: String] = [:]
+        if let bps = builderFeeBps, bps > 0 {
+            query["builderFeeBps"] = String(bps)
+        }
+        return try await client.get("/objects/\(objectId)/exchange/asset-fees", query: query)
+    }
+
     /// Update leverage for a coin on an exchange object.
     public func updateLeverage(
         objectId: String,

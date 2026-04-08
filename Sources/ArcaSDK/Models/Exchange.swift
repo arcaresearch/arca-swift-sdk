@@ -36,6 +36,7 @@ public struct SimPosition: Codable, Sendable {
     public let positionValue: String?
     /// Present when computed fields (unrealizedPnl, positionValue, returnOnEquity) could not be calculated.
     public let error: String?
+    public let cumulativeFunding: String?
     public let createdAt: String?
     public let updatedAt: String?
 }
@@ -112,6 +113,7 @@ public struct SimFill: Codable, Sendable {
     public let size: String
     public let fee: String
     public let builderFee: String?
+    public let platformFee: String?
     public let realizedPnl: String?
     public let isLiquidation: Bool
     public let createdAt: String?
@@ -230,6 +232,18 @@ public struct ActiveAssetData: Codable, Sendable {
     public let markPx: String
     /// Effective fee rate as a decimal (all-in: exchange taker + platform + builder fee).
     public let feeRate: String
+}
+
+// MARK: - Asset Fee Rates
+
+/// Per-asset fee rate entry returned by `getAssetFees`.
+public struct AssetFeeEntry: Codable, Sendable {
+    /// Coin in canonical format (e.g. "hl:BTC", "hl:1:TSLA").
+    public let coin: String
+    /// Effective taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps).
+    public let takerFeeRate: String
+    /// Effective maker fee rate as a decimal string (e.g. "0.00015" = 1.5 bps).
+    public let makerFeeRate: String
 }
 
 // MARK: - Order Breakdown
@@ -543,6 +557,7 @@ extension SimPosition {
             marginUsed: marginUsed, liquidationPrice: liquidationPrice,
             unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
             positionValue: "\(posVal)", error: nil,
+            cumulativeFunding: cumulativeFunding,
             createdAt: createdAt, updatedAt: updatedAt)
     }
 }

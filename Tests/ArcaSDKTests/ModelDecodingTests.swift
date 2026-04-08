@@ -727,6 +727,38 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(pos.coin, "hl:BTC")
         XCTAssertEqual(pos.side, .long)
         XCTAssertEqual(pos.size, "0.1")
+        XCTAssertNil(pos.cumulativeFunding)
+    }
+
+    func testPositionDecoding_WithCumulativeFunding() throws {
+        let json = """
+        {
+            "positions": [
+                {
+                    "id": "sps_01kme4wd4wft3sz9cjaj7vedmb",
+                    "accountId": "act_01kmb3yn78ff3vrcseym39hqjv",
+                    "realmId": "rlm_01kmb3gpdde24vxnppyc77j08y",
+                    "coin": "hl:ETH",
+                    "side": "SHORT",
+                    "size": "1.0",
+                    "entryPrice": "3500",
+                    "leverage": 10,
+                    "marginUsed": "350",
+                    "liquidationPrice": "3850",
+                    "unrealizedPnl": "-25.00",
+                    "cumulativeFunding": "12.50",
+                    "createdAt": "2026-03-07T10:00:00.000000Z",
+                    "updatedAt": "2026-03-07T10:05:00.000000Z"
+                }
+            ],
+            "total": 1
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(PositionListResponse.self, from: json)
+        let pos = response.positions[0]
+        XCTAssertEqual(pos.cumulativeFunding, "12.50")
+        XCTAssertEqual(pos.side, .short)
     }
 
     func testPositionListResponseDecodingViaAPIEnvelope() throws {
@@ -1631,6 +1663,7 @@ final class ModelDecodingTests: XCTestCase {
             "price": "64000",
             "fee": "2.0",
             "builderFee": "0.5",
+            "platformFee": "0.3",
             "realizedPnl": "100.00",
             "isLiquidation": false,
             "createdAt": "2026-03-28T12:00:00.000000Z"
@@ -1642,6 +1675,25 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(fill.realmId?.rawValue, "rlm_01def")
         XCTAssertEqual(fill.createdAt, "2026-03-28T12:00:00.000000Z")
         XCTAssertEqual(fill.side, .sell)
+        XCTAssertEqual(fill.platformFee, "0.3")
+    }
+
+    func testSimFillDecoding_PlatformFeeAbsent() throws {
+        let json = """
+        {
+            "id": "sf_01abc",
+            "orderId": "ord_01xyz",
+            "coin": "hl:BTC",
+            "side": "BUY",
+            "size": "0.1",
+            "price": "65000",
+            "fee": "1.5",
+            "isLiquidation": false
+        }
+        """.data(using: .utf8)!
+
+        let fill = try decoder.decode(SimFill.self, from: json)
+        XCTAssertNil(fill.platformFee)
     }
 
     func testRealmEventDecoding_ExchangeFillPreview() throws {
