@@ -243,10 +243,11 @@ extension Arca {
         try validatePath(path)
         let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
         await ws.watchPath(path)
+        let flowsSince = history.effectiveFrom ?? from
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange,
-            flowsSince: from
+            flowsSince: flowsSince
         )
 
         let startingEquity = Double(history.startingEquityUsd) ?? 0

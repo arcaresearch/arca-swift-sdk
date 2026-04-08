@@ -269,6 +269,10 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let to: String
     public let points: Int
     public let startingEquityUsd: String
+    /// Timestamp of the first non-zero equity point (after leading-zero
+    /// trimming). Use as `flowsSince` for the live watch to avoid
+    /// double-counting flows already reflected in `startingEquityUsd`.
+    public let effectiveFrom: String?
     public let pnlPoints: [PnlPoint]
     public let externalFlows: [ExternalFlowEntry]?
     public let midPrices: [String: String]?
