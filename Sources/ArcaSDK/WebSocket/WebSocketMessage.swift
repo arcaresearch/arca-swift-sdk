@@ -34,6 +34,7 @@ enum OutboundMessage: Encodable {
             try container.encode("subscribe_candles", forKey: .action)
             try container.encode(coins, forKey: .coins)
             try container.encode(intervals, forKey: .intervals)
+            try container.encode(true, forKey: .batch)
         case .unsubscribeCandles:
             try container.encode("unsubscribe_candles", forKey: .action)
         case .ping:
@@ -42,7 +43,7 @@ enum OutboundMessage: Encodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, token, realmId, exchange, coins, intervals, path
+        case action, token, realmId, exchange, coins, intervals, path, batch
     }
 }
 

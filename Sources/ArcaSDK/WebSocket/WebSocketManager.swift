@@ -640,6 +640,34 @@ public actor WebSocketManager {
                 return
             }
 
+            // Normalize candles.updated (batched) → individual candle.updated
+            // events so candleEvents() receives each candle separately.
+            if msgType == "candles.updated",
+               let items = json["candles"] as? [[String: Any]] {
+                if let seq = json["deliverySeq"] as? Int {
+                    checkDeliveryGap(seq)
+                }
+                for item in items {
+                    guard let coin = item["coin"] as? String,
+                          let interval = item["interval"] as? String,
+                          let candleRaw = item["candle"],
+                          let candleData = try? JSONSerialization.data(withJSONObject: candleRaw),
+                          let candle = try? JSONDecoder().decode(Candle.self, from: candleData) else {
+                        continue
+                    }
+                    let syntheticEvent = RealmEvent(
+                        type: EventType.candleUpdated.rawValue,
+                        coin: coin,
+                        interval: interval,
+                        candle: candle
+                    )
+                    for continuation in eventContinuations.values {
+                        continuation.yield(syntheticEvent)
+                    }
+                }
+                return
+            }
+
             // Normalize watch_snapshot → object.valuation so objectValuationEvents()
             // receives the initial valuation (mirrors TypeScript SDK behavior where
             // watchPath resolves with the snapshot valuation as the first value).
