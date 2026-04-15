@@ -215,15 +215,9 @@ public struct LeverageInfo: Codable, Sendable {
     public let value: Int
 }
 
-public struct MarginTier: Codable, Sendable {
-    public let lowerBound: String
-    public let maxLeverage: Int
-}
-
 public struct ActiveAssetData: Codable, Sendable {
     public let coin: String
     public let leverage: LeverageInfo
-    public let marginTiers: [MarginTier]?
     /// Max buy size in tokens (positive).
     public let maxBuySize: String
     /// Max sell size in tokens (positive).
