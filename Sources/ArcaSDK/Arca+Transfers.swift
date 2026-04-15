@@ -17,11 +17,13 @@ extension Arca {
     ///   - from: Source Arca path
     ///   - to: Target Arca path
     ///   - amount: Amount as decimal string
+    ///   - feeOverride: Override the transfer fee (e.g. `"0"` to disable). Non-production realms only.
     public func transfer(
         path: String,
         from: String,
         to: String,
-        amount: String
+        amount: String,
+        feeOverride: String? = nil
     ) -> OperationHandle<TransferResponse> {
         operationHandle { [self] in
             try await client.post("/transfer", body: TransferRequest(
@@ -29,7 +31,8 @@ extension Arca {
                 path: path,
                 sourceArcaPath: from,
                 targetArcaPath: to,
-                amount: amount
+                amount: amount,
+                feeOverride: feeOverride
             ))
         }
     }
@@ -101,6 +104,7 @@ private struct TransferRequest: Encodable {
     let sourceArcaPath: String
     let targetArcaPath: String
     let amount: String
+    let feeOverride: String?
 }
 
 private struct FundAccountRequest: Encodable {
