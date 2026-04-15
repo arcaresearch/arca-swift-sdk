@@ -94,6 +94,7 @@ public func deriveActiveAssetData(
     return ActiveAssetData(
         coin: coin,
         leverage: LeverageInfo(type: .cross, value: leverage),
+        marginTiers: nil,
         maxBuySize: toDecimalString(buyMax, decimals: szDecimals),
         maxSellSize: toDecimalString(sellMax, decimals: szDecimals),
         maxBuyUsd: toDecimalString(buyMax * markPx),
