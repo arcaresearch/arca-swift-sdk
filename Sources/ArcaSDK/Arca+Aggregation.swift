@@ -164,13 +164,29 @@ extension Arca {
             }
         }
 
-        let state = SendableBox<WatchStreamState>(.connected)
-        let historicalBox = SendableBox<[EquityPoint]>(history.equityPoints)
-        let chartBox = SendableBox<[EquityPoint]>(history.equityPoints)
-        let hourBoundaryBox = SendableBox<Int64>(Int64(Date().timeIntervalSince1970 / 3600) * 3600)
-
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let initialHourBoundary = Int64(Date().timeIntervalSince1970 / 3600) * 3600
+
+        var trimmedHistorical = history.equityPoints
+        while let last = trimmedHistorical.last,
+              let ts = iso.date(from: last.timestamp),
+              Int64(ts.timeIntervalSince1970) > initialHourBoundary {
+            trimmedHistorical.removeLast()
+        }
+
+        var initialChart = trimmedHistorical
+        if let agg = aggStream.aggregation.value {
+            initialChart.append(EquityPoint(
+                timestamp: iso.string(from: Date()),
+                equityUsd: agg.totalEquityUsd
+            ))
+        }
+
+        let state = SendableBox<WatchStreamState>(.connected)
+        let historicalBox = SendableBox<[EquityPoint]>(trimmedHistorical)
+        let chartBox = SendableBox<[EquityPoint]>(initialChart)
+        let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
 
         let updates = AsyncStream<EquityChartUpdate> { continuation in
             let task = Task {
@@ -252,33 +268,26 @@ extension Arca {
 
         let startingEquity = Double(history.startingEquityUsd) ?? 0
 
-        var initCumInflows = 0.0
-        var initCumOutflows = 0.0
+        var currentCumInflows = 0.0
+        var currentCumOutflows = 0.0
         for flow in history.externalFlows ?? [] {
             let val = Double(flow.valueUsd) ?? 0
-            if flow.direction == "inflow" { initCumInflows += val }
-            else { initCumOutflows += val }
+            if flow.direction == "inflow" { currentCumInflows += val }
+            else { currentCumOutflows += val }
         }
-
-        let state = SendableBox<WatchStreamState>(.connected)
-        let historicalBox = SendableBox<[PnlPoint]>(history.pnlPoints)
-        let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows ?? [])
-        let chartBox = SendableBox<[PnlPoint]>(history.pnlPoints)
-        let hourBoundaryBox = SendableBox<Int64>(Int64(Date().timeIntervalSince1970 / 3600) * 3600)
-        let cumInflowsBox = SendableBox<Double>(initCumInflows)
-        let cumOutflowsBox = SendableBox<Double>(initCumOutflows)
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let initialHourBoundary = Int64(Date().timeIntervalSince1970 / 3600) * 3600
 
         // Override flow seed with server-provided cumulative flows from the
         // initial aggregation snapshot (authoritative, covers from..now).
         if let agg = aggStream.aggregation.value {
             if let inStr = agg.cumInflowsUsd, let inVal = Double(inStr) {
-                cumInflowsBox.update { $0 = inVal }
+                currentCumInflows = inVal
             }
             if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
-                cumOutflowsBox.update { $0 = outVal }
+                currentCumOutflows = outVal
             }
         }
 
@@ -287,14 +296,35 @@ extension Arca {
         // lastClosed. Removing it prevents a discontinuity between the server's
         // live equity (Redis at HTTP time) and the SDK's live equity
         // (aggregation watch, potentially revalued with latest mids).
-        let trimBoundary = hourBoundaryBox.value
-        historicalBox.update { pts in
-            while let last = pts.last,
-                  let ts = iso.date(from: last.timestamp),
-                  Int64(ts.timeIntervalSince1970) > trimBoundary {
-                pts.removeLast()
+        var trimmedHistorical = history.pnlPoints
+        while let last = trimmedHistorical.last,
+              let ts = iso.date(from: last.timestamp),
+              Int64(ts.timeIntervalSince1970) > initialHourBoundary {
+            trimmedHistorical.removeLast()
+        }
+
+        var initialChart = trimmedHistorical
+        if let agg = aggStream.aggregation.value {
+            let liveEquity = Double(agg.totalEquityUsd) ?? 0
+            let pnl = liveEquity - startingEquity - currentCumInflows + currentCumOutflows
+            let livePnlStr = String(format: "%.2f", pnl)
+            initialChart.append(PnlPoint(
+                timestamp: iso.string(from: Date()),
+                pnlUsd: livePnlStr,
+                equityUsd: agg.totalEquityUsd
+            ))
+            if anchor == .equity {
+                applyEquityAnchor(to: &initialChart, liveEquity: liveEquity, livePnl: pnl)
             }
         }
+
+        let state = SendableBox<WatchStreamState>(.connected)
+        let historicalBox = SendableBox<[PnlPoint]>(trimmedHistorical)
+        let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows ?? [])
+        let chartBox = SendableBox<[PnlPoint]>(initialChart)
+        let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
+        let cumInflowsBox = SendableBox<Double>(currentCumInflows)
+        let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
 
         let updates = AsyncStream<PnlChartUpdate> { continuation in
             let aggTask = Task {
