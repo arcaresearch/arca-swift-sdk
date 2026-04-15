@@ -449,6 +449,22 @@ public struct CandleEvent: Sendable {
     public let candle: Candle
 }
 
+/// A single trade from the market-wide trade tape.
+public struct MarketTrade: Codable, Sendable {
+    public let coin: String
+    public let px: String
+    public let sz: String
+    public let side: String
+    public let time: String
+    public let hash: String?
+}
+
+/// Callback-friendly trade event.
+public struct TradeEvent: Sendable {
+    public let coin: String
+    public let trade: MarketTrade
+}
+
 /// Emitted by ``CandleChartStream`` on every chart change.
 public struct CandleChartUpdate: Sendable {
     /// Full candle array (historical + live), sorted by `t`, deduped.

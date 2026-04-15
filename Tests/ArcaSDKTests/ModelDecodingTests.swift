@@ -1359,6 +1359,40 @@ final class ModelDecodingTests: XCTestCase {
         }
     }
 
+    func testTypedEventFromTradeExecuted() throws {
+        let json = """
+        {
+            "type": "trade.executed",
+            "realmId": "rlm_01abc",
+            "entityId": "hl:BTC",
+            "coin": "hl:BTC",
+            "deliverySeq": 50,
+            "trade": {
+                "coin": "hl:BTC",
+                "px": "60500.00",
+                "sz": "0.5",
+                "side": "buy",
+                "time": "2026-04-15T00:00:00.000",
+                "hash": "0xabc123"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let raw = try decoder.decode(RealmEvent.self, from: json)
+        let typed = TypedEvent.from(raw)
+
+        switch typed {
+        case .tradeExecuted(let tradeEvent, let envelope):
+            XCTAssertEqual(tradeEvent.coin, "hl:BTC")
+            XCTAssertEqual(tradeEvent.trade.px, "60500.00")
+            XCTAssertEqual(tradeEvent.trade.side, "buy")
+            XCTAssertEqual(tradeEvent.trade.hash, "0xabc123")
+            XCTAssertEqual(envelope.deliverySeq, 50)
+        default:
+            XCTFail("Expected .tradeExecuted, got \(typed)")
+        }
+    }
+
     func testTypedEventUnknownType() throws {
         let json = """
         {

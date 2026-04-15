@@ -92,6 +92,7 @@ public enum TypedEvent: Sendable {
 
     case candleClosed(CandleEvent, envelope: EventEnvelope)
     case candleUpdated(CandleEvent, envelope: EventEnvelope)
+    case tradeExecuted(TradeEvent, envelope: EventEnvelope)
     case midsUpdated([String: String], envelope: EventEnvelope)
 
     // MARK: - Aggregation
@@ -127,6 +128,7 @@ public enum TypedEvent: Sendable {
              .fundingPayment(_, let e),
              .candleClosed(_, let e),
              .candleUpdated(_, let e),
+             .tradeExecuted(_, let e),
              .midsUpdated(_, let e),
              .aggregationUpdated(_, let e),
              .objectValuation(_, _, _, let e),
@@ -197,6 +199,11 @@ public enum TypedEvent: Sendable {
                   let interval = CandleInterval(rawValue: ivStr),
                   let candle = event.candle else { return .unknown(event) }
             return .candleUpdated(CandleEvent(coin: coin, interval: interval, candle: candle), envelope: envelope)
+
+        case EventType.tradeExecuted.rawValue:
+            guard let coin = event.coin,
+                  let trade = event.trade else { return .unknown(event) }
+            return .tradeExecuted(TradeEvent(coin: coin, trade: trade), envelope: envelope)
 
         case EventType.midsUpdated.rawValue:
             guard let mids = event.mids else { return .unknown(event) }
