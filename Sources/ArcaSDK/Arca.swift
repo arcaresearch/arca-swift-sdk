@@ -312,7 +312,16 @@ public final class Arca: Sendable {
             }
             guard state.inflight == nil else { return }
             state.inflight = Task<[String: SimMetaAsset], Error> { [self] in
-                let response = try await getMarketMeta()
+                let response: SimMetaResponse
+                do {
+                    response = try await getMarketMeta()
+                } catch {
+                    if !Task.isCancelled {
+                        metaCache.update { s in s.inflight = nil }
+                    }
+                    throw error
+                }
+                try Task.checkCancellation()
                 var map: [String: SimMetaAsset] = [:]
                 map.reserveCapacity(response.universe.count)
                 for asset in response.universe {

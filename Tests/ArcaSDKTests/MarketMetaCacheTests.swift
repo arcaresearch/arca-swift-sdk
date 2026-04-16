@@ -88,6 +88,24 @@ final class MarketMetaCacheTests: XCTestCase {
         XCTAssertEqual(tsla?.feeScale, 3.0)
     }
 
+    func testRetriesAfterFailedFetch() async throws {
+        MetaCacheMockProtocol.failNextN = 1
+        let arca = makeArca()
+
+        do {
+            _ = try await arca.asset("hl:BTC")
+            XCTFail("Expected error on first call")
+        } catch {
+            // expected
+        }
+        XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
+
+        let btc = try await arca.asset("hl:BTC")
+        XCTAssertNotNil(btc)
+        XCTAssertEqual(btc?.symbol, "BTC")
+        XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 2, "Should retry after failure")
+    }
+
     // MARK: - Helpers
 
     private func makeArca() -> Arca {
@@ -118,6 +136,7 @@ final class MarketMetaCacheTests: XCTestCase {
 private final class MetaCacheMockProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _metaRequestCount = 0
+    static var failNextN = 0
 
     static var metaRequestCount: Int {
         lock.lock()
@@ -128,6 +147,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
     static func reset() {
         lock.lock()
         _metaRequestCount = 0
+        failNextN = 0
         lock.unlock()
     }
 
@@ -143,7 +163,23 @@ private final class MetaCacheMockProtocol: URLProtocol {
     override func startLoading() {
         Self.lock.lock()
         Self._metaRequestCount += 1
+        let shouldFail = Self.failNextN > 0
+        if shouldFail { Self.failNextN -= 1 }
         Self.lock.unlock()
+
+        if shouldFail {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 500,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let errorBody = Data(#"{"success":false,"error":{"code":"INTERNAL","message":"boom"}}"#.utf8)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: errorBody)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
 
         let body = #"""
         {
