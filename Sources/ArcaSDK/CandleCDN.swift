@@ -114,6 +114,7 @@ public enum CandleCDN {
         startMs: Int,
         endMs: Int,
         session: URLSession = .shared,
+        logger: ArcaLogger = .disabled,
         apiFallback: @escaping @Sendable (_ startMs: Int, _ endMs: Int) async throws -> [Candle]
     ) async throws -> [Candle] {
         try Task.checkCancellation()
@@ -127,12 +128,26 @@ public enum CandleCDN {
                     guard !Task.isCancelled else { return nil }
 
                     let isClosed = nowMs >= chunk.endMs
+                    let metaBase: [String: String] = [
+                        "coin": coin,
+                        "interval": interval.rawValue,
+                        "chunkKey": chunk.key,
+                    ]
+
                     if !isClosed {
                         guard !Task.isCancelled else { return nil }
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
-                        guard let candles = try? await apiFallback(s, e) else { return nil }
-                        return (index, candles)
+                        do {
+                            let candles = try await apiFallback(s, e)
+                            return (index, candles)
+                        } catch {
+                            logger.warning("cdn",
+                                           "open-chunk API fallback failed",
+                                           error: error,
+                                           metadata: metaBase)
+                            return nil
+                        }
                     }
 
                     let url = URL(string: chunkUrl(baseUrl: baseUrl, coin: coin, interval: interval, chunkKey: chunk.key))!
@@ -142,15 +157,40 @@ public enum CandleCDN {
                             guard !Task.isCancelled else { return nil }
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
-                            guard let candles = try? await apiFallback(s, e) else { return nil }
-                            return (index, candles)
+                            logger.debug("cdn",
+                                         "chunk 404, using API fallback",
+                                         metadata: metaBase.merging(["url": url.absoluteString]) { a, _ in a })
+                            do {
+                                let candles = try await apiFallback(s, e)
+                                return (index, candles)
+                            } catch {
+                                logger.warning("cdn",
+                                               "API fallback for 404 chunk failed",
+                                               error: error,
+                                               metadata: metaBase)
+                                return nil
+                            }
                         }
                         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                             guard !Task.isCancelled else { return nil }
                             let s = max(chunk.startMs, startMs)
                             let e = min(chunk.endMs - 1, endMs)
-                            guard let candles = try? await apiFallback(s, e) else { return nil }
-                            return (index, candles)
+                            logger.warning("cdn",
+                                           "chunk non-OK status, using API fallback",
+                                           metadata: metaBase.merging([
+                                               "statusCode": String(http.statusCode),
+                                               "url": url.absoluteString,
+                                           ]) { a, _ in a })
+                            do {
+                                let candles = try await apiFallback(s, e)
+                                return (index, candles)
+                            } catch {
+                                logger.warning("cdn",
+                                               "API fallback for failing chunk failed",
+                                               error: error,
+                                               metadata: metaBase)
+                                return nil
+                            }
                         }
                         let candles = try JSONDecoder().decode([Candle].self, from: data)
                         let filtered = candles.filter { $0.t >= startMs && $0.t < endMs }
@@ -159,8 +199,20 @@ public enum CandleCDN {
                         guard !Task.isCancelled else { return nil }
                         let s = max(chunk.startMs, startMs)
                         let e = min(chunk.endMs - 1, endMs)
-                        guard let candles = try? await apiFallback(s, e) else { return nil }
-                        return (index, candles)
+                        logger.warning("cdn",
+                                       "chunk fetch failed, using API fallback",
+                                       error: error,
+                                       metadata: metaBase.merging(["url": url.absoluteString]) { a, _ in a })
+                        do {
+                            let candles = try await apiFallback(s, e)
+                            return (index, candles)
+                        } catch {
+                            logger.warning("cdn",
+                                           "API fallback after chunk fetch failure also failed",
+                                           error: error,
+                                           metadata: metaBase)
+                            return nil
+                        }
                     }
                 }
             }

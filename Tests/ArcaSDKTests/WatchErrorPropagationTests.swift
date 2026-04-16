@@ -48,13 +48,41 @@ final class WatchErrorPropagationTests: XCTestCase {
         }
     }
 
+    /// Regression guard for the diagnostic logging story: when a REST call
+    /// fails with 404 inside a watch-stream path, the SDK must emit at least
+    /// one warning-level record on the `network` or `watch` category.
+    /// Previously these errors were discarded via `try?` and builders got no
+    /// visibility.
+    func testRestFailureSurfacesViaLogHandler() async {
+        let handler = CapturingLogHandler()
+        let arca = makeArca(logLevel: .debug, logHandler: handler)
+        _ = try? await arca.watchFills(objectId: "nonexistent")
+
+        let deadline = Date().addingTimeInterval(1.0)
+        while handler.records.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let relevant = handler.records.filter {
+            $0.level >= .warning &&
+            ($0.category == "network" || $0.category == "watch")
+        }
+        XCTAssertFalse(relevant.isEmpty,
+                       "Expected at least one warning record on network/watch category; got \(handler.records.map { ($0.level, $0.category, $0.message) })")
+    }
+
     // MARK: - Helpers
 
-    private func makeArca() -> Arca {
+    private func makeArca(
+        logLevel: ArcaLogLevel = .warning,
+        logHandler: ArcaLogHandler? = nil
+    ) -> Arca {
         try! Arca(
             token: fakeJwt(),
             baseURL: URL(string: "http://localhost:19999")!,
-            urlSessionConfiguration: sessionConfig
+            urlSessionConfiguration: sessionConfig,
+            logLevel: logLevel,
+            logHandler: logHandler
         )
     }
 

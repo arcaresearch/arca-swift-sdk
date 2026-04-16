@@ -370,4 +370,54 @@ final class WebSocketManagerTests: XCTestCase {
 
         XCTAssertEqual(received, [1], "Only pre-stop yield should have been received")
     }
+
+    // MARK: - Logger instrumentation
+
+    func testServerErrorMessageEmitsErrorLogRecord() async throws {
+        let handler = CapturingLogHandler()
+        let logger = ArcaLogger(minLevel: .debug, handler: handler)
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test",
+            logger: logger
+        )
+
+        await manager.injectMessage(#"{"type":"error","message":"Invalid realm"}"#)
+
+        let deadline = Date().addingTimeInterval(0.5)
+        while handler.records.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        let errorRecords = handler.records.filter { $0.level == .error && $0.category == "websocket" }
+        XCTAssertFalse(errorRecords.isEmpty,
+                       "Server error message should emit an error-level websocket record")
+        XCTAssertEqual(errorRecords.first?.metadata["message"], "Invalid realm")
+    }
+
+    func testDeliveryGapEmitsWarningLogRecord() async throws {
+        let handler = CapturingLogHandler()
+        let logger = ArcaLogger(minLevel: .debug, handler: handler)
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test",
+            logger: logger
+        )
+
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"1"},"deliverySeq":1}"#)
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"2"},"deliverySeq":5}"#)
+
+        let deadline = Date().addingTimeInterval(0.5)
+        while !handler.records.contains(where: { $0.message.contains("delivery gap") }),
+              Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        let gapRecords = handler.records.filter { $0.message.contains("delivery gap") }
+        XCTAssertFalse(gapRecords.isEmpty, "Delivery gap should emit a warning record")
+        XCTAssertEqual(gapRecords.first?.level, .warning)
+        XCTAssertEqual(gapRecords.first?.metadata["missed"], "3")
+    }
 }

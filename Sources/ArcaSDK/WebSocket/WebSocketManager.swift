@@ -56,12 +56,16 @@ public actor WebSocketManager {
     /// If set, called on each reconnect to obtain a fresh token.
     private let getToken: (@Sendable () async throws -> String)?
 
+    /// Diagnostic logger. Emits records under category `websocket`.
+    private let log: ArcaLogger
+
     public init(
         baseURL: URL,
         token: String,
         realmId: String,
         getToken: (@Sendable () async throws -> String)? = nil,
-        maxReconnectDelay: TimeInterval = 30
+        maxReconnectDelay: TimeInterval = 30,
+        logger: ArcaLogger = .disabled
     ) {
         self.baseURL = baseURL
         self.token = token
@@ -69,6 +73,7 @@ public actor WebSocketManager {
         self.getToken = getToken
         self.maxReconnectDelay = maxReconnectDelay
         self.session = URLSession(configuration: .default)
+        self.log = logger
     }
 
     /// Update the bearer token. If disconnected and should reconnect,
@@ -520,6 +525,8 @@ public actor WebSocketManager {
         wsURL = components.url!
 
         setStatus(.connecting)
+        log.debug("websocket", "connecting",
+                  metadata: ["url": wsURL.absoluteString, "realmId": realmId])
 
         let task = session.webSocketTask(with: wsURL)
         self.webSocketTask = task
@@ -531,6 +538,7 @@ public actor WebSocketManager {
                     let freshToken = try await getToken()
                     await self?.applyTokenAndAuth(freshToken)
                 } catch {
+                    await self?.logTokenRefreshFailedOnReconnect(error)
                     await self?.sendAuthWithCurrentToken()
                 }
             }
@@ -541,6 +549,11 @@ public actor WebSocketManager {
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+    }
+
+    private func logTokenRefreshFailedOnReconnect(_ error: Error) {
+        log.error("websocket", "token refresh failed on reconnect, falling back to cached token",
+                  error: error)
     }
 
     private func applyTokenAndAuth(_ freshToken: String) {
@@ -570,6 +583,7 @@ public actor WebSocketManager {
                 }
             } catch {
                 if !Task.isCancelled {
+                    log.warning("websocket", "receive loop error", error: error)
                     setStatus(.disconnected)
                     if shouldReconnect {
                         scheduleReconnect()
@@ -594,6 +608,7 @@ public actor WebSocketManager {
             }
 
             if msgType == "authenticated" {
+                log.info("websocket", "authenticated")
                 reconnectAttempt = 0
                 lastDeliverySeq = 0
                 setStatus(.connected)
@@ -620,6 +635,8 @@ public actor WebSocketManager {
 
             if msgType == "error" {
                 let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
+                log.error("websocket", "server error",
+                          metadata: ["message": errorMessage])
                 setStatus(.disconnected)
                 webSocketTask?.cancel(with: .goingAway, reason: errorMessage.data(using: .utf8))
                 webSocketTask = nil
@@ -726,6 +743,12 @@ public actor WebSocketManager {
     private func checkDeliveryGap(_ seq: Int) {
         if lastDeliverySeq > 0 && seq > lastDeliverySeq + 1 {
             let missed = seq - lastDeliverySeq - 1
+            log.warning("websocket", "delivery gap detected",
+                        metadata: [
+                            "missed": String(missed),
+                            "previousSeq": String(lastDeliverySeq),
+                            "currentSeq": String(seq),
+                        ])
             for handler in gapHandlers.values {
                 handler(missed)
             }
@@ -754,6 +777,11 @@ public actor WebSocketManager {
         guard reconnectTask == nil else { return }
         let delay = min(pow(2.0, Double(reconnectAttempt)), maxReconnectDelay)
         reconnectAttempt += 1
+        log.warning("websocket", "scheduling reconnect",
+                    metadata: [
+                        "attempt": String(reconnectAttempt),
+                        "delaySeconds": String(format: "%.1f", delay),
+                    ])
 
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -789,6 +817,11 @@ public actor WebSocketManager {
     private func heartbeatTick() {
         let elapsed = Date().timeIntervalSince(lastMessageAt)
         if elapsed >= WebSocketManager.staleThresholdS {
+            log.warning("websocket", "connection stale, forcing reconnect",
+                        metadata: [
+                            "elapsedSeconds": String(format: "%.1f", elapsed),
+                            "thresholdSeconds": String(format: "%.1f", WebSocketManager.staleThresholdS),
+                        ])
             stopHeartbeat()
             webSocketTask?.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
@@ -810,10 +843,14 @@ public actor WebSocketManager {
         do {
             let data = try JSONEncoder().encode(message)
             if let text = String(data: data, encoding: .utf8) {
-                task.send(.string(text)) { _ in }
+                task.send(.string(text)) { [log] err in
+                    if let err = err {
+                        log.warning("websocket", "message send failed", error: err)
+                    }
+                }
             }
         } catch {
-            // Encoding failures are programming errors; silently dropped
+            log.error("websocket", "outbound message encode failed", error: error)
         }
     }
 
@@ -821,6 +858,8 @@ public actor WebSocketManager {
 
     private func setStatus(_ newStatus: ConnectionStatus) {
         guard newStatus != _status else { return }
+        log.debug("websocket", "status",
+                  metadata: ["from": String(describing: _status), "to": String(describing: newStatus)])
         _status = newStatus
         for continuation in statusContinuations.values {
             continuation.yield(newStatus)

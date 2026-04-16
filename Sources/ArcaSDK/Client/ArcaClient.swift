@@ -24,6 +24,7 @@ public final class ArcaClient: @unchecked Sendable {
 
     private let onUnauthorized: (@Sendable () async throws -> String)?
     private let onAuthError: (@Sendable (Error) -> Void)?
+    private let log: ArcaLogger
 
     private static let transientStatuses: Set<Int> = [502, 503, 504]
     private static let maxRetries = 2
@@ -34,7 +35,8 @@ public final class ArcaClient: @unchecked Sendable {
         baseURL: URL,
         urlSessionConfiguration: URLSessionConfiguration = .default,
         onUnauthorized: (@Sendable () async throws -> String)? = nil,
-        onAuthError: (@Sendable (Error) -> Void)? = nil
+        onAuthError: (@Sendable (Error) -> Void)? = nil,
+        logger: ArcaLogger = .disabled
     ) {
         self._token = token
         self.baseURL = baseURL.appendingPathComponent("api/v1")
@@ -42,6 +44,7 @@ public final class ArcaClient: @unchecked Sendable {
         self.decoder = JSONDecoder()
         self.onUnauthorized = onUnauthorized
         self.onAuthError = onAuthError
+        self.log = logger
     }
 
     /// Update the bearer token (e.g., after a token refresh).
@@ -80,11 +83,15 @@ public final class ArcaClient: @unchecked Sendable {
                 }
                 throw error
             }
+            log.notice("auth", "401 received, refreshing token and retrying",
+                       metadata: ["httpMethod": method, "path": path])
             do {
                 let newToken = try await onUnauthorized()
                 self.token = newToken
                 return try await requestWithRetry(method: method, path: path, query: query, body: body)
             } catch {
+                log.error("auth", "token refresh failed after 401", error: error,
+                          metadata: ["httpMethod": method, "path": path])
                 onAuthError?(error)
                 throw error
             }
@@ -115,6 +122,13 @@ public final class ArcaClient: @unchecked Sendable {
                 if !Self.isTransient(error) || attempt == Self.maxRetries {
                     throw error
                 }
+                log.warning("network", "transient failure, retrying", error: error,
+                            metadata: [
+                                "httpMethod": method,
+                                "path": path,
+                                "attempt": String(attempt + 1),
+                                "maxRetries": String(Self.maxRetries),
+                            ])
                 try await Task.sleep(nanoseconds: Self.retryDelay)
             }
         }
@@ -139,16 +153,25 @@ public final class ArcaClient: @unchecked Sendable {
             request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
         }
 
+        log.debug("network", "request", metadata: [
+            "httpMethod": method,
+            "path": path,
+        ])
+
         let data: Data
         let response: URLResponse
 
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            log.warning("network", "network failure", error: error,
+                        metadata: ["httpMethod": method, "path": path])
             throw ArcaError.networkError(underlying: error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
+            log.error("network", "non-HTTP response",
+                      metadata: ["httpMethod": method, "path": path])
             throw ArcaError.networkError(underlying: URLError(.badServerResponse))
         }
 
@@ -156,8 +179,15 @@ public final class ArcaClient: @unchecked Sendable {
             throw TransientHTTPError(statusCode: httpResponse.statusCode)
         }
 
+        log.debug("network", "response", metadata: [
+            "httpMethod": method,
+            "path": path,
+            "statusCode": String(httpResponse.statusCode),
+        ])
+
         do {
-            return try unwrap(data: data, statusCode: httpResponse.statusCode)
+            return try unwrap(data: data, statusCode: httpResponse.statusCode,
+                              method: method, path: path)
         } catch ArcaError.nonJsonResponse(let statusCode, let body) {
             throw ArcaError.nonJsonResponse(statusCode: statusCode, body: "[\(method) \(path)] \(body)")
         }
@@ -165,18 +195,43 @@ public final class ArcaClient: @unchecked Sendable {
 
     // MARK: - Response Unwrapping
 
-    private func unwrap<T: Decodable>(data: Data, statusCode: Int) throws -> T {
+    private func unwrap<T: Decodable>(
+        data: Data,
+        statusCode: Int,
+        method: String,
+        path: String
+    ) throws -> T {
         let envelope: APIResponse<T>
         do {
             envelope = try decoder.decode(APIResponse<T>.self, from: data)
         } catch let decodingError as DecodingError {
             if data.first == UInt8(ascii: "{") || data.first == UInt8(ascii: "[") {
+                log.error("network", "response decode failed", error: decodingError,
+                          metadata: [
+                              "httpMethod": method,
+                              "path": path,
+                              "statusCode": String(statusCode),
+                          ])
                 throw ArcaError.decodingError(underlying: decodingError)
             }
             let body = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
+            log.error("network", "non-JSON response",
+                      metadata: [
+                          "httpMethod": method,
+                          "path": path,
+                          "statusCode": String(statusCode),
+                          "bodyPreview": body,
+                      ])
             throw ArcaError.nonJsonResponse(statusCode: statusCode, body: body)
         } catch {
             let body = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
+            log.error("network", "non-JSON response",
+                      metadata: [
+                          "httpMethod": method,
+                          "path": path,
+                          "statusCode": String(statusCode),
+                          "bodyPreview": body,
+                      ])
             throw ArcaError.nonJsonResponse(statusCode: statusCode, body: body)
         }
 
@@ -188,8 +243,24 @@ public final class ArcaClient: @unchecked Sendable {
                 )
             }
             if let error = envelope.error {
-                throw mapAPIError(code: error.code, message: error.message, errorId: error.errorId)
+                let mapped = mapAPIError(code: error.code, message: error.message, errorId: error.errorId)
+                log.warning("network", "API error",
+                            error: mapped,
+                            metadata: [
+                                "httpMethod": method,
+                                "path": path,
+                                "statusCode": String(statusCode),
+                                "code": error.code,
+                                "errorId": error.errorId ?? "",
+                            ])
+                throw mapped
             }
+            log.warning("network", "request failed with no error envelope",
+                        metadata: [
+                            "httpMethod": method,
+                            "path": path,
+                            "statusCode": String(statusCode),
+                        ])
             throw ArcaError.unknown(
                 code: "UNKNOWN",
                 message: "Request failed with status \(statusCode)",

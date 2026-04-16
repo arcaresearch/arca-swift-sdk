@@ -9,11 +9,18 @@ public actor TokenManager {
     private var pendingRefresh: Task<String, Error>?
     private var proactiveRefreshTask: Task<Void, Never>?
     private var authErrorHandlers: [UUID: @Sendable (Error) -> Void] = [:]
+    private var log: ArcaLogger = .disabled
 
     private static let refreshBufferSeconds: TimeInterval = 30
 
     public init(provider: TokenProvider?) {
         self.provider = provider
+    }
+
+    /// Attach the SDK's logger. Called by ``Arca`` during initialization so
+    /// the token manager can emit records under the `auth` category.
+    public func attachLogger(_ logger: ArcaLogger) {
+        self.log = logger
     }
 
     /// Whether a token provider is configured.
@@ -28,6 +35,7 @@ public actor TokenManager {
         guard let provider else {
             throw ArcaError.unauthorized(message: "No token provider configured", errorId: nil)
         }
+        log.debug("auth", "refreshing token via provider")
         let task = Task { try await provider() }
         self.pendingRefresh = task
         do {
@@ -36,6 +44,7 @@ public actor TokenManager {
             return token
         } catch {
             self.pendingRefresh = nil
+            log.warning("auth", "token provider failed", error: error)
             throw error
         }
     }
@@ -59,9 +68,15 @@ public actor TokenManager {
                 guard let token = try await self?.refreshToken() else { return }
                 await onRefresh(token)
             } catch {
+                await self?.logProactiveRefreshFailed(error)
                 await self?.emitAuthError(error)
             }
         }
+    }
+
+    private func logProactiveRefreshFailed(_ error: Error) {
+        log.error("auth", "proactive token refresh failed; emitting auth error",
+                  error: error)
     }
 
     /// Register a handler for unrecoverable authentication errors.

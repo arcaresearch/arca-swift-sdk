@@ -140,9 +140,10 @@ extension Arca {
             await ws.releaseCandles(coins: [coin], intervals: [interval])
             throw CancellationError()
         } catch {
-            #if DEBUG
-            print("[ArcaSDK] initial getCandles failed: \(error)")
-            #endif
+            log.warning("candle",
+                        "initial getCandles failed; showing empty history",
+                        error: error,
+                        metadata: ["coin": coin, "interval": interval.rawValue])
             history = CandlesResponse(coin: coin, interval: interval.rawValue, candles: [])
         }
 
@@ -157,14 +158,16 @@ extension Arca {
         let previousCount = SendableBox<Int>(0)
         let chartCallbacks = SendableBox<[UUID: @Sendable (CandleChartUpdate) -> Void]>([:])
 
-        let yieldSnapshot: @Sendable (AsyncStream<CandleChartUpdate>.Continuation, [Candle], Candle) -> Void = {
-            cont, snapshot, trigger in
+        let yieldSnapshot: @Sendable (AsyncStream<CandleChartUpdate>.Continuation, [Candle], Candle) -> Void = { [log] cont, snapshot, trigger in
             let count = snapshot.count
             let prev = previousCount.value
             if count < prev {
-                #if DEBUG
-                print("[ArcaSDK] WARNING: candle array shrunk \(prev) → \(count)")
-                #endif
+                log.warning("candle",
+                            "candle array shrunk; skipping emit to avoid flicker",
+                            metadata: [
+                                "previousCount": String(prev),
+                                "count": String(count),
+                            ])
                 return
             }
             previousCount.update { $0 = max($0, count) }
@@ -210,20 +213,31 @@ extension Arca {
                         if wasConnected, let self = self {
                             let gapStart = Int(Date().timeIntervalSince1970 * 1000)
                                 - interval.milliseconds * gapRecoveryCandles
-                            if let res = try? await self.getCandles(
-                                coin: coin,
-                                interval: interval,
-                                startTime: gapStart
-                            ), !res.candles.isEmpty {
-                                let snapshot = candlesBox.updateAndGet { arr in
-                                    arr.append(contentsOf: res.candles)
-                                    arr = dedupCandles(arr)
+                            do {
+                                let res = try await self.getCandles(
+                                    coin: coin,
+                                    interval: interval,
+                                    startTime: gapStart
+                                )
+                                if !res.candles.isEmpty {
+                                    let snapshot = candlesBox.updateAndGet { arr in
+                                        arr.append(contentsOf: res.candles)
+                                        arr = dedupCandles(arr)
+                                    }
+                                    let gapEnd = Int(Date().timeIntervalSince1970 * 1000)
+                                    coverage.add(from: gapStart, to: gapEnd)
+                                    if let last = snapshot.last {
+                                        yieldSnapshot(continuation, snapshot, last)
+                                    }
                                 }
-                                let gapEnd = Int(Date().timeIntervalSince1970 * 1000)
-                                coverage.add(from: gapStart, to: gapEnd)
-                                if let last = snapshot.last {
-                                    yieldSnapshot(continuation, snapshot, last)
-                                }
+                            } catch {
+                                self.log.warning("candle",
+                                                 "gap recovery refetch failed",
+                                                 error: error,
+                                                 metadata: [
+                                                     "coin": coin,
+                                                     "interval": interval.rawValue,
+                                                 ])
                             }
                         }
                     }
@@ -258,9 +272,13 @@ extension Arca {
                             return
                         }
                     } catch {
-                        #if DEBUG
-                        print("[ArcaSDK] candle retry failed: \(error)")
-                        #endif
+                        self.log.warning("candle",
+                                         "initial candle retry failed; backing off",
+                                         error: error,
+                                         metadata: [
+                                             "coin": coin,
+                                             "interval": interval.rawValue,
+                                         ])
                     }
                     delay = min(delay * 2, maxDelay)
                 }
@@ -298,6 +316,15 @@ extension Arca {
                                 )
                                 return (gap.from, gap.to, res.candles)
                             } catch {
+                                self.log.warning("candle",
+                                                 "range gap fetch failed",
+                                                 error: error,
+                                                 metadata: [
+                                                     "coin": coin,
+                                                     "interval": interval.rawValue,
+                                                     "from": String(gap.from),
+                                                     "to": String(gap.to),
+                                                 ])
                                 return nil
                             }
                         }

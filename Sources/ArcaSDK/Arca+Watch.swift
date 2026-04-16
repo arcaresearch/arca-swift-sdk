@@ -30,17 +30,32 @@ extension Arca {
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
                 guard let self = self else { return }
-                let resp = path != "/" ? try? await self.listOperations(path: path) : try? await self.listOperations()
-                guard let resp = resp else { return }
-                box.update { $0 = resp.operations }
+                do {
+                    let resp = path != "/"
+                        ? try await self.listOperations(path: path)
+                        : try await self.listOperations()
+                    box.update { $0 = resp.operations }
+                } catch {
+                    self.log.warning("watch",
+                                     "operations gap recovery refetch failed",
+                                     error: error,
+                                     metadata: ["path": path])
+                }
             }
         }
 
         await ws.watchPath(path)
 
-        let initialResp = path != "/" ? try? await self.listOperations(path: path) : try? await self.listOperations()
-        if let resp = initialResp {
+        do {
+            let resp = path != "/"
+                ? try await self.listOperations(path: path)
+                : try await self.listOperations()
             box.update { $0 = resp.operations }
+        } catch {
+            self.log.warning("watch",
+                             "operations initial snapshot failed",
+                             error: error,
+                             metadata: ["path": path])
         }
         state.update { $0 = .connected }
 
@@ -107,20 +122,41 @@ extension Arca {
                 guard let self = self else { return }
                 let entities = box.value
                 for (entityId, snap) in entities {
-                    guard let bals = try? await self.getBalances(objectId: entityId) else { continue }
-                    box.update { $0[entityId] = BalanceSnapshot(entityId: entityId, entityPath: snap.entityPath, balances: bals) }
+                    do {
+                        let bals = try await self.getBalances(objectId: entityId)
+                        box.update { $0[entityId] = BalanceSnapshot(entityId: entityId, entityPath: snap.entityPath, balances: bals) }
+                    } catch {
+                        self.log.warning("watch",
+                                         "balances gap recovery refetch failed",
+                                         error: error,
+                                         metadata: ["entityId": entityId])
+                    }
                 }
             }
         }
 
         await ws.watchPath(path)
 
-        if let objects = try? await self.listObjects(path: path == "/" ? nil : path) {
+        do {
+            let objects = try await self.listObjects(path: path == "/" ? nil : path)
             for obj in objects.objects {
-                if let bals = try? await self.getBalances(objectId: obj.id.rawValue), !bals.isEmpty {
-                    box.update { $0[obj.id.rawValue] = BalanceSnapshot(entityId: obj.id.rawValue, entityPath: obj.path, balances: bals) }
+                do {
+                    let bals = try await self.getBalances(objectId: obj.id.rawValue)
+                    if !bals.isEmpty {
+                        box.update { $0[obj.id.rawValue] = BalanceSnapshot(entityId: obj.id.rawValue, entityPath: obj.path, balances: bals) }
+                    }
+                } catch {
+                    self.log.warning("watch",
+                                     "balances initial snapshot failed for object",
+                                     error: error,
+                                     metadata: ["entityId": obj.id.rawValue, "path": obj.path])
                 }
             }
+        } catch {
+            self.log.warning("watch",
+                             "balances initial listObjects failed",
+                             error: error,
+                             metadata: ["path": path])
         }
         state.update { $0 = .connected }
 
@@ -197,7 +233,16 @@ extension Arca {
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
                 guard let self = self, !stoppedBox.value else { return }
-                guard let val = try? await self.getObjectValuation(path: path) else { return }
+                let val: ObjectValuation
+                do {
+                    val = try await self.getObjectValuation(path: path)
+                } catch {
+                    self.log.warning("watch",
+                                     "object valuation gap recovery refetch failed",
+                                     error: error,
+                                     metadata: ["path": path])
+                    return
+                }
                 guard !stoppedBox.value else { return }
                 let currentMids = midsBox.value
                 let revalued = currentMids.isEmpty ? val : val.revalued(with: currentMids)
@@ -228,7 +273,9 @@ extension Arca {
                     watchIdBox.update { $0 = wid }
 
                     if rawEvent.driftCorrected == true {
-                        print("[Arca] Warning: Valuation drift corrected for \(eventPath) (watchId: \(wid)). Previous value was stale.")
+                        self.log.warning("watch",
+                                         "valuation drift corrected; previous value was stale",
+                                         metadata: ["path": eventPath, "watchId": wid])
                     }
 
                     let currentMids = midsBox.value
@@ -439,7 +486,14 @@ extension Arca {
                             continue
                         }
                         widBox.update { $0 = newWatch.watchId.rawValue }
-                        try? await self.destroyAggregationWatch(watchId: oldWatchId)
+                        do {
+                            try await self.destroyAggregationWatch(watchId: oldWatchId)
+                        } catch {
+                            self.log.debug("watch",
+                                           "destroyAggregationWatch cleanup failed (best-effort)",
+                                           error: error,
+                                           metadata: ["watchId": oldWatchId])
+                        }
                         structuralBox.update { $0 = newWatch.aggregation }
                         let currentMids = midsBox.value
                         let revalued = currentMids.isEmpty ? newWatch.aggregation : newWatch.aggregation.revalued(with: currentMids)
@@ -513,7 +567,14 @@ extension Arca {
                 continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 await ws.releaseMids()
-                try? await self.destroyAggregationWatch(watchId: widBox.value)
+                do {
+                    try await self.destroyAggregationWatch(watchId: widBox.value)
+                } catch {
+                    self.log.debug("watch",
+                                   "destroyAggregationWatch cleanup failed (best-effort)",
+                                   error: error,
+                                   metadata: ["watchId": widBox.value])
+                }
             },
             updateCallbacks: aggCallbacks
         )
@@ -551,11 +612,17 @@ extension Arca {
                     streamState.update { $0 = .reconnecting }
                 } else if s == .connected && streamState.value == .reconnecting {
                     guard let self = self else { continue }
-                    if let refreshed = try? await self.getExchangeState(objectId: objectId) {
+                    do {
+                        let refreshed = try await self.getExchangeState(objectId: objectId)
                         structuralBox.update { $0 = refreshed }
                         let currentMids = midsBox.value
                         let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
                         stateBox.update { $0 = revalued }
+                    } catch {
+                        self.log.warning("watch",
+                                         "exchange state refresh on reconnect failed",
+                                         error: error,
+                                         metadata: ["objectId": objectId])
                     }
                     streamState.update { $0 = .connected }
                 }
@@ -577,9 +644,16 @@ extension Arca {
                        hasInlineStructuralExchangeState(state) {
                         structural = state
                     } else {
-                        guard let self = self,
-                              let fetched = try? await self.getExchangeState(objectId: objectId) else { continue }
-                        structural = fetched
+                        guard let self = self else { continue }
+                        do {
+                            structural = try await self.getExchangeState(objectId: objectId)
+                        } catch {
+                            self.log.warning("watch",
+                                             "exchange state refetch failed",
+                                             error: error,
+                                             metadata: ["objectId": objectId])
+                            continue
+                        }
                     }
                     structuralBox.update { $0 = structural }
                     let currentMids = midsBox.value
@@ -717,7 +791,19 @@ extension Arca {
             guard !fetchInFlight.value else { return }
             fetchInFlight.update { $0 = true }
             defer { fetchInFlight.update { $0 = false } }
-            guard let resp = try? await self.listFills(objectId: objectId, market: market, limit: limit) else { return }
+            let resp: FillListResponse
+            do {
+                resp = try await self.listFills(objectId: objectId, market: market, limit: limit)
+            } catch {
+                self.log.warning("watch",
+                                 "fills snapshot refetch failed",
+                                 error: error,
+                                 metadata: [
+                                     "objectId": objectId,
+                                     "market": market ?? "",
+                                 ])
+                return
+            }
             box.update { $0 = resp.fills }
             fillIdSet.update { ids in
                 ids.removeAll()

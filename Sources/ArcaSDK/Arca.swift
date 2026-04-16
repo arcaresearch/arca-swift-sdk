@@ -46,6 +46,11 @@ public final class Arca: Sendable {
     public let tokenManager: TokenManager
     public let historyCache: HistoryCache
 
+    /// Diagnostic logger. Exposed so builders can log their own records
+    /// alongside SDK records (same subsystem/handler), and so the SDK's own
+    /// extensions can reach the logger from call sites outside this file.
+    public let log: ArcaLogger
+
     /// Base URL for the candle CDN. Defaults to `https://data.arcaos.io`.
     /// `getCandles` fetches finalized chunks from the CDN and falls back to
     /// the REST API for the current (in-progress) period.
@@ -73,7 +78,9 @@ public final class Arca: Sendable {
         tokenProvider: TokenProvider? = nil,
         cache: CacheConfig = CacheConfig(),
         urlSessionConfiguration: URLSessionConfiguration = .default,
-        candleCdnBaseUrl: String? = Arca.defaultCdnBaseUrl
+        candleCdnBaseUrl: String? = Arca.defaultCdnBaseUrl,
+        logLevel: ArcaLogLevel = .warning,
+        logHandler: ArcaLogHandler? = nil
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
@@ -81,6 +88,11 @@ public final class Arca: Sendable {
         self.candleCdnBaseUrl = candleCdnBaseUrl?.isEmpty == true ? nil : candleCdnBaseUrl
         self.tokenManager = TokenManager(provider: tokenProvider)
         self.historyCache = HistoryCache(config: cache)
+        self.log = ArcaLogger(minLevel: logLevel, handler: logHandler)
+
+        let initialTokenManager = self.tokenManager
+        let initialLogger = self.log
+        Task { await initialTokenManager.attachLogger(initialLogger) }
 
         let mgr = self.tokenManager
         var onUnauthorized: (@Sendable () async throws -> String)?
@@ -99,7 +111,8 @@ public final class Arca: Sendable {
             baseURL: baseURL,
             urlSessionConfiguration: urlSessionConfiguration,
             onUnauthorized: onUnauthorized,
-            onAuthError: onAuthError
+            onAuthError: onAuthError,
+            logger: self.log
         )
 
         let wsURL = Self.httpToWebSocket(baseURL)
@@ -107,7 +120,8 @@ public final class Arca: Sendable {
             baseURL: wsURL,
             token: token,
             realmId: resolved,
-            getToken: wsGetToken
+            getToken: wsGetToken,
+            logger: self.log
         )
 
         if tokenProvider != nil {
@@ -131,6 +145,7 @@ public final class Arca: Sendable {
         client: ArcaClient,
         ws: WebSocketManager,
         historyCache: HistoryCache,
+        log: ArcaLogger,
         candleCdnBaseUrl: String? = nil
     ) {
         self.realmId = realmId
@@ -139,6 +154,7 @@ public final class Arca: Sendable {
         self.client = client
         self.ws = ws
         self.historyCache = historyCache
+        self.log = log
     }
 
     /// Create an Arca instance using only a token provider (no initial token).
@@ -153,7 +169,9 @@ public final class Arca: Sendable {
         baseURL: URL = URL(string: "https://api.arcaos.io")!,
         realmId: String? = nil,
         cache: CacheConfig = CacheConfig(),
-        candleCdnBaseUrl: String? = defaultCdnBaseUrl
+        candleCdnBaseUrl: String? = defaultCdnBaseUrl,
+        logLevel: ArcaLogLevel = .warning,
+        logHandler: ArcaLogHandler? = nil
     ) async throws -> Arca {
         let token = try await tokenProvider()
         return try Arca(
@@ -162,7 +180,9 @@ public final class Arca: Sendable {
             realmId: realmId,
             tokenProvider: tokenProvider,
             cache: cache,
-            candleCdnBaseUrl: candleCdnBaseUrl
+            candleCdnBaseUrl: candleCdnBaseUrl,
+            logLevel: logLevel,
+            logHandler: logHandler
         )
     }
 

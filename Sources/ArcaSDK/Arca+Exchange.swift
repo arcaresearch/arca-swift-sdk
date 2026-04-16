@@ -475,6 +475,7 @@ extension Arca {
                 interval: interval,
                 startMs: start,
                 endMs: end,
+                logger: log,
                 apiFallback: { [client] s, e in
                     var q: [String: String] = ["interval": interval.rawValue]
                     q["startTime"] = String(s)
