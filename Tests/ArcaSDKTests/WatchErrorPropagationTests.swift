@@ -58,15 +58,17 @@ final class WatchErrorPropagationTests: XCTestCase {
         let arca = makeArca(logLevel: .debug, logHandler: handler)
         _ = try? await arca.watchFills(objectId: "nonexistent")
 
-        let deadline = Date().addingTimeInterval(1.0)
-        while handler.records.isEmpty, Date() < deadline {
+        let isRelevant: (ArcaLogRecord) -> Bool = { record in
+            record.level >= .warning &&
+            (record.category == "network" || record.category == "watch")
+        }
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while !handler.records.contains(where: isRelevant), Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        let relevant = handler.records.filter {
-            $0.level >= .warning &&
-            ($0.category == "network" || $0.category == "watch")
-        }
+        let relevant = handler.records.filter(isRelevant)
         XCTAssertFalse(relevant.isEmpty,
                        "Expected at least one warning record on network/watch category; got \(handler.records.map { ($0.level, $0.category, $0.message) })")
     }
