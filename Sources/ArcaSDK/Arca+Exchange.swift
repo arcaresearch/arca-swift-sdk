@@ -383,6 +383,40 @@ extension Arca {
         try await client.get("/exchange/market/meta")
     }
 
+    /// Look up a single asset by canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:TSLA"`).
+    ///
+    /// Lazily fetches and caches market metadata on first call. Subsequent
+    /// calls return from cache without a network request.
+    ///
+    /// ```swift
+    /// let btc = try await arca.asset("hl:BTC")
+    /// print(btc?.symbol)       // "BTC"
+    /// print(btc?.displayName)  // nil or "Bitcoin"
+    /// print(btc?.logoUrl)      // "https://..."
+    /// ```
+    ///
+    /// - Parameter coin: Canonical coin ID (the `name` field on `SimMetaAsset`).
+    /// - Returns: The matching `SimMetaAsset`, or `nil` if not found.
+    public func asset(_ coin: String) async throws -> SimMetaAsset? {
+        let map = try await ensureMetaLoaded()
+        return map[coin]
+    }
+
+    /// Eagerly fetch and cache market metadata.
+    ///
+    /// Call at app startup to avoid latency on the first ``asset(_:)`` call.
+    /// Safe to call multiple times — skips the fetch if already cached.
+    public func preloadMarketMeta() async throws {
+        _ = try await ensureMetaLoaded()
+    }
+
+    /// Force re-fetch market metadata, replacing the cache.
+    ///
+    /// Use after a new asset is listed or when metadata may have changed.
+    public func refreshMarketMeta() async throws {
+        _ = try await ensureMetaLoaded(forceRefresh: true)
+    }
+
     /// Get current mid prices for all assets.
     public func getMarketMids() async throws -> SimMidsResponse {
         try await client.get("/exchange/market/mids")
@@ -557,10 +591,9 @@ extension Arca {
 
         var resolvedFeeScale = opts.feeScale ?? 1.0
         if opts.feeScale == nil {
-            if let tickers = try? await getMarketTickers(),
-               let ticker = tickers.tickers.first(where: { $0.coin == opts.coin }),
-               ticker.feeScale > 0 {
-                resolvedFeeScale = ticker.feeScale
+            if let meta = try? await asset(opts.coin),
+               let scale = meta.feeScale, scale > 0 {
+                resolvedFeeScale = scale
             }
         }
 

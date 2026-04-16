@@ -32,6 +32,12 @@ struct AutoTrackingState: Sendable {
     var exchange: ExchangeStateWatchStream?
 }
 
+/// Thread-safe cache for market metadata, keyed by canonical coin ID.
+struct MetaCacheState: Sendable {
+    var assets: [String: SimMetaAsset]?
+    var inflight: Task<[String: SimMetaAsset], Error>?
+}
+
 public final class Arca: Sendable {
     public static let defaultCdnBaseUrl = "https://data.arcaos.io"
 
@@ -47,6 +53,7 @@ public final class Arca: Sendable {
     public let candleCdnBaseUrl: String?
 
     let autoTracking = SendableBox(AutoTrackingState())
+    let metaCache = SendableBox(MetaCacheState())
 
     private let realmId: String
 
@@ -286,6 +293,43 @@ public final class Arca: Sendable {
         default: break
         }
         return components.url!
+    }
+
+    // MARK: - Market Meta Cache
+
+    /// Ensures market metadata is loaded, coalescing concurrent requests.
+    /// Returns the cached dictionary keyed by canonical coin ID (`SimMetaAsset.name`).
+    func ensureMetaLoaded(forceRefresh: Bool = false) async throws -> [String: SimMetaAsset] {
+        if !forceRefresh, let cached = metaCache.value.assets {
+            return cached
+        }
+
+        let state = metaCache.updateAndGet { state in
+            if forceRefresh {
+                state.inflight?.cancel()
+                state.assets = nil
+                state.inflight = nil
+            }
+            guard state.inflight == nil else { return }
+            state.inflight = Task<[String: SimMetaAsset], Error> { [self] in
+                let response = try await getMarketMeta()
+                var map: [String: SimMetaAsset] = [:]
+                map.reserveCapacity(response.universe.count)
+                for asset in response.universe {
+                    map[asset.name] = asset
+                }
+                metaCache.update { s in
+                    s.assets = map
+                    s.inflight = nil
+                }
+                return map
+            }
+        }
+
+        guard let task = state.inflight else {
+            return state.assets ?? [:]
+        }
+        return try await task.value
     }
 
     // MARK: - Order Breakdown
