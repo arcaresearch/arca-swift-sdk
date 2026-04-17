@@ -313,4 +313,33 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertEqual(result.tokens, "0")
         XCTAssertEqual(result.totalSpend, "0")
     }
+
+    // MARK: - Maintenance margin rate
+
+    func testThreadsMaintenanceMarginRateThrough() {
+        // Backend derives MMR per-asset from its margin table
+        // (0.5 / firstTier.maxLeverage). The client-side derivation must
+        // honor the value the caller resolved for the asset, not hardcode
+        // 0.03 — which would feed a wrong number into Arca.orderBreakdown's
+        // liquidation estimate for tiered assets like BTC (true MMR ~= 0.01).
+        let derived = deriveActiveAssetData(
+            from: makeState(),
+            coin: "BTC", markPx: 80000, leverage: 5, side: .buy,
+            maintenanceMarginRate: "0.01"
+        )
+        XCTAssertNotNil(derived)
+        XCTAssertEqual(derived?.maintenanceMarginRate, "0.01")
+    }
+
+    func testDefaultsMaintenanceMarginRateTo003WhenOmitted() {
+        // Backwards-compat: callers that don't yet pass MMR (or callers
+        // that can't resolve it) get the same global default the backend
+        // uses for assets without a margin table.
+        let derived = deriveActiveAssetData(
+            from: makeState(),
+            coin: "BTC", markPx: 80000, leverage: 5, side: .buy
+        )
+        XCTAssertNotNil(derived)
+        XCTAssertEqual(derived?.maintenanceMarginRate, "0.03")
+    }
 }

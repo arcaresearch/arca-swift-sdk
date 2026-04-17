@@ -615,6 +615,25 @@ extension Arca {
             }
         }
 
+        // MMR is per-asset and effectively static, but it depends on the
+        // asset's margin table on the server (`0.5 / firstTier.maxLeverage`).
+        // The client can't derive it from market meta alone (margin tables
+        // aren't exposed), so we fetch it once via getActiveAssetData and
+        // feed it into recompute. Without this, every recompute would
+        // hardcode "0.03", producing wrong liquidation estimates in
+        // `Arca.orderBreakdown` for any tiered asset (e.g. BTC at 1%).
+        let mmrBox = SendableBox<String?>(opts.maintenanceMarginRate)
+        if opts.maintenanceMarginRate == nil {
+            if let data = try? await getActiveAssetData(
+                objectId: opts.objectId,
+                coin: opts.coin,
+                builderFeeBps: opts.builderFeeBps,
+                leverage: opts.leverage
+            ) {
+                mmrBox.update { $0 = data.maintenanceMarginRate }
+            }
+        }
+
         let exchangeStateBox = SendableBox<ExchangeState?>(initialExchangeState)
 
         func recompute() -> ActiveAssetData? {
@@ -629,7 +648,8 @@ extension Arca {
                 side: opts.side,
                 builderFeeBps: opts.builderFeeBps,
                 szDecimals: opts.szDecimals,
-                feeScale: resolvedFeeScale
+                feeScale: resolvedFeeScale,
+                maintenanceMarginRate: mmrBox.value
             )
         }
 

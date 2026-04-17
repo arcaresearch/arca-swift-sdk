@@ -38,7 +38,13 @@ public func deriveActiveAssetData(
     side: OrderSide,
     builderFeeBps: Int = 0,
     szDecimals: Int = 5,
-    feeScale: Double = 1
+    feeScale: Double = 1,
+    // Per-asset base MMR resolved by the caller (e.g. from the initial
+    // `getActiveAssetData` fetch). Server derives this from the asset's
+    // margin table (`0.5 / firstTier.maxLeverage`) and falls back to 0.03
+    // when there is no table. We fall back to the same default when the
+    // caller omits it.
+    maintenanceMarginRate: String? = nil
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
@@ -101,6 +107,6 @@ public func deriveActiveAssetData(
         availableToTrade: toDecimalString(rawAvailableUsd),
         markPx: toDecimalString(markPx),
         feeRate: toDecimalString(feeRate),
-        maintenanceMarginRate: "0.03"
+        maintenanceMarginRate: maintenanceMarginRate ?? "0.03"
     )
 }
