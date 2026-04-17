@@ -28,6 +28,9 @@ final class MarketMetaCacheTests: XCTestCase {
         XCTAssertEqual(btc?.symbol, "BTC")
         XCTAssertEqual(btc?.exchange, "hl")
         XCTAssertEqual(btc?.maxLeverage, 50)
+        XCTAssertEqual(btc?.logoUrl, "https://example.com/btc.png")
+        XCTAssertEqual(btc?.logoSources?.count, 1)
+        XCTAssertEqual(btc?.logoSources?.first?.width, 128)
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
     }
 
@@ -192,6 +195,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "symbol": "BTC",
                 "displayName": null,
                 "logoUrl": "https://example.com/btc.png",
+                "logoSources": [{"url": "https://example.com/btc-128.webp", "format": "webp", "width": 128}],
                 "exchange": "hl",
                 "isHip3": false,
                 "deployerDisplayName": null,

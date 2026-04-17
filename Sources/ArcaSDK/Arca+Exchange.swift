@@ -392,7 +392,8 @@ extension Arca {
     /// let btc = try await arca.asset("hl:BTC")
     /// print(btc?.symbol)       // "BTC"
     /// print(btc?.displayName)  // nil or "Bitcoin"
-    /// print(btc?.logoUrl)      // "https://..."
+    /// print(btc?.logoUrl)      // "https://...-128.webp" (default 128px)
+    /// print(btc?.logoSources?.first?.width) // 256
     /// ```
     ///
     /// - Parameter coin: Canonical coin ID (the `name` field on `SimMetaAsset`).

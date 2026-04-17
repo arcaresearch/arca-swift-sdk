@@ -337,12 +337,19 @@ public struct CandleHistoryBounds: Codable, Sendable {
     public let hlEarliestMs: Int
 }
 
+public struct LogoSource: Codable, Sendable {
+    public let url: String
+    public let format: String
+    public let width: Int
+}
+
 public struct SimMetaAsset: Codable, Sendable {
     public let name: String
     public let dex: String?
     public let symbol: String
     public let displayName: String?
     public let logoUrl: String?
+    public let logoSources: [LogoSource]?
     public let exchange: String
     public let isHip3: Bool?
     public let deployerDisplayName: String?
