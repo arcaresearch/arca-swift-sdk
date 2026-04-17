@@ -155,9 +155,7 @@ public final class OrderHandle: @unchecked Sendable {
                 }
             }
 
-            continuation.onTermination = { @Sendable _ in task.cancel() }
-
-            Task {
+            let timeoutTask = Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 if !task.isCancelled {
                     continuation.finish(throwing: ArcaError.unknown(
@@ -167,6 +165,11 @@ public final class OrderHandle: @unchecked Sendable {
                     ))
                     task.cancel()
                 }
+            }
+
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+                timeoutTask.cancel()
             }
         }
     }

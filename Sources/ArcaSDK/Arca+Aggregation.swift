@@ -119,6 +119,9 @@ extension Arca {
     /// when the hour boundary crosses, the live point is promoted to historical
     /// and a new live point starts.
     ///
+    /// The stream buffers the latest value and drops intermediate updates if the consumer
+    /// is slow. Updates are also dropped if the live point hasn't materially changed.
+    ///
     /// - Parameters:
     ///   - path: Object path or path prefix.
     ///     Exact path (no trailing slash): chart for a single object.
@@ -188,7 +191,7 @@ extension Arca {
         let chartBox = SendableBox<[EquityPoint]>(initialChart)
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
 
-        let updates = AsyncStream<EquityChartUpdate> { continuation in
+        let updates = AsyncStream(EquityChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 for await agg in aggStream.updates {
                     let liveEquity = agg.totalEquityUsd
@@ -215,6 +218,13 @@ extension Arca {
                     )
                     var allPoints = historicalBox.value
                     allPoints.append(livePoint)
+                    
+                    let prevPoints = chartBox.value
+                    if prevPoints.count == allPoints.count, prevPoints.last?.equityUsd == liveEquity {
+                        chartBox.update { $0 = allPoints }
+                        continue
+                    }
+                    
                     chartBox.update { $0 = allPoints }
 
                     continuation.yield(EquityChartUpdate(points: allPoints))
@@ -235,6 +245,9 @@ extension Arca {
     /// Create a live P&L chart that merges historical data with real-time
     /// aggregation updates and operation events. The last point reflects
     /// current live P&L. Operation events update cumulative flows client-side.
+    ///
+    /// The stream buffers the latest value and drops intermediate updates if the consumer
+    /// is slow. Updates are also dropped if the live point hasn't materially changed.
     ///
     /// - Parameters:
     ///   - path: Object path or path prefix.
@@ -326,7 +339,7 @@ extension Arca {
         let cumInflowsBox = SendableBox<Double>(currentCumInflows)
         let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
 
-        let updates = AsyncStream<PnlChartUpdate> { continuation in
+        let updates = AsyncStream(PnlChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let aggTask = Task {
                 for await agg in aggStream.updates {
                     let liveEquity = Double(agg.totalEquityUsd) ?? 0
@@ -368,6 +381,20 @@ extension Arca {
                     if anchor == .equity {
                         applyEquityAnchor(to: &allPoints, liveEquity: liveEquity, livePnl: pnl)
                     }
+
+                    let prevPoints = chartBox.value
+                    let isSameValue: Bool
+                    if anchor == .equity {
+                        isSameValue = prevPoints.last?.valueUsd == allPoints.last?.valueUsd
+                    } else {
+                        isSameValue = prevPoints.last?.pnlUsd == allPoints.last?.pnlUsd
+                    }
+
+                    if prevPoints.count == allPoints.count && isSameValue {
+                        chartBox.update { $0 = allPoints }
+                        continue
+                    }
+
                     chartBox.update { $0 = allPoints }
 
                     continuation.yield(PnlChartUpdate(

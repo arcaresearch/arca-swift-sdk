@@ -387,22 +387,29 @@ extension Arca {
             for cb in cbs.values { cb(snap) }
         }
 
+        let unsubsBox = SendableBox<[@Sendable () -> Void]>([])
+
         let updates = AsyncStream<[String: ObjectValuation]> { continuation in
             continuationBox.update { $0 = continuation }
 
+            var tempUnsubs: [@Sendable () -> Void] = []
             for stream in childStreams {
                 let path = stream.path
                 if let v = stream.valuation.value {
                     valuations.update { $0[path] = v }
                 }
-                _ = stream.onUpdate { val in
+                let u1 = stream.onUpdate { val in
                     valuations.update { $0[path] = val }
                     emit()
                 }
-                _ = stream.state.onChange { _ in
+                let stateBox = stream.state
+                let u2 = stateBox.onChange { _ in
                     refreshMergedState()
                 }
+                tempUnsubs.append(u1)
+                tempUnsubs.append { stateBox.removeObserver(u2) }
             }
+            unsubsBox.update { $0 = tempUnsubs }
             emit()
 
             continuation.onTermination = { _ in
@@ -415,6 +422,9 @@ extension Arca {
                 }
                 guard shouldStop else { return }
                 continuationBox.update { $0 = nil }
+                let unsubs = unsubsBox.value
+                for u in unsubs { u() }
+                unsubsBox.update { $0.removeAll() }
                 for s in childStreams {
                     Task { await s.stop() }
                 }
@@ -431,6 +441,9 @@ extension Arca {
             }
             guard shouldStop else { return }
             continuationBox.update { $0 = nil }
+            let unsubs = unsubsBox.value
+            for u in unsubs { u() }
+            unsubsBox.update { $0.removeAll() }
             for s in childStreams {
                 await s.stop()
             }
@@ -787,7 +800,8 @@ extension Arca {
             }
         }
 
-        let fetchFills: @Sendable () async -> Void = { [self] in
+        let fetchFills: @Sendable () async -> Void = { [weak self] in
+            guard let self else { return }
             guard !fetchInFlight.value else { return }
             fetchInFlight.update { $0 = true }
             defer { fetchInFlight.update { $0 = false } }
