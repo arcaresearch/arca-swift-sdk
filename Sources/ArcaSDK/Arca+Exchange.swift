@@ -521,6 +521,12 @@ extension Arca {
     /// is populated on return. Reconnections are handled automatically.
     /// Call `stop()` when done.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only:
+    /// slow consumers (e.g., publishing into SwiftUI `@Published` from a
+    /// background thread) will drop intermediate ticks rather than
+    /// accumulating them in memory. Updates are also skipped when the
+    /// incoming mids contain no actual change.
+    ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
     public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
         await ws.ensureConnected()
@@ -540,16 +546,22 @@ extension Arca {
         await ws.acquireMids(exchange: exchange)
 
         let midsStream = await ws.midsEvents()
-        let updates = AsyncStream<[String: String]> { continuation in
+        let updates = AsyncStream([String: String].self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 for await mids in midsStream {
+                    var changed = false
                     prices.update { current in
                         for (key, value) in mids {
-                            current[key] = value
+                            if current[key] != value {
+                                current[key] = value
+                                changed = true
+                            }
                         }
                     }
                     state.update { $0 = .connected }
-                    continuation.yield(prices.value)
+                    if changed {
+                        continuation.yield(prices.value)
+                    }
                 }
                 continuation.finish()
             }
@@ -573,6 +585,10 @@ extension Arca {
     /// Uses ``getExchangeState(_:)`` + ``watchPrices()`` and recomputes on
     /// price or exchange state changes.
     /// Call `stop()` when done.
+    ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate recomputations rather than
+    /// accumulating them in memory.
     ///
     /// - Parameter options: Trading parameters (object, coin, side, leverage, fees).
     public func watchMaxOrderSize(options opts: MaxOrderSizeWatchOptions) async throws -> MaxOrderSizeWatchStream {
@@ -637,7 +653,7 @@ extension Arca {
             }
         }
 
-        let updates = AsyncStream<ActiveAssetData> { continuation in
+        let updates = AsyncStream(ActiveAssetData.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == opts.objectId || event.entityPath == objectPath else { continue }

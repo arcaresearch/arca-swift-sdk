@@ -93,6 +93,11 @@ extension Arca {
     /// (zoom, resize, jump to date). Use ``CandleChartStream/loadMore`` for
     /// simple backward scrolling.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate snapshots rather than accumulating
+    /// them in memory. The full candle array is always available on
+    /// ``CandleChartStream/candles`` so dropped intermediates are recoverable.
+    ///
     /// - Parameters:
     ///   - coin: Canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
     ///   - interval: Candle interval (e.g. `.oneMinute`)
@@ -180,7 +185,7 @@ extension Arca {
             for cb in cbs.values { cb(update) }
         }
 
-        let updates = AsyncStream<CandleChartUpdate> { continuation in
+        let updates = AsyncStream(CandleChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuationBox.update { $0 = continuation }
 
             let initial = candlesBox.value

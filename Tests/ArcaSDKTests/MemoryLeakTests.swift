@@ -77,6 +77,51 @@ final class MemoryLeakTests: XCTestCase {
         XCTAssertNil(weakArca, "Arca should be deallocated immediately when the fills stream is dropped")
     }
 
+    func testWatchPricesSkipsYieldWhenNoMidChanged() async throws {
+        let arca = makeArca()
+
+        // watchPrices() blocks on ready() until a mids event sets state=.connected.
+        // Inject the initial snapshot from a concurrent task so the call can resolve.
+        let initialInject = Task {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50000","hl:ETH":"3000"},"deliverySeq":1}"#)
+        }
+        let stream = try await arca.watchPrices()
+        await initialInject.value
+
+        // Confirm the initial snapshot reached the prices box.
+        XCTAssertEqual(stream.prices.value["hl:BTC"], "50000")
+
+        // Subscribe to updates; iterator starts AFTER the initial yield, so any
+        // value we observe came from a subsequent inject.
+        let yields = SendableBox<Int>(0)
+        let consumerTask = Task {
+            for await _ in stream.updates {
+                yields.update { $0 += 1 }
+            }
+        }
+
+        // Give the consumer a moment to park on the iterator and drain the
+        // initial snapshot (which was buffered before subscription).
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let baseline = yields.value
+
+        // Inject a duplicate snapshot: same keys, same values, no change.
+        // The dedup logic should skip continuation.yield entirely.
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50000","hl:ETH":"3000"},"deliverySeq":2}"#)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(yields.value, baseline, "Duplicate mids snapshot should not produce a yield")
+
+        // Inject a real change: BTC moves. This should yield.
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50100"},"deliverySeq":3}"#)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertGreaterThan(yields.value, baseline, "Real mid change should produce a yield")
+
+        consumerTask.cancel()
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     func testMergedWatchObjectsUnsubscribesChildren() async throws {
         let arca = makeArca()
         

@@ -202,6 +202,10 @@ extension Arca {
     /// real time without consuming server bandwidth on every tick.
     /// Call `stop()` when done.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate revaluations rather than accumulating
+    /// them in memory.
+    ///
     /// - Parameter path: Path of the Arca object to watch
     /// - Parameter exchange: Exchange identifier for mid prices (default: `"sim"`)
     public func watchObject(path: String, exchange: String = "sim") async throws -> ObjectWatchStream {
@@ -264,7 +268,7 @@ extension Arca {
         let valEvents = await ws.objectValuationEvents()
         let midsStream = await ws.midsEvents()
 
-        let updates = AsyncStream<ObjectValuation> { continuation in
+        let updates = AsyncStream(ObjectValuation.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuationBox.update { $0 = continuation }
 
             let valTask = Task {
@@ -330,6 +334,10 @@ extension Arca {
     /// dictionary keyed by object path. Duplicate paths are ignored (first wins).
     /// Call `stop()` when done.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate revaluations rather than accumulating
+    /// them in memory.
+    ///
     /// - Parameters:
     ///   - paths: Arca object paths to watch
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
@@ -389,7 +397,7 @@ extension Arca {
 
         let unsubsBox = SendableBox<[@Sendable () -> Void]>([])
 
-        let updates = AsyncStream<[String: ObjectValuation]> { continuation in
+        let updates = AsyncStream([String: ObjectValuation].self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuationBox.update { $0 = continuation }
 
             var tempUnsubs: [@Sendable () -> Void] = []
@@ -464,6 +472,10 @@ extension Arca {
     /// structural change events and client-side revaluation from mid prices.
     /// Call `stop()` when done.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate revaluations rather than accumulating
+    /// them in memory.
+    ///
     /// - Parameters:
     ///   - sources: Aggregation sources to track
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
@@ -534,7 +546,7 @@ extension Arca {
         let aggEvents = await ws.aggregationEvents()
         let midsStream = await ws.midsEvents()
 
-        let updates = AsyncStream<PathAggregation> { continuation in
+        let updates = AsyncStream(PathAggregation.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuationBox.update { $0 = continuation }
 
             let aggTask = Task {
@@ -601,6 +613,10 @@ extension Arca {
     /// event matching the object. Reconnections are handled automatically.
     /// Call `stop()` when done.
     ///
+    /// The `updates` stream is buffered to the latest snapshot only: slow
+    /// consumers will drop intermediate revaluations rather than accumulating
+    /// them in memory.
+    ///
     /// - Parameter objectId: Exchange Arca object ID
     public func watchExchangeState(objectId: String, exchange: String = "sim") async throws -> ExchangeStateWatchStream {
         await ws.ensureConnected()
@@ -648,7 +664,7 @@ extension Arca {
         let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
 
-        let updates = AsyncStream<ExchangeState> { [weak self] continuation in
+        let updates = AsyncStream(ExchangeState.self, bufferingPolicy: .bufferingNewest(1)) { [weak self] continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == objectId || event.entityPath == objectPath else { continue }
