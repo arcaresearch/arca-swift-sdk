@@ -232,6 +232,8 @@ public struct ActiveAssetData: Codable, Sendable {
     public let markPx: String
     /// Effective fee rate as a decimal (all-in: exchange taker + platform + builder fee).
     public let feeRate: String
+    /// Base maintenance margin rate as a decimal (e.g. "0.01" for 1%, "0.03" for 3%).
+    public let maintenanceMarginRate: String
 }
 
 // MARK: - Asset Fee Rates
@@ -264,9 +266,11 @@ public struct OrderBreakdownOptions: Sendable {
     public let price: String
     public let side: OrderSide
     public let szDecimals: Int
+    public let maintenanceMarginRate: String?
 
     public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
-                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5) {
+                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5,
+                maintenanceMarginRate: String? = nil) {
         self.amount = amount
         self.amountType = amountType
         self.leverage = leverage
@@ -274,6 +278,7 @@ public struct OrderBreakdownOptions: Sendable {
         self.price = price
         self.side = side
         self.szDecimals = szDecimals
+        self.maintenanceMarginRate = maintenanceMarginRate
     }
 }
 
@@ -293,6 +298,8 @@ public struct OrderBreakdown: Sendable {
     public let price: String
     /// Fee rate used for the calculation.
     public let feeRate: String
+    /// Estimated isolated liquidation price (assumes this is the only position). Omitted if `maintenanceMarginRate` was not provided.
+    public let estimatedLiquidationPrice: String?
 }
 
 // MARK: - Leverage

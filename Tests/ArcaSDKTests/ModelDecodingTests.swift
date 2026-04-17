@@ -957,7 +957,8 @@ final class ModelDecodingTests: XCTestCase {
             "maxSellUsd": "-10000",
             "availableToTrade": "5000",
             "markPx": "65000",
-            "feeRate": "0.00045"
+            "feeRate": "0.00045",
+            "maintenanceMarginRate": "0.03"
         }
         """.data(using: .utf8)!
 
@@ -968,6 +969,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(data.maxBuySize, "0.1538")
         XCTAssertEqual(data.availableToTrade, "5000")
         XCTAssertEqual(data.markPx, "65000")
+        XCTAssertEqual(data.maintenanceMarginRate, "0.03")
     }
 
     // MARK: - Aggregation

@@ -100,6 +100,7 @@ public func deriveActiveAssetData(
         maxSellUsd: toDecimalString(sellMax * markPx),
         availableToTrade: toDecimalString(rawAvailableUsd),
         markPx: toDecimalString(markPx),
-        feeRate: toDecimalString(feeRate)
+        feeRate: toDecimalString(feeRate),
+        maintenanceMarginRate: "0.03"
     )
 }

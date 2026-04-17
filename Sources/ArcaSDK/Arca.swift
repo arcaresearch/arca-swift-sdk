@@ -378,7 +378,8 @@ public final class Arca: Sendable {
         let szDecimals = opts.szDecimals
 
         let zero = OrderBreakdown(tokens: "0", notionalUsd: "0", marginRequired: "0",
-                                  estimatedFee: "0", totalSpend: "0", price: opts.price, feeRate: opts.feeRate)
+                                  estimatedFee: "0", totalSpend: "0", price: opts.price, feeRate: opts.feeRate,
+                                  estimatedLiquidationPrice: nil)
         guard price > 0, leverage > 0, feeRate >= 0, amount > 0 else { return zero }
 
         let notional: Double
@@ -408,6 +409,20 @@ public final class Arca: Sendable {
             return s
         }
 
+        var estimatedLiquidationPrice: String? = nil
+        if let mmrStr = opts.maintenanceMarginRate, let mmr = Double(mmrStr), mmr >= 0, mmr.isFinite {
+            let drop = (1 - mmr) / leverage
+            var liq: Double = -1
+            if opts.side == .buy {
+                liq = price * (1 - drop)
+            } else if opts.side == .sell {
+                liq = price * (1 + drop)
+            }
+            if liq > 0 {
+                estimatedLiquidationPrice = fmt(liq)
+            }
+        }
+
         return OrderBreakdown(
             tokens: fmt(tokens, szDecimals),
             notionalUsd: fmt(actualNotional),
@@ -415,7 +430,8 @@ public final class Arca: Sendable {
             estimatedFee: fmt(estimatedFee),
             totalSpend: fmt(totalSpend),
             price: opts.price,
-            feeRate: opts.feeRate
+            feeRate: opts.feeRate,
+            estimatedLiquidationPrice: estimatedLiquidationPrice
         )
     }
 }
