@@ -291,6 +291,7 @@ extension Arca {
                                 arr.append(contentsOf: res.candles)
                                 arr = dedupCandles(arr)
                             }
+                            historySnapshot.update { $0 = .loaded(count: res.candles.count) }
                             let retryEnd = Int(Date().timeIntervalSince1970 * 1000)
                             coverage.add(from: retryStart, to: retryEnd)
                             if let last = snapshot.last {
