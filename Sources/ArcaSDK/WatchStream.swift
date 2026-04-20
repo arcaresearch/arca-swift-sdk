@@ -1,5 +1,14 @@
 import Foundation
 
+// MARK: - InitialHistoryState
+
+/// State of the initial REST history load for a CandleChartStream.
+public enum InitialHistoryState: Sendable, Equatable {
+    case loading
+    case loaded(count: Int)
+    case failed(error: String)
+}
+
 // MARK: - WatchStreamState
 
 /// Lifecycle state for a watch stream.
@@ -374,6 +383,8 @@ public struct CandleWatchStream: Sendable {
 public struct CandleChartStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
+    /// State of the initial REST history load.
+    public let historySnapshot: SendableBox<InitialHistoryState>
     /// Current candle array (historical + live), sorted by `t`, deduped.
     public let candles: SendableBox<[Candle]>
     /// Async stream of chart updates.

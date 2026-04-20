@@ -134,6 +134,7 @@ extension Arca {
         let nowMs = Int(Date().timeIntervalSince1970 * 1000)
         let startTime = nowMs - interval.milliseconds * count
         let history: CandlesResponse
+        var initialHistoryError: Error?
         do {
             history = try await getCandles(
                 coin: coin,
@@ -145,16 +146,33 @@ extension Arca {
             await ws.releaseCandles(coins: [coin], intervals: [interval])
             throw CancellationError()
         } catch {
-            log.warning("candle",
+            initialHistoryError = error
+            log.error("candle",
                         "initial getCandles failed; showing empty history",
                         error: error,
-                        metadata: ["coin": coin, "interval": interval.rawValue])
+                        metadata: [
+                            "coin": coin,
+                            "interval": interval.rawValue,
+                            "fingerprint": "initial_getcandles_failed"
+                        ])
             history = CandlesResponse(coin: coin, interval: interval.rawValue, candles: [])
         }
 
+        let needsRetry = history.candles.count < count / 2
+        let initialHistoryState: InitialHistoryState
+        if let error = initialHistoryError {
+            initialHistoryState = .failed(error: String(describing: error))
+        } else if needsRetry && history.candles.isEmpty {
+            initialHistoryState = .failed(error: "Empty history response")
+        } else if needsRetry {
+            initialHistoryState = .loaded(count: history.candles.count) // or failed?
+        } else {
+            initialHistoryState = .loaded(count: history.candles.count)
+        }
+        
+        let historySnapshot = SendableBox<InitialHistoryState>(initialHistoryState)
         candlesBox.update { $0 = dedupCandles(history.candles) }
         state.update { $0 = .connected }
-        let needsRetry = history.candles.count < count / 2
 
         if !needsRetry && !history.candles.isEmpty {
             coverage.add(from: startTime, to: nowMs)
@@ -202,7 +220,11 @@ extension Arca {
                     let snapshot = candlesBox.updateAndGet { arr in
                         applyCandle(latest, to: &arr)
                     }
-                    yieldSnapshot(continuation, snapshot, latest)
+                    
+                    // Gate WS-only snapshots until history succeeds
+                    if case .loaded = historySnapshot.value {
+                        yieldSnapshot(continuation, snapshot, latest)
+                    }
                     _ = ws
                 }
                 continuation.finish()
@@ -461,6 +483,7 @@ extension Arca {
 
         return CandleChartStream(
             state: state,
+            historySnapshot: historySnapshot,
             candles: candlesBox,
             updates: updates,
             updateCallbacks: chartCallbacks,

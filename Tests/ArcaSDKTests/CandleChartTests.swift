@@ -573,6 +573,7 @@ final class CandleChartTests: XCTestCase {
 
         let stream = CandleChartStream(
             state: SendableBox(.connected),
+            historySnapshot: SendableBox(.loading),
             candles: candlesBox,
             updates: AsyncStream { $0.finish() },
             updateCallbacks: callbacks,
@@ -606,6 +607,7 @@ final class CandleChartTests: XCTestCase {
 
         let stream = CandleChartStream(
             state: SendableBox(.connected),
+            historySnapshot: SendableBox(.loading),
             candles: SendableBox([]),
             updates: AsyncStream { $0.finish() },
             updateCallbacks: callbacks,
