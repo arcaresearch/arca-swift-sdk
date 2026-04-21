@@ -257,7 +257,53 @@ public enum OrderBreakdownAmountType: String, Sendable {
     case tokens
 }
 
+/// Existing same-coin position passed via ``OrderBreakdownAccountContext``.
+/// The merge math in ``Arca/orderBreakdown(options:)`` mirrors
+/// `PositionService.ApplyFill` in the sim-exchange backend (same-side blends
+/// entry, opposite-side reduces or flips).
+public struct OrderBreakdownExistingPosition: Sendable {
+    public let side: PositionSide
+    public let size: String
+    public let entryPrice: String
+
+    public init(side: PositionSide, size: String, entryPrice: String) {
+        self.side = side
+        self.size = size
+        self.entryPrice = entryPrice
+    }
+}
+
+/// Account-wide context required by ``Arca/orderBreakdown(options:)`` to
+/// produce a cross-margin liquidation estimate. The estimate matches the
+/// formula the sim-exchange backend uses at read time
+/// (`marginAvailable = equity - maintenanceMargin`, then
+/// `liq = mid -/+ marginAvailable / size`).
+public struct OrderBreakdownAccountContext: Sendable {
+    /// Account equity in USD. From `ExchangeState.marginSummary.equity`.
+    public let equity: String
+    /// Total maintenance margin requirement (USD) from all positions in the
+    /// account EXCEPT any position in the same coin as this order. Compute by
+    /// summing `mmr * size * entryPrice` across
+    /// `exchangeState.positions.filter { $0.coin != coin }`.
+    public let otherMaintenanceMargin: String
+    /// Existing open position in the same coin as this order, if any. Omit
+    /// when the account has no position in this coin.
+    public let existingPosition: OrderBreakdownExistingPosition?
+
+    public init(equity: String, otherMaintenanceMargin: String,
+                existingPosition: OrderBreakdownExistingPosition? = nil) {
+        self.equity = equity
+        self.otherMaintenanceMargin = otherMaintenanceMargin
+        self.existingPosition = existingPosition
+    }
+}
+
 /// Input options for ``Arca/orderBreakdown(options:)``.
+///
+/// When `maintenanceMarginRate` is provided, `accountContext` must also be
+/// provided (use the dedicated initializer) so the returned
+/// `estimatedLiquidationPrice` reflects cross-margin reality rather than a
+/// misleading isolated-position estimate.
 public struct OrderBreakdownOptions: Sendable {
     public let amount: String
     public let amountType: OrderBreakdownAmountType
@@ -267,10 +313,29 @@ public struct OrderBreakdownOptions: Sendable {
     public let side: OrderSide
     public let szDecimals: Int
     public let maintenanceMarginRate: String?
+    public let accountContext: OrderBreakdownAccountContext?
 
+    /// Initializer for callers that don't need a liquidation estimate.
+    public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
+                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5) {
+        self.amount = amount
+        self.amountType = amountType
+        self.leverage = leverage
+        self.feeRate = feeRate
+        self.price = price
+        self.side = side
+        self.szDecimals = szDecimals
+        self.maintenanceMarginRate = nil
+        self.accountContext = nil
+    }
+
+    /// Initializer that requests a cross-margin liquidation estimate.
+    /// Both `maintenanceMarginRate` and `accountContext` are required so the
+    /// helper has the inputs it needs to compute a faithful estimate.
     public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
                 feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5,
-                maintenanceMarginRate: String? = nil) {
+                maintenanceMarginRate: String,
+                accountContext: OrderBreakdownAccountContext) {
         self.amount = amount
         self.amountType = amountType
         self.leverage = leverage
@@ -279,6 +344,7 @@ public struct OrderBreakdownOptions: Sendable {
         self.side = side
         self.szDecimals = szDecimals
         self.maintenanceMarginRate = maintenanceMarginRate
+        self.accountContext = accountContext
     }
 }
 
@@ -298,7 +364,13 @@ public struct OrderBreakdown: Sendable {
     public let price: String
     /// Fee rate used for the calculation.
     public let feeRate: String
-    /// Estimated isolated liquidation price (assumes this is the only position). Omitted if `maintenanceMarginRate` was not provided.
+    /// Estimated cross-margin liquidation price for the position that will
+    /// exist after this order fills. Computed using the supplied
+    /// `accountContext` (account equity, maintenance margin from other
+    /// positions, and any existing same-coin position to merge with).
+    /// Omitted when `maintenanceMarginRate` / `accountContext` were not
+    /// provided, when the order fully closes an opposite-side position, or
+    /// when no positive liquidation price exists.
     public let estimatedLiquidationPrice: String?
 }
 

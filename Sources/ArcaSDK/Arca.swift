@@ -410,16 +410,32 @@ public final class Arca: Sendable {
         }
 
         var estimatedLiquidationPrice: String? = nil
-        if let mmrStr = opts.maintenanceMarginRate, let mmr = Double(mmrStr), mmr >= 0, mmr.isFinite {
-            let drop = (1 - mmr) / leverage
-            var liq: Double = -1
-            if opts.side == .buy {
-                liq = price * (1 - drop)
-            } else if opts.side == .sell {
-                liq = price * (1 + drop)
-            }
-            if liq > 0 {
-                estimatedLiquidationPrice = fmt(liq)
+        if let mmrStr = opts.maintenanceMarginRate,
+           let ctx = opts.accountContext,
+           let mmr = Double(mmrStr), mmr >= 0, mmr.isFinite,
+           let equity = Double(ctx.equity), equity.isFinite,
+           let otherMM = Double(ctx.otherMaintenanceMargin), otherMM.isFinite {
+            let newSide: PositionSide = opts.side == .buy ? .long : .short
+            if let merged = mergeOrderWithPosition(newSide: newSide, newSize: tokens,
+                                                   fillPrice: price, existing: ctx.existingPosition),
+               merged.size > 0 {
+                // Cross-margin formula — matches `crossMarginLiqPrice` in
+                // backend/services/sim-exchange-go/internal/service/account.go.
+                // MM uses entry-based notional to stay consistent with backend's
+                // `CalculateMaintenanceMargin` (treats MM as constant w.r.t. mark).
+                let mmMerged = mmr * merged.size * merged.entry
+                let equityPost = equity - estimatedFee
+                let marginAvail = equityPost - (otherMM + mmMerged)
+                if marginAvail > 0 {
+                    // At the fill instant, mid == price. The merged position's
+                    // uPnL is invariant to the new fill, so equityPost only
+                    // changes by the fee.
+                    let perUnit = marginAvail / merged.size
+                    let liq = merged.side == .long ? price - perUnit : price + perUnit
+                    if liq > 0 {
+                        estimatedLiquidationPrice = fmt(liq)
+                    }
+                }
             }
         }
 
@@ -434,6 +450,38 @@ public final class Arca: Sendable {
             estimatedLiquidationPrice: estimatedLiquidationPrice
         )
     }
+}
+
+/// Merge a hypothetical fill with an existing same-coin position using the
+/// same rules as `PositionService.ApplyFill` in
+/// backend/services/sim-exchange-go/internal/service/position.go. Returns
+/// the resulting (size, entry, side) triple, or `nil` when the fill would
+/// fully close the existing position.
+func mergeOrderWithPosition(
+    newSide: PositionSide,
+    newSize: Double,
+    fillPrice: Double,
+    existing: OrderBreakdownExistingPosition?
+) -> (size: Double, entry: Double, side: PositionSide)? {
+    guard newSize.isFinite, newSize > 0, fillPrice.isFinite, fillPrice > 0 else { return nil }
+    guard let existing = existing,
+          let exSize = Double(existing.size), exSize.isFinite, exSize > 0,
+          let exEntry = Double(existing.entryPrice), exEntry.isFinite, exEntry > 0 else {
+        return (newSize, fillPrice, newSide)
+    }
+
+    if existing.side == newSide {
+        let mergedSize = exSize + newSize
+        let mergedEntry = (exSize * exEntry + newSize * fillPrice) / mergedSize
+        return (mergedSize, mergedEntry, newSide)
+    }
+    if newSize < exSize {
+        return (exSize - newSize, exEntry, existing.side)
+    }
+    if newSize == exSize {
+        return nil
+    }
+    return (newSize - exSize, fillPrice, newSide)
 }
 
 /// Validate that a path argument starts with "/".
