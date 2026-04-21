@@ -234,6 +234,8 @@ public struct ActiveAssetData: Codable, Sendable {
     public let feeRate: String
     /// Base maintenance margin rate as a decimal (e.g. "0.01" for 1%, "0.03" for 3%).
     public let maintenanceMarginRate: String
+    /// Ordered margin tiers for this asset, if any.
+    public let marginTiers: [MarginTier]?
 }
 
 // MARK: - Asset Fee Rates
@@ -314,10 +316,12 @@ public struct OrderBreakdownOptions: Sendable {
     public let szDecimals: Int
     public let maintenanceMarginRate: String?
     public let accountContext: OrderBreakdownAccountContext?
+    public let marginTiers: [MarginTier]?
 
     /// Initializer for callers that don't need a liquidation estimate.
     public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
-                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5) {
+                feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5,
+                marginTiers: [MarginTier]? = nil) {
         self.amount = amount
         self.amountType = amountType
         self.leverage = leverage
@@ -327,6 +331,7 @@ public struct OrderBreakdownOptions: Sendable {
         self.szDecimals = szDecimals
         self.maintenanceMarginRate = nil
         self.accountContext = nil
+        self.marginTiers = marginTiers
     }
 
     /// Initializer that requests a cross-margin liquidation estimate.
@@ -334,8 +339,9 @@ public struct OrderBreakdownOptions: Sendable {
     /// helper has the inputs it needs to compute a faithful estimate.
     public init(amount: String, amountType: OrderBreakdownAmountType, leverage: Int,
                 feeRate: String, price: String, side: OrderSide, szDecimals: Int = 5,
-                maintenanceMarginRate: String,
-                accountContext: OrderBreakdownAccountContext) {
+                maintenanceMarginRate: String?,
+                accountContext: OrderBreakdownAccountContext,
+                marginTiers: [MarginTier]? = nil) {
         self.amount = amount
         self.amountType = amountType
         self.leverage = leverage
@@ -345,6 +351,7 @@ public struct OrderBreakdownOptions: Sendable {
         self.szDecimals = szDecimals
         self.maintenanceMarginRate = maintenanceMarginRate
         self.accountContext = accountContext
+        self.marginTiers = marginTiers
     }
 }
 
@@ -364,6 +371,12 @@ public struct OrderBreakdown: Sendable {
     public let price: String
     /// Fee rate used for the calculation.
     public let feeRate: String
+    /// Effective leverage ratio (notional / required margin).
+    public let effectiveLeverage: String?
+    /// Effective maintenance margin rate for the total size.
+    public let effectiveMaintenanceMarginRate: String?
+    /// The notional value marking the start of the next margin tier, if any exist beyond the current notional.
+    public let nextTierThreshold: String?
     /// Estimated cross-margin liquidation price for the position that will
     /// exist after this order fills. Computed using the supplied
     /// `accountContext` (account equity, maintenance margin from other
@@ -372,6 +385,20 @@ public struct OrderBreakdown: Sendable {
     /// provided, when the order fully closes an opposite-side position, or
     /// when no positive liquidation price exists.
     public let estimatedLiquidationPrice: String?
+    
+    public init(tokens: String, notionalUsd: String, marginRequired: String, estimatedFee: String, totalSpend: String, price: String, feeRate: String, effectiveLeverage: String? = nil, effectiveMaintenanceMarginRate: String? = nil, nextTierThreshold: String? = nil, estimatedLiquidationPrice: String? = nil) {
+        self.tokens = tokens
+        self.notionalUsd = notionalUsd
+        self.marginRequired = marginRequired
+        self.estimatedFee = estimatedFee
+        self.totalSpend = totalSpend
+        self.price = price
+        self.feeRate = feeRate
+        self.effectiveLeverage = effectiveLeverage
+        self.effectiveMaintenanceMarginRate = effectiveMaintenanceMarginRate
+        self.nextTierThreshold = nextTierThreshold
+        self.estimatedLiquidationPrice = estimatedLiquidationPrice
+    }
 }
 
 // MARK: - Leverage
@@ -422,6 +449,16 @@ public struct LogoSource: Codable, Sendable {
     public let width: Int
 }
 
+public struct MarginTier: Codable, Sendable {
+    public let lowerBound: String
+    public let maxLeverage: Int
+}
+
+public struct MarginTable: Codable, Sendable {
+    public let description: String
+    public let marginTiers: [MarginTier]
+}
+
 public struct SimMetaAsset: Codable, Sendable {
     public let name: String
     public let dex: String?
@@ -438,12 +475,14 @@ public struct SimMetaAsset: Codable, Sendable {
     public let onlyIsolated: Bool
     /// HIP-3 fee multiplier. Nil or absent for standard perps (defaults to 1.0).
     public let feeScale: Double?
+    public let marginTableId: Int?
     /// Candle history availability. Present when history bounds are known.
     public let candleHistory: CandleHistoryBounds?
 }
 
 public struct SimMetaResponse: Codable, Sendable {
     public let universe: [SimMetaAsset]
+    public let marginTables: [String: MarginTable]?
 }
 
 public struct SimMidsResponse: Codable, Sendable {

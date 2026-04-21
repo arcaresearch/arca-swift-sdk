@@ -44,7 +44,9 @@ public func deriveActiveAssetData(
     // margin table (`0.5 / firstTier.maxLeverage`) and falls back to 0.03
     // when there is no table. We fall back to the same default when the
     // caller omits it.
-    maintenanceMarginRate: String? = nil
+    maintenanceMarginRate: String? = nil,
+    // Ordered margin tiers for laddered leverage. Server populates this for tiered assets.
+    marginTiers: [MarginTier]? = nil
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
@@ -61,12 +63,47 @@ public func deriveActiveAssetData(
     }()
     let builderRate = builderFeeBps > 0 ? Double(builderFeeBps) / 100_000 : 0
     let feeRate = takerRate * effectiveScale + platformRate + builderRate
-    let costPerToken = (markPx / Double(leverage) + markPx * feeRate) * safetyMarginFactor
-    guard costPerToken > 0 else { return nil }
 
     func maxTokensForDir(_ avail: Double) -> Double {
         guard avail.isFinite, avail > 0 else { return 0 }
-        return floorToDecimals(avail / costPerToken, szDecimals)
+        let targetSpend = avail / safetyMarginFactor
+
+        var activeRate = 1.0 / Double(leverage)
+        var deduction = 0.0
+
+        if let tiers = marginTiers, !tiers.isEmpty {
+            let tierMaxLev = tiers[0].maxLeverage
+            var effLev = leverage
+            if tierMaxLev < effLev { effLev = tierMaxLev }
+            activeRate = 1.0 / Double(effLev)
+            var prevRate = activeRate
+            var prevDeduction = 0.0
+
+            for tier in tiers {
+                guard let lowerBound = Double(tier.lowerBound) else { continue }
+
+                let tierLev = tier.maxLeverage
+                var lev = leverage
+                if tierLev < lev { lev = tierLev }
+                let rate = 1.0 / Double(lev)
+
+                let nextDeduction = prevDeduction + lowerBound * (rate - prevRate)
+                let spendAtBound = lowerBound * rate - nextDeduction + lowerBound * feeRate
+
+                if targetSpend < spendAtBound {
+                    break
+                }
+
+                activeRate = rate
+                prevRate = rate
+                prevDeduction = nextDeduction
+                deduction = nextDeduction
+            }
+        }
+
+        let notional = (targetSpend + deduction) / (activeRate + feeRate)
+        guard notional.isFinite, notional > 0 else { return 0 }
+        return floorToDecimals(notional / markPx, szDecimals)
     }
 
     let currentPosition = exchangeState.positions.first { $0.coin == coin }
@@ -107,6 +144,7 @@ public func deriveActiveAssetData(
         availableToTrade: toDecimalString(rawAvailableUsd),
         markPx: toDecimalString(markPx),
         feeRate: toDecimalString(feeRate),
-        maintenanceMarginRate: maintenanceMarginRate ?? "0.03"
+        maintenanceMarginRate: maintenanceMarginRate ?? "0.03",
+        marginTiers: marginTiers
     )
 }

@@ -385,7 +385,39 @@ public final class Arca: Sendable {
         let notional: Double
         switch opts.amountType {
         case .spend:
-            notional = amount / (1 / leverage + feeRate)
+            if let tiers = opts.marginTiers, !tiers.isEmpty {
+                let targetSpend = amount
+                var deduction = 0.0
+                let tierMaxLev = tiers[0].maxLeverage
+                var effLev = Int(leverage)
+                if tierMaxLev < effLev { effLev = tierMaxLev }
+                var activeRate = 1.0 / Double(effLev)
+                var prevRate = activeRate
+                var prevDeduction = 0.0
+
+                for tier in tiers {
+                    guard let lowerBound = Double(tier.lowerBound) else { continue }
+                    let tierLev = tier.maxLeverage
+                    var lev = Int(leverage)
+                    if tierLev < lev { lev = tierLev }
+                    let rate = 1.0 / Double(lev)
+
+                    let nextDeduction = prevDeduction + lowerBound * (rate - prevRate)
+                    let spendAtBound = lowerBound * rate - nextDeduction + lowerBound * feeRate
+
+                    if targetSpend < spendAtBound {
+                        break
+                    }
+
+                    activeRate = rate
+                    prevRate = rate
+                    prevDeduction = nextDeduction
+                    deduction = nextDeduction
+                }
+                notional = (targetSpend + deduction) / (activeRate + feeRate)
+            } else {
+                notional = amount / (1 / leverage + feeRate)
+            }
         case .notional:
             notional = amount
         case .tokens:
@@ -395,9 +427,66 @@ public final class Arca: Sendable {
         let factor = pow(10.0, Double(szDecimals))
         let tokens = floor(notional / price * factor) / factor
         let actualNotional = tokens * price
-        let marginRequired = actualNotional / leverage
+
+        var marginRequiredNum = 0.0
+        var nextTierThresholdNum: Double?
+        var mmRequiredNum: Double?
+
+        if let tiers = opts.marginTiers, !tiers.isEmpty {
+            var deduction = 0.0
+            let tierMaxLev = tiers[0].maxLeverage
+            var effLev = Int(leverage)
+            if tierMaxLev < effLev { effLev = tierMaxLev }
+            var activeRate = 1.0 / Double(effLev)
+            var prevRate = activeRate
+            var prevDeduction = 0.0
+
+            for tier in tiers {
+                guard let lowerBound = Double(tier.lowerBound) else { continue }
+                let tierLev = tier.maxLeverage
+                var lev = Int(leverage)
+                if tierLev < lev { lev = tierLev }
+                let rate = 1.0 / Double(lev)
+
+                if actualNotional < lowerBound {
+                    nextTierThresholdNum = lowerBound
+                    break
+                }
+
+                deduction = prevDeduction + lowerBound * (rate - prevRate)
+
+                activeRate = rate
+                prevRate = rate
+                prevDeduction = deduction
+            }
+            marginRequiredNum = actualNotional * activeRate - deduction
+
+            var mmDeduction = 0.0
+            var mmActiveRate = 0.5 / Double(tiers[0].maxLeverage)
+            var mmPrevRate = mmActiveRate
+            var mmPrevDeduction = 0.0
+
+            for tier in tiers {
+                guard let lowerBound = Double(tier.lowerBound) else { continue }
+                let rate = 0.5 / Double(tier.maxLeverage)
+
+                if actualNotional < lowerBound {
+                    break
+                }
+
+                mmDeduction = mmPrevDeduction + lowerBound * (rate - mmPrevRate)
+
+                mmActiveRate = rate
+                mmPrevRate = rate
+                mmPrevDeduction = mmDeduction
+            }
+            mmRequiredNum = actualNotional * mmActiveRate - mmDeduction
+        } else {
+            marginRequiredNum = actualNotional / leverage
+        }
+
         let estimatedFee = actualNotional * feeRate
-        let totalSpend = marginRequired + estimatedFee
+        let totalSpend = marginRequiredNum + estimatedFee
 
         func fmt(_ v: Double, _ d: Int = 8) -> String {
             guard v.isFinite else { return "0" }
@@ -410,20 +499,42 @@ public final class Arca: Sendable {
         }
 
         var estimatedLiquidationPrice: String? = nil
-        if let mmrStr = opts.maintenanceMarginRate,
+        if (opts.maintenanceMarginRate != nil || opts.marginTiers != nil),
            let ctx = opts.accountContext,
-           let mmr = Double(mmrStr), mmr >= 0, mmr.isFinite,
            let equity = Double(ctx.equity), equity.isFinite,
            let otherMM = Double(ctx.otherMaintenanceMargin), otherMM.isFinite {
             let newSide: PositionSide = opts.side == .buy ? .long : .short
             if let merged = mergeOrderWithPosition(newSide: newSide, newSize: tokens,
                                                    fillPrice: price, existing: ctx.existingPosition),
                merged.size > 0 {
-                // Cross-margin formula — matches `crossMarginLiqPrice` in
-                // backend/services/sim-exchange-go/internal/service/account.go.
-                // MM uses entry-based notional to stay consistent with backend's
-                // `CalculateMaintenanceMargin` (treats MM as constant w.r.t. mark).
-                let mmMerged = mmr * merged.size * merged.entry
+                let mergedNotional = merged.size * merged.entry
+                var mmMerged = 0.0
+
+                if let tiers = opts.marginTiers, !tiers.isEmpty {
+                    var mmDeduction = 0.0
+                    var mmActiveRate = 0.5 / Double(tiers[0].maxLeverage)
+                    var mmPrevRate = mmActiveRate
+                    var mmPrevDeduction = 0.0
+
+                    for tier in tiers {
+                        guard let lowerBound = Double(tier.lowerBound) else { continue }
+                        let rate = 0.5 / Double(tier.maxLeverage)
+
+                        if mergedNotional < lowerBound {
+                            break
+                        }
+
+                        mmDeduction = mmPrevDeduction + lowerBound * (rate - mmPrevRate)
+
+                        mmActiveRate = rate
+                        mmPrevRate = rate
+                        mmPrevDeduction = mmDeduction
+                    }
+                    mmMerged = mergedNotional * mmActiveRate - mmDeduction
+                } else if let mmrStr = opts.maintenanceMarginRate, let mmr = Double(mmrStr), mmr >= 0, mmr.isFinite {
+                    mmMerged = mmr * mergedNotional
+                }
+
                 let equityPost = equity - estimatedFee
                 let marginAvail = equityPost - (otherMM + mmMerged)
                 if marginAvail > 0 {
@@ -442,11 +553,14 @@ public final class Arca: Sendable {
         return OrderBreakdown(
             tokens: fmt(tokens, szDecimals),
             notionalUsd: fmt(actualNotional),
-            marginRequired: fmt(marginRequired),
+            marginRequired: fmt(marginRequiredNum),
             estimatedFee: fmt(estimatedFee),
             totalSpend: fmt(totalSpend),
             price: opts.price,
             feeRate: opts.feeRate,
+            effectiveLeverage: opts.marginTiers != nil ? (actualNotional > 0 ? fmt(actualNotional / marginRequiredNum) : fmt(leverage)) : nil,
+            effectiveMaintenanceMarginRate: opts.marginTiers != nil && mmRequiredNum != nil && actualNotional > 0 ? fmt(mmRequiredNum! / actualNotional) : nil,
+            nextTierThreshold: nextTierThresholdNum != nil ? fmt(nextTierThresholdNum!) : nil,
             estimatedLiquidationPrice: estimatedLiquidationPrice
         )
     }
