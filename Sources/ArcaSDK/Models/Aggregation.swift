@@ -250,16 +250,11 @@ public enum PnlAnchor: Sendable {
     case equity
 }
 
-/// Applies equity-anchor offset to P&L chart points.
-/// Sets `valueUsd` on each point so that a point whose pnl equals `livePnl`
-/// gets `valueUsd` equal to `liveEquity`. The offset (`liveEquity - livePnl`)
-/// is constant for a given call, so historical points remain stable across
-/// mid-price movements — only flow changes (deposits/withdrawals) shift it.
-func applyEquityAnchor(to points: inout [PnlPoint], liveEquity: Double, livePnl: Double) {
-    let offset = liveEquity - livePnl
+/// Populates `valueUsd` with `equityUsd` for equity-anchored P&L charts.
+/// This provides a true historical portfolio value view, rather than a translated P&L curve.
+func applyEquityAnchor(to points: inout [PnlPoint]) {
     for i in points.indices {
-        let ptPnl = Double(points[i].pnlUsd) ?? 0
-        points[i].valueUsd = String(format: "%.2f", ptPnl + offset)
+        points[i].valueUsd = points[i].equityUsd
     }
 }
 

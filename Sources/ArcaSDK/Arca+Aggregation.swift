@@ -327,7 +327,7 @@ extension Arca {
                 equityUsd: agg.totalEquityUsd
             ))
             if anchor == .equity {
-                applyEquityAnchor(to: &initialChart, liveEquity: liveEquity, livePnl: pnl)
+                applyEquityAnchor(to: &initialChart)
             }
         }
 
@@ -379,7 +379,7 @@ extension Arca {
                     allPoints.append(livePoint)
 
                     if anchor == .equity {
-                        applyEquityAnchor(to: &allPoints, liveEquity: liveEquity, livePnl: pnl)
+                        applyEquityAnchor(to: &allPoints)
                     }
 
                     let prevPoints = chartBox.value
