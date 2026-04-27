@@ -1,5 +1,27 @@
 import Foundation
 
+private struct V2HistoryPoint: Codable, Sendable {
+    let ts: String
+    let equityUsd: String
+}
+
+private struct V2HistoryResponse: Codable, Sendable {
+    let points: [V2HistoryPoint]?
+}
+
+private struct V2PnlHistoryPoint: Codable, Sendable {
+    let ts: String
+    let pnlUsd: String
+    let equityUsd: String
+    let valueUsd: String?
+}
+
+private struct V2PnlHistoryResponse: Codable, Sendable {
+    let startEquityUsd: String?
+    let startingEquityUsd: String?
+    let points: [V2PnlHistoryPoint]?
+}
+
 // MARK: - Aggregation, P&L, Equity History
 
 extension Arca {
@@ -64,20 +86,34 @@ extension Arca {
     ) async throws -> PnlHistoryResponse {
         try validatePath(path)
         let key = buildCacheKey("pnlHistory", [
-            "prefix": path, "from": from, "to": to, "points": String(points),
+            "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
         ])
         if let cached: PnlHistoryResponse = historyCache.get(key) {
             return cached
         }
-        let result: PnlHistoryResponse = try await client.get("/objects/pnl/history", query: [
+        let result: V2PnlHistoryResponse = try await client.get("/objects/pnl/history", query: [
             "realmId": realm,
-            "prefix": path,
+            "target": path,
+            "kind": "path",
             "from": from,
             "to": to,
             "points": String(points),
         ])
-        historyCache.set(key, value: result)
-        return result
+        let normalized = PnlHistoryResponse(
+            prefix: path,
+            from: from,
+            to: to,
+            points: result.points?.count ?? 0,
+            startingEquityUsd: result.startEquityUsd ?? result.startingEquityUsd ?? "0",
+            effectiveFrom: nil,
+            pnlPoints: result.points?.map {
+                PnlPoint(timestamp: $0.ts, pnlUsd: $0.pnlUsd, equityUsd: $0.equityUsd, valueUsd: $0.valueUsd)
+            } ?? [],
+            externalFlows: nil,
+            midPrices: nil
+        )
+        historyCache.set(key, value: normalized)
+        return normalized
     }
 
     /// Get equity history (time-series) for objects at a path.
@@ -98,20 +134,28 @@ extension Arca {
     ) async throws -> EquityHistoryResponse {
         try validatePath(path)
         let key = buildCacheKey("equityHistory", [
-            "prefix": path, "from": from, "to": to, "points": String(points),
+            "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
         ])
         if let cached: EquityHistoryResponse = historyCache.get(key) {
             return cached
         }
-        let result: EquityHistoryResponse = try await client.get("/objects/aggregate/history", query: [
+        let result: V2HistoryResponse = try await client.get("/objects/aggregate/history", query: [
             "realmId": realm,
-            "prefix": path,
+            "target": path,
+            "kind": "path",
             "from": from,
             "to": to,
             "points": String(points),
         ])
-        historyCache.set(key, value: result)
-        return result
+        let normalized = EquityHistoryResponse(
+            prefix: path,
+            from: from,
+            to: to,
+            points: result.points?.count ?? 0,
+            equityPoints: result.points?.map { EquityPoint(timestamp: $0.ts, equityUsd: $0.equityUsd) } ?? []
+        )
+        historyCache.set(key, value: normalized)
+        return normalized
     }
 
     /// Create a live equity chart that merges historical data with real-time
@@ -158,7 +202,7 @@ extension Arca {
                 history.equityPoints.allSatisfy { abs(Double($0.equityUsd) ?? 0) < 0.01 }
             if allZero {
                 let key = buildCacheKey("equityHistory", [
-                    "prefix": path, "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
                 ])
                 historyCache.delete(key)
                 if let fresh = try? await getEquityHistory(path: path, from: from, to: to, points: points) {
