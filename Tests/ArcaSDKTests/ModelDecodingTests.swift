@@ -1578,7 +1578,7 @@ final class ModelDecodingTests: XCTestCase {
                 "orgId": "org_01def",
                 "name": "Test Realm",
                 "slug": "test-realm",
-                "type": "demo",
+                "type": "development",
                 "description": null,
                 "settings": null,
                 "archivedAt": null,
@@ -1597,7 +1597,7 @@ final class ModelDecodingTests: XCTestCase {
             XCTAssertEqual(realm.id.rawValue, "rlm_01abc")
             XCTAssertEqual(realm.name, "Test Realm")
             XCTAssertEqual(realm.slug, "test-realm")
-            XCTAssertEqual(realm.type, .demo)
+            XCTAssertEqual(realm.type, .development)
             XCTAssertEqual(envelope.entityId, "rlm_01abc")
             XCTAssertEqual(envelope.deliverySeq, 1)
         default:

@@ -37,8 +37,8 @@ extension Arca {
         }
     }
 
-    /// Programmatically fund an Arca object. This is a developer/test tool for
-    /// non-production use (testing, competitions, programmatic account seeding).
+    /// Programmatically fund an Arca object. This is a developer tool for
+    /// development realm use (competitions, programmatic account seeding).
     /// For production deposit flows, use ``createPaymentLink(type:arcaRef:amount:)``.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
@@ -66,8 +66,8 @@ extension Arca {
         }
     }
 
-    /// Programmatically withdraw from an Arca object. This is a developer/test tool
-    /// for non-production use. For production withdrawal flows, use
+    /// Programmatically withdraw from an Arca object. This is a developer tool
+    /// for development realm use. For production withdrawal flows, use
     /// ``createPaymentLink(type:arcaRef:amount:)``.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
@@ -76,7 +76,7 @@ extension Arca {
     /// - Parameters:
     ///   - arcaPath: Source Arca path
     ///   - amount: Amount as decimal string
-    ///   - destinationAddress: On-chain destination address (omit to burn in demo mode)
+    ///   - destinationAddress: On-chain destination address (omit to burn in development mode)
     ///   - path: Optional operation path for idempotency
     public func defundAccount(
         arcaPath: String,

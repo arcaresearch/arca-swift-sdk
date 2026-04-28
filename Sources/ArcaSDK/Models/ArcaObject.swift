@@ -169,11 +169,8 @@ public struct ArcaObjectVersionsResponse: Codable, Sendable {
 // MARK: - Realm
 
 public enum RealmType: String, Codable, Sendable {
-    case demo
-    case production
-    case staging
     case development
-    case testing
+    case production
 }
 
 public struct RealmSettings: Codable, Sendable {
