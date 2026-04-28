@@ -1103,6 +1103,82 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(re.totalEquityUsd, "120700")
     }
 
+    func testPathAggregationRevalued_RevaluesLongPerpFromMids() {
+        let agg = PathAggregation(
+            prefix: "/",
+            totalEquityUsd: "5000",
+            departingUsd: "0",
+            arrivingUsd: nil,
+            breakdown: [
+                AssetBreakdown(
+                    asset: "hl:BTC",
+                    category: .perp,
+                    amount: "0.5",
+                    price: "55000",
+                    valueUsd: "2500",
+                    weightedAvgLeverage: nil,
+                    avgEntryPrice: "50000"
+                ),
+                AssetBreakdown(
+                    asset: "USD",
+                    category: .spot,
+                    amount: "2500",
+                    price: "1",
+                    valueUsd: "2500",
+                    weightedAvgLeverage: nil,
+                    avgEntryPrice: nil
+                ),
+            ],
+            asOf: nil,
+            cumInflowsUsd: nil,
+            cumOutflowsUsd: nil
+        )
+
+        let re = agg.revalued(with: ["hl:BTC": "62000", "USD": "1"])
+
+        XCTAssertEqual(Decimal(string: re.breakdown[0].valueUsd), Decimal(6000))
+        XCTAssertEqual(re.breakdown[0].price, "62000")
+        XCTAssertEqual(Decimal(string: re.totalEquityUsd), Decimal(8500))
+    }
+
+    func testPathAggregationRevalued_RevaluesShortPerpFromMids() {
+        let agg = PathAggregation(
+            prefix: "/",
+            totalEquityUsd: "2900",
+            departingUsd: "0",
+            arrivingUsd: nil,
+            breakdown: [
+                AssetBreakdown(
+                    asset: "hl:ETH",
+                    category: .perp,
+                    amount: "2",
+                    price: "3000",
+                    valueUsd: "400",
+                    weightedAvgLeverage: nil,
+                    avgEntryPrice: "-3200"
+                ),
+                AssetBreakdown(
+                    asset: "USD",
+                    category: .spot,
+                    amount: "2500",
+                    price: "1",
+                    valueUsd: "2500",
+                    weightedAvgLeverage: nil,
+                    avgEntryPrice: nil
+                ),
+            ],
+            asOf: nil,
+            cumInflowsUsd: nil,
+            cumOutflowsUsd: nil
+        )
+
+        let re = agg.revalued(with: ["hl:ETH": "2800", "USD": "1"])
+
+        XCTAssertEqual(Decimal(string: re.breakdown[0].valueUsd), Decimal(800))
+        XCTAssertEqual(re.breakdown[0].price, "2800")
+        XCTAssertEqual(Decimal(string: re.totalEquityUsd), Decimal(3300))
+    }
+
     // MARK: - Summary
 
     func testSummaryDecoding() throws {

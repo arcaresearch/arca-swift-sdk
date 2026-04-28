@@ -146,24 +146,53 @@ extension ObjectValuation {
 
 extension PathAggregation {
     /// Returns a copy with totals recomputed from ``breakdown`` using mid prices.
-    /// Spot rows use `amount × mid`; perp and exchange rows keep server ``AssetBreakdown/valueUsd``.
+    /// Spot rows use `amount × mid`; perp rows recompute mark-to-market P&L.
+    /// Exchange rows keep server ``AssetBreakdown/valueUsd``.
     /// ``departingUsd`` and ``arrivingUsd`` are USD-denominated and pass through unchanged.
     public func revalued(with mids: [String: String]) -> PathAggregation {
         let newBreakdown = breakdown.map { entry -> AssetBreakdown in
-            guard entry.category == .spot else { return entry }
-            guard let mid = mids[entry.asset] else { return entry }
-            let amountDec = Decimal(string: entry.amount) ?? 0
-            let priceDec = Decimal(string: mid) ?? 1
-            let value = amountDec * priceDec
-            return AssetBreakdown(
-                asset: entry.asset,
-                category: entry.category,
-                amount: entry.amount,
-                price: mid,
-                valueUsd: "\(value)",
-                weightedAvgLeverage: entry.weightedAvgLeverage,
-                avgEntryPrice: entry.avgEntryPrice
-            )
+            switch entry.category {
+            case .spot:
+                guard let mid = mids[entry.asset] else { return entry }
+                let amountDec = Decimal(string: entry.amount) ?? 0
+                let priceDec = Decimal(string: mid) ?? 1
+                let value = amountDec * priceDec
+                return AssetBreakdown(
+                    asset: entry.asset,
+                    category: entry.category,
+                    amount: entry.amount,
+                    price: mid,
+                    valueUsd: "\(value)",
+                    weightedAvgLeverage: entry.weightedAvgLeverage,
+                    avgEntryPrice: entry.avgEntryPrice
+                )
+            case .perp:
+                guard let mid = mids[entry.asset],
+                      let newMid = Decimal(string: mid),
+                      let oldPrice = entry.price,
+                      let oldMid = Decimal(string: oldPrice),
+                      oldMid != 0,
+                      let avgEntryPrice = entry.avgEntryPrice,
+                      let entryPrice = Decimal(string: avgEntryPrice) else {
+                    return entry
+                }
+                let amountDec = Decimal(string: entry.amount) ?? 0
+                let currentValue = Decimal(string: entry.valueUsd) ?? 0
+                let entryNotional = entryPrice * amountDec
+                let netSignedSize = (currentValue + entryNotional) / oldMid
+                let newValue = newMid * netSignedSize - entryNotional
+                return AssetBreakdown(
+                    asset: entry.asset,
+                    category: entry.category,
+                    amount: entry.amount,
+                    price: mid,
+                    valueUsd: "\(newValue)",
+                    weightedAvgLeverage: entry.weightedAvgLeverage,
+                    avgEntryPrice: entry.avgEntryPrice
+                )
+            case .exchange:
+                return entry
+            }
         }
         let totalEquity = newBreakdown.reduce(Decimal(0)) { sum, entry in
             sum + (Decimal(string: entry.valueUsd) ?? 0)

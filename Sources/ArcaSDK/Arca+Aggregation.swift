@@ -290,6 +290,7 @@ extension Arca {
         let historicalBox = SendableBox<[EquityPoint]>(trimmedHistorical)
         let chartBox = SendableBox<[EquityPoint]>(initialChart)
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
+        let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
@@ -312,23 +313,24 @@ extension Arca {
         let updates = AsyncStream(EquityChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 for await agg in aggStream.updates {
+                    let previousLiveEquity = liveEquityBox.value
                     let liveEquity = agg.totalEquityUsd
                     let nowEpoch = Int64(Date().timeIntervalSince1970)
                     let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
                     let lastBoundary = hourBoundaryBox.value
 
-                    if currentHourBoundary > lastBoundary {
+                    if currentHourBoundary > lastBoundary, let previousLiveEquity {
                         historicalBox.update { historical in
                             guard !historical.isEmpty else { return }
-                            let lastPoint = historical[historical.count - 1]
                             let boundaryDate = Date(timeIntervalSince1970: TimeInterval(lastBoundary))
                             historical.append(EquityPoint(
                                 timestamp: iso.string(from: boundaryDate),
-                                equityUsd: lastPoint.equityUsd
+                                equityUsd: previousLiveEquity
                             ))
                         }
                         hourBoundaryBox.update { $0 = currentHourBoundary }
                     }
+                    liveEquityBox.update { $0 = liveEquity }
 
                     let livePoint = EquityPoint(
                         timestamp: iso.string(from: Date()),
@@ -365,6 +367,7 @@ extension Arca {
                     historicalBox.update { $0 = filtered }
                     var allPoints = filtered
                     if let agg = aggStream.aggregation.value {
+                        liveEquityBox.update { $0 = agg.totalEquityUsd }
                         allPoints.append(EquityPoint(timestamp: iso.string(from: Date()), equityUsd: agg.totalEquityUsd, status: .open))
                     }
                     chartBox.update { $0 = allPoints }
