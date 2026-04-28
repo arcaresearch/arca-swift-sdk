@@ -28,6 +28,7 @@ public enum EventType: String, Sendable {
     case fillRecorded = "fill.recorded"
     case exchangeFunding = "exchange.funding"
     case objectValuation = "object.valuation"
+    case chartSnapshotUpdated = "chart.snapshot.updated"
     case twapStarted = "twap.started"
     case twapProgress = "twap.progress"
     case twapCompleted = "twap.completed"

@@ -39,6 +39,7 @@ public actor WebSocketManager {
     private var midsRefs = 0
     private var midsExchange = "sim"
     private var candleRefCoins: [String: Set<String>] = [:]
+    private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
     private var unsubTasks: [String: Task<Void, Never>] = [:]
     private var idleDisconnectTask: Task<Void, Never>?
     private static let unsubDebounceNs: UInt64 = 100_000_000 // 100ms
@@ -280,7 +281,22 @@ public actor WebSocketManager {
     }
 
     private func hasAnyInterest() -> Bool {
-        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty
+        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !chartHistoryWatches.isEmpty
+    }
+
+    public func watchChartHistory(target: String, kind: String = "path", objectId: String? = nil) -> String {
+        cancelIdleTimer()
+        let watchId = UUID().uuidString
+        chartHistoryWatches[watchId] = (target: target, kind: kind, objectId: objectId)
+        ensureConnected()
+        sendMessage(.watchChartHistory(watchId: watchId, target: target, kind: kind, objectId: objectId))
+        return watchId
+    }
+
+    public func unwatchChartHistory(watchId: String) {
+        chartHistoryWatches.removeValue(forKey: watchId)
+        sendMessage(.unwatchChartHistory(watchId: watchId))
+        maybeStartIdleTimer()
     }
 
     private func maybeStartIdleTimer() {
@@ -393,6 +409,14 @@ public actor WebSocketManager {
             guard event.type == EventType.aggregationUpdated.rawValue,
                   let entityId = event.entityId else { return nil }
             return (entityId, event.aggregation, event)
+        }
+    }
+
+    public func chartSnapshotEvents() -> AsyncStream<(String, RealmEvent)> {
+        filteredStream { event in
+            guard event.type == EventType.chartSnapshotUpdated.rawValue,
+                  let watchId = event.watchId else { return nil }
+            return (watchId, event)
         }
     }
 
@@ -629,6 +653,9 @@ public actor WebSocketManager {
                 // Re-watch all paths from ref-counted state
                 for path in pathRefs.keys {
                     sendMessage(.watch(path: path))
+                }
+                for (watchId, req) in chartHistoryWatches {
+                    sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId))
                 }
                 return
             }

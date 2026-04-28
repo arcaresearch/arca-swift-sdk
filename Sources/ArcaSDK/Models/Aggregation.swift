@@ -237,9 +237,36 @@ public struct PnlPoint: Codable, Sendable {
     public let timestamp: String
     public let pnlUsd: String
     public let equityUsd: String
+    public let status: ChartPointStatus?
+    public let cumInflowsUsd: String?
+    public let cumOutflowsUsd: String?
+    public let lastEventOpId: String?
+    public let midSetId: String?
     /// Present when the chart is created with `anchor: .equity`.
     /// Equal to pnlUsd shifted so the live (rightmost) point equals current equity.
     public var valueUsd: String?
+
+    public init(
+        timestamp: String,
+        pnlUsd: String,
+        equityUsd: String,
+        status: ChartPointStatus? = nil,
+        cumInflowsUsd: String? = nil,
+        cumOutflowsUsd: String? = nil,
+        lastEventOpId: String? = nil,
+        midSetId: String? = nil,
+        valueUsd: String? = nil
+    ) {
+        self.timestamp = timestamp
+        self.pnlUsd = pnlUsd
+        self.equityUsd = equityUsd
+        self.status = status
+        self.cumInflowsUsd = cumInflowsUsd
+        self.cumOutflowsUsd = cumOutflowsUsd
+        self.lastEventOpId = lastEventOpId
+        self.midSetId = midSetId
+        self.valueUsd = valueUsd
+    }
 }
 
 /// Controls the y-axis baseline for P&L charts.
@@ -263,6 +290,9 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let from: String
     public let to: String
     public let points: Int
+    public let resolution: String?
+    public let resolutionRequested: String?
+    public let serverNow: String?
     public let startingEquityUsd: String
     /// Timestamp of the first non-zero equity point (after leading-zero
     /// trimming). Use as `flowsSince` for the live watch to avoid
@@ -271,13 +301,71 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let pnlPoints: [PnlPoint]
     public let externalFlows: [ExternalFlowEntry]?
     public let midPrices: [String: String]?
+
+    public init(
+        prefix: String,
+        from: String,
+        to: String,
+        points: Int,
+        resolution: String? = nil,
+        resolutionRequested: String? = nil,
+        serverNow: String? = nil,
+        startingEquityUsd: String,
+        effectiveFrom: String? = nil,
+        pnlPoints: [PnlPoint],
+        externalFlows: [ExternalFlowEntry]? = nil,
+        midPrices: [String: String]? = nil
+    ) {
+        self.prefix = prefix
+        self.from = from
+        self.to = to
+        self.points = points
+        self.resolution = resolution
+        self.resolutionRequested = resolutionRequested
+        self.serverNow = serverNow
+        self.startingEquityUsd = startingEquityUsd
+        self.effectiveFrom = effectiveFrom
+        self.pnlPoints = pnlPoints
+        self.externalFlows = externalFlows
+        self.midPrices = midPrices
+    }
 }
 
 // MARK: - Equity History
 
+public enum ChartPointStatus: String, Codable, Sendable {
+    case open
+    case sealed
+    case carried
+    case incomplete
+}
+
 public struct EquityPoint: Codable, Sendable {
     public let timestamp: String
     public let equityUsd: String
+    public let status: ChartPointStatus?
+    public let cumInflowsUsd: String?
+    public let cumOutflowsUsd: String?
+    public let lastEventOpId: String?
+    public let midSetId: String?
+
+    public init(
+        timestamp: String,
+        equityUsd: String,
+        status: ChartPointStatus? = nil,
+        cumInflowsUsd: String? = nil,
+        cumOutflowsUsd: String? = nil,
+        lastEventOpId: String? = nil,
+        midSetId: String? = nil
+    ) {
+        self.timestamp = timestamp
+        self.equityUsd = equityUsd
+        self.status = status
+        self.cumInflowsUsd = cumInflowsUsd
+        self.cumOutflowsUsd = cumOutflowsUsd
+        self.lastEventOpId = lastEventOpId
+        self.midSetId = midSetId
+    }
 }
 
 public struct EquityHistoryResponse: Codable, Sendable {
@@ -285,7 +373,30 @@ public struct EquityHistoryResponse: Codable, Sendable {
     public let from: String
     public let to: String
     public let points: Int
+    public let resolution: String?
+    public let resolutionRequested: String?
+    public let serverNow: String?
     public let equityPoints: [EquityPoint]
+
+    public init(
+        prefix: String,
+        from: String,
+        to: String,
+        points: Int,
+        resolution: String? = nil,
+        resolutionRequested: String? = nil,
+        serverNow: String? = nil,
+        equityPoints: [EquityPoint]
+    ) {
+        self.prefix = prefix
+        self.from = from
+        self.to = to
+        self.points = points
+        self.resolution = resolution
+        self.resolutionRequested = resolutionRequested
+        self.serverNow = serverNow
+        self.equityPoints = equityPoints
+    }
 }
 
 /// Emitted by `EquityChartStream` on each update.
