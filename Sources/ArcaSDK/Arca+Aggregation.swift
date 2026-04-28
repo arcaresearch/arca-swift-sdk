@@ -106,12 +106,15 @@ extension Arca {
     ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
-    ///   - points: Number of samples (default 200, max 1000)
+    ///   - points: Number of samples (default 1000, max 1000). The backend ladder
+    ///     picks the finest resolution whose bucket count fits within `points`,
+    ///     so a higher value gives finer-grained charts. The default targets
+    ///     `5m` for 24h, `1h` for 1M, and `4h` for 3M.
     public func getPnlHistory(
         path: String,
         from: String,
         to: String,
-        points: Int = 200
+        points: Int = 1000
     ) async throws -> PnlHistoryResponse {
         try validatePath(path)
         let key = buildCacheKey("pnlHistory", [
@@ -167,12 +170,15 @@ extension Arca {
     ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
-    ///   - points: Number of samples (default 200, max 1000)
+    ///   - points: Number of samples (default 1000, max 1000). The backend ladder
+    ///     picks the finest resolution whose bucket count fits within `points`,
+    ///     so a higher value gives finer-grained charts. The default targets
+    ///     `5m` for 24h, `1h` for 1M, and `4h` for 3M.
     public func getEquityHistory(
         path: String,
         from: String,
         to: String,
-        points: Int = 200
+        points: Int = 1000
     ) async throws -> EquityHistoryResponse {
         try validatePath(path)
         let key = buildCacheKey("equityHistory", [
@@ -228,13 +234,14 @@ extension Arca {
     ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
-    ///   - points: Number of historical samples (default 200, max 1000)
+    ///   - points: Number of historical samples (default 1000, max 1000). Higher
+    ///     values yield finer chart resolution from the server's ladder.
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
     public func watchEquityChart(
         path: String,
         from: String,
         to: String,
-        points: Int = 200,
+        points: Int = 1000,
         exchange: String = "sim"
     ) async throws -> EquityChartStream {
         try validatePath(path)
@@ -406,7 +413,8 @@ extension Arca {
     ///     Examples: "/users/alice/main" (single object), "/users/alice/" (all of alice's objects)
     ///   - from: Start timestamp (RFC 3339)
     ///   - to: End timestamp (RFC 3339)
-    ///   - points: Number of historical samples (default 200, max 1000)
+    ///   - points: Number of historical samples (default 1000, max 1000). Higher
+    ///     values yield finer chart resolution from the server's ladder.
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
     ///   - anchor: `.zero` (default) for standard P&L; `.equity` to shift the
     ///     chart so the live (rightmost) value equals the current account equity.
@@ -415,7 +423,7 @@ extension Arca {
         path: String,
         from: String,
         to: String,
-        points: Int = 200,
+        points: Int = 1000,
         exchange: String = "sim",
         anchor: PnlAnchor = .zero
     ) async throws -> PnlChartStream {

@@ -144,7 +144,7 @@ let chart = try await arca.watchEquityChart(
     prefix: "/",
     from: "2026-03-19T00:00:00Z",
     to: "2026-03-20T00:00:00Z",
-    points: 200
+    points: 1000
 )
 
 // Iterate over updates — each contains the full point array
@@ -170,7 +170,7 @@ let chart = try await arca.watchPnlChart(
     prefix: "/",
     from: "2026-03-19T00:00:00Z",
     to: "2026-03-20T00:00:00Z",
-    points: 200
+    points: 1000
 )
 
 for await update in chart.updates {
