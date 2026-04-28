@@ -173,6 +173,20 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(decoded, .adjustment)
     }
 
+    func testOperationTypeIncludesVenueClose() throws {
+        let json = Data(#""venue_close""#.utf8)
+        let decoded = try decoder.decode(OperationType.self, from: json)
+        XCTAssertEqual(decoded, .venueClose)
+        XCTAssertEqual(decoded.rawValue, "venue_close")
+    }
+
+    func testOperationTypePreservesUnknownFutureValue() throws {
+        let json = Data(#""future_operation""#.utf8)
+        let decoded = try decoder.decode(OperationType.self, from: json)
+        XCTAssertEqual(decoded, .unknown("future_operation"))
+        XCTAssertEqual(decoded.rawValue, "future_operation")
+    }
+
     func testFundingOperationDecoding() throws {
         let json = """
         {
@@ -221,6 +235,66 @@ final class ModelDecodingTests: XCTestCase {
         let op = try decoder.decode(Operation.self, from: json)
         XCTAssertEqual(op.type, .fill)
         XCTAssertEqual(op.state, .completed)
+    }
+
+    func testVenueCloseOperationListDecoding() throws {
+        let json = """
+        {
+            "operations": [
+                {
+                    "id": "op_close01",
+                    "realmId": "rlm_01def",
+                    "path": "/op/venue_close/exchanges/main/op_close01",
+                    "type": "venue_close",
+                    "state": "completed",
+                    "sourceArcaPath": null,
+                    "targetArcaPath": "/exchanges/main",
+                    "input": null,
+                    "outcome": null,
+                    "actorType": "system",
+                    "actorId": "sim-exchange",
+                    "tokenJti": null,
+                    "createdAt": "2026-04-28T05:11:47.000000Z",
+                    "updatedAt": "2026-04-28T05:11:47.000000Z"
+                }
+            ],
+            "total": 1
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(OperationListResponse.self, from: json)
+        XCTAssertEqual(response.operations.count, 1)
+        XCTAssertEqual(response.operations[0].type, .venueClose)
+    }
+
+    func testRealmEventDecodesOperationWithUnknownFutureType() throws {
+        let json = """
+        {
+            "realmId": "rlm_01def",
+            "type": "operation.updated",
+            "entityId": "op_future01",
+            "operation": {
+                "id": "op_future01",
+                "realmId": "rlm_01def",
+                "path": "/op/future/1",
+                "type": "future_operation",
+                "state": "completed",
+                "sourceArcaPath": null,
+                "targetArcaPath": "/exchanges/main",
+                "input": null,
+                "outcome": null,
+                "actorType": "system",
+                "actorId": "sim-exchange",
+                "tokenJti": null,
+                "createdAt": "2026-04-28T05:11:47.000000Z",
+                "updatedAt": "2026-04-28T05:11:47.000000Z"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let event = try decoder.decode(RealmEvent.self, from: json)
+        XCTAssertEqual(event.operation?.type, .unknown("future_operation"))
+        XCTAssertEqual(event.operation?.type.rawValue, "future_operation")
     }
 
     func testOperationDecodingWithParsedOutcomeContainingArray() throws {

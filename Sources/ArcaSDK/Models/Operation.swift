@@ -62,7 +62,7 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
 // MARK: - Operation
 
-public enum OperationType: String, Codable, Sendable {
+public enum OperationType: Codable, Sendable, Hashable {
     case transfer
     case create
     case delete
@@ -72,10 +72,62 @@ public enum OperationType: String, Codable, Sendable {
     case order
     case fill
     case cancel
-    case feeDistribution = "fee_distribution"
+    case feeDistribution
     case adjustment
     case funding
+    case venueClose
     case twap
+    case unknown(String)
+
+    public var rawValue: String {
+        switch self {
+        case .transfer: return "transfer"
+        case .create: return "create"
+        case .delete: return "delete"
+        case .deposit: return "deposit"
+        case .withdrawal: return "withdrawal"
+        case .swap: return "swap"
+        case .order: return "order"
+        case .fill: return "fill"
+        case .cancel: return "cancel"
+        case .feeDistribution: return "fee_distribution"
+        case .adjustment: return "adjustment"
+        case .funding: return "funding"
+        case .venueClose: return "venue_close"
+        case .twap: return "twap"
+        case .unknown(let value): return value
+        }
+    }
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "transfer": self = .transfer
+        case "create": self = .create
+        case "delete": self = .delete
+        case "deposit": self = .deposit
+        case "withdrawal": self = .withdrawal
+        case "swap": self = .swap
+        case "order": self = .order
+        case "fill": self = .fill
+        case "cancel": self = .cancel
+        case "fee_distribution": self = .feeDistribution
+        case "adjustment": self = .adjustment
+        case "funding": self = .funding
+        case "venue_close": self = .venueClose
+        case "twap": self = .twap
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public enum OperationState: String, Codable, Sendable {
