@@ -61,6 +61,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
             positionValue: nil,
             error: nil,
             cumulativeFunding: nil,
+            cumulativeFee: nil,
+            cumulativeExchangeFee: nil,
+            cumulativePlatformFee: nil,
+            cumulativeBuilderFee: nil,
             createdAt: nil,
             updatedAt: nil
         )

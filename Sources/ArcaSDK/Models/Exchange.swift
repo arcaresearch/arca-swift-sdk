@@ -36,7 +36,25 @@ public struct SimPosition: Codable, Sendable {
     public let positionValue: String?
     /// Present when computed fields (unrealizedPnl, positionValue, returnOnEquity) could not be calculated.
     public let error: String?
+    /// Cumulative funding paid (negative) or received (positive) over the
+    /// position's *current open lot* — i.e. since net position size last
+    /// went 0 → non-zero. Resets when the lot ends: a full close removes
+    /// the position; a flip-through-zero starts a fresh lot at zero.
+    /// Decimal string. `nil` when no funding has accrued.
     public let cumulativeFunding: String?
+    /// Cumulative trading fee paid over the position's *current open lot*,
+    /// summed across the exchange / platform / builder buckets below.
+    /// Equal by construction to
+    /// `cumulativeExchangeFee + cumulativePlatformFee + cumulativeBuilderFee`.
+    /// Same lot semantics as `cumulativeFunding`. Decimal string;
+    /// `nil` when no fees have accrued.
+    public let cumulativeFee: String?
+    /// Cumulative exchange (taker / maker) fee component. See `cumulativeFee`.
+    public let cumulativeExchangeFee: String?
+    /// Cumulative platform fee component. See `cumulativeFee`.
+    public let cumulativePlatformFee: String?
+    /// Cumulative builder fee component. See `cumulativeFee`.
+    public let cumulativeBuilderFee: String?
     public let createdAt: String?
     public let updatedAt: String?
 }
@@ -699,6 +717,10 @@ extension SimPosition {
             unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
             positionValue: "\(posVal)", error: nil,
             cumulativeFunding: cumulativeFunding,
+            cumulativeFee: cumulativeFee,
+            cumulativeExchangeFee: cumulativeExchangeFee,
+            cumulativePlatformFee: cumulativePlatformFee,
+            cumulativeBuilderFee: cumulativeBuilderFee,
             createdAt: createdAt, updatedAt: updatedAt)
     }
 }

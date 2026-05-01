@@ -2208,6 +2208,10 @@ final class ModelDecodingTests: XCTestCase {
             unrealizedPnl: "0", returnOnEquity: "0",
             positionValue: nil, error: nil,
             cumulativeFunding: nil,
+            cumulativeFee: nil,
+            cumulativeExchangeFee: nil,
+            cumulativePlatformFee: nil,
+            cumulativeBuilderFee: nil,
             createdAt: nil, updatedAt: nil
         )
     }
@@ -2289,6 +2293,10 @@ final class ModelDecodingTests: XCTestCase {
             unrealizedPnl: nil, returnOnEquity: nil,
             positionValue: nil, error: "market_data_unavailable",
             cumulativeFunding: nil,
+            cumulativeFee: nil,
+            cumulativeExchangeFee: nil,
+            cumulativePlatformFee: nil,
+            cumulativeBuilderFee: nil,
             createdAt: nil, updatedAt: nil
         )
         let state = makeTestExchangeState(positions: [pos])
