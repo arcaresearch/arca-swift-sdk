@@ -550,6 +550,18 @@ public struct FundingWatchStream: Sendable {
 ///
 /// A convergence timeout fires if a preview doesn't receive its authoritative
 /// update within 10 seconds. On reconnect, re-fetches from REST to reconcile gaps.
+///
+/// **Pick the right surface for your use case:**
+/// - For an activity feed, P&L card, or any UI that shows one row per fill,
+///   observe ``fills`` — the merged list, where the authoritative
+///   `fill.recorded` row replaces its preview in place.
+/// - For order-confirmation animations or any flow that needs to react to the
+///   preview→recorded transition itself, consume ``updates``. Note that
+///   ``updates`` yields **both** phases as separate events; deduping by
+///   `Fill.id` will not work because the preview's `id` is the venue's
+///   `simFillId` while the recorded's `id` is the platform's position-ledger
+///   row. Always correlate by `correlationId` / `orderId` when consuming
+///   ``updates`` directly.
 public struct FillWatchStream: Sendable {
     /// Convergence timeout for preview fills awaiting authoritative updates.
     public static let convergenceTimeoutNs: UInt64 = 10_000_000_000 // 10s
@@ -557,8 +569,15 @@ public struct FillWatchStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
     /// Running list of fills, populated on initial fetch and updated live.
+    /// **This is the merged view** — preview rows from `exchange.fill` are
+    /// replaced in place by their authoritative `fill.recorded` counterparts
+    /// using `correlationId`. Use this for activity-feed UIs.
     public let fills: SendableBox<[Fill]>
-    /// Async stream of new fill events.
+    /// Async stream of every fill transition.
+    /// **Yields both phases**: the preview from `exchange.fill` and then the
+    /// authoritative replacement from `fill.recorded`. Consuming this directly
+    /// without your own merge by `correlationId` will produce duplicate rows.
+    /// For an activity feed, prefer ``fills``.
     public let updates: AsyncStream<(Fill, RealmEvent)>
     /// Stop listening and unsubscribe from fill updates.
     public let stop: @Sendable () async -> Void

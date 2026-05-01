@@ -782,6 +782,26 @@ extension Arca {
     /// A convergence timeout fires if a preview doesn't receive its authoritative
     /// update within the timeout window. On reconnect, re-fetches from REST to reconcile gaps.
     ///
+    /// **Which surface should I read?**
+    /// `FillWatchStream` exposes two views of the same underlying data:
+    ///
+    /// - `fills` (`SendableBox<[Fill]>`) — the **already merged** activity-feed view.
+    ///   Preview rows are replaced in place by the authoritative `fill.recorded`
+    ///   row using `correlationId` (orderId), so each fill appears exactly once.
+    ///   **Use this for activity feeds, trade history tables, P&L cards, and any
+    ///   UI that should show one row per fill.**
+    /// - `updates` (`AsyncStream<(Fill, RealmEvent)>`) — the **raw transition
+    ///   stream**. Yields both phases as separate events: the preview, then the
+    ///   recorded replacement. Consuming `updates` directly without doing your
+    ///   own correlation will produce duplicate rows. Use this only when you
+    ///   need to react to the preview→recorded transition itself (e.g. a
+    ///   "pending → confirmed" animation on a freshly placed order).
+    ///
+    /// `id` differs between the two phases (preview's `id` is the venue's
+    /// `simFillId`; recorded's `id` is the platform's position-ledger row), so
+    /// dedupe by `id` alone will not work — always merge by `correlationId`
+    /// (which is `orderId` server-side).
+    ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
     ///   - market: Optional market filter (canonical coin ID)
