@@ -412,6 +412,26 @@ public actor WebSocketManager {
         }
     }
 
+    /// Stream of all TWAP events (`twap.started`, `twap.progress`,
+    /// `twap.completed`, `twap.cancelled`, `twap.failed`). Each emission
+    /// carries the strongly-typed ``TypedEvent`` so the consumer can
+    /// `switch` on the kind. To listen to a single TWAP, filter on
+    /// `event.envelope?.entityId == twapId` or use ``Arca/watchTwap(exchangeId:operationId:)``.
+    public func twapEvents() -> AsyncStream<TypedEvent> {
+        filteredStream { event in
+            switch event.type {
+            case EventType.twapStarted.rawValue,
+                 EventType.twapProgress.rawValue,
+                 EventType.twapCompleted.rawValue,
+                 EventType.twapCancelled.rawValue,
+                 EventType.twapFailed.rawValue:
+                return TypedEvent.from(event)
+            default:
+                return nil
+            }
+        }
+    }
+
     public func chartSnapshotEvents() -> AsyncStream<(String, RealmEvent)> {
         filteredStream { event in
             guard event.type == EventType.chartSnapshotUpdated.rawValue,

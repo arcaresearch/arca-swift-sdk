@@ -104,6 +104,24 @@ public enum TypedEvent: Sendable {
 
     case realmCreated(Realm, envelope: EventEnvelope)
 
+    // MARK: - TWAP
+
+    /// Emitted when a TWAP is created. The associated value is the
+    /// initial server-side ``Twap`` snapshot.
+    case twapStarted(Twap, envelope: EventEnvelope)
+    /// Emitted after each slice resolves. The associated value is the
+    /// updated ``Twap`` snapshot — `executedSize`, `filledSlices`,
+    /// `failedSlices`, and `sliceCount` reflect the new totals.
+    case twapProgress(Twap, envelope: EventEnvelope)
+    /// Emitted when the TWAP terminates with `status == .completed`.
+    case twapCompleted(Twap, envelope: EventEnvelope)
+    /// Emitted when the TWAP terminates with `status == .cancelled`.
+    case twapCancelled(Twap, envelope: EventEnvelope)
+    /// Emitted when the TWAP terminates with `status == .failed`.
+    /// Inspect ``Twap/cancelReason`` for the enum-shaped tag and
+    /// ``Twap/failureReason`` for the human-readable detail.
+    case twapFailed(Twap, envelope: EventEnvelope)
+
     // MARK: - Fallback
 
     /// Received an event whose `type` doesn't match any known case.
@@ -132,7 +150,12 @@ public enum TypedEvent: Sendable {
              .midsUpdated(_, let e),
              .aggregationUpdated(_, let e),
              .objectValuation(_, _, _, let e),
-             .realmCreated(_, let e):
+             .realmCreated(_, let e),
+             .twapStarted(_, let e),
+             .twapProgress(_, let e),
+             .twapCompleted(_, let e),
+             .twapCancelled(_, let e),
+             .twapFailed(_, let e):
             return e
         case .unknown:
             return nil
@@ -221,6 +244,26 @@ public enum TypedEvent: Sendable {
         case EventType.realmCreated.rawValue:
             guard let realm = event.realm else { return .unknown(event) }
             return .realmCreated(realm, envelope: envelope)
+
+        case EventType.twapStarted.rawValue:
+            guard let twap = event.twap else { return .unknown(event) }
+            return .twapStarted(twap, envelope: envelope)
+
+        case EventType.twapProgress.rawValue:
+            guard let twap = event.twap else { return .unknown(event) }
+            return .twapProgress(twap, envelope: envelope)
+
+        case EventType.twapCompleted.rawValue:
+            guard let twap = event.twap else { return .unknown(event) }
+            return .twapCompleted(twap, envelope: envelope)
+
+        case EventType.twapCancelled.rawValue:
+            guard let twap = event.twap else { return .unknown(event) }
+            return .twapCancelled(twap, envelope: envelope)
+
+        case EventType.twapFailed.rawValue:
+            guard let twap = event.twap else { return .unknown(event) }
+            return .twapFailed(twap, envelope: envelope)
 
         default:
             return .unknown(event)
