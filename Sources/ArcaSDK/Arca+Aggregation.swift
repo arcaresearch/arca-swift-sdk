@@ -1,10 +1,20 @@
 import Foundation
 
+// chartResolutionSeconds maps a server-side resolution string (the same set
+// returned by /history's `resolution` field) to the seconds-per-bucket the
+// chart streams use to detect bucket-boundary crossings. The branches must
+// stay in sync with the server-side ladder in
+// backend/services/aggregation/internal/ladder/ladder.go and its TS mirror.
+// Unknown strings fall back to 1h, which is conservative: a slightly-too-big
+// boundary just means a delayed historical-tail append, not a data error.
 private func chartResolutionSeconds(_ resolution: String?) -> Int64 {
     switch resolution {
     case "1m": return 60
     case "5m": return 300
+    case "15m": return 900
+    case "30m": return 1_800
     case "1h", "hour": return 3_600
+    case "4h": return 14_400
     case "1d", "day": return 86_400
     default: return 3_600
     }
