@@ -328,6 +328,36 @@ extension Arca {
         }
 
         let updates = AsyncStream(EquityChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+            // Refetches historical equity from the server and re-yields the
+            // chart with the freshly-fetched points + the current live tip.
+            // Shared by the chart_snapshot path (server pushes when a bucket
+            // closes) and the reconnect path (WS status flips reconnecting →
+            // connected after a long network pause / iOS process suspension).
+            // ISO8601DateFormatter is non-Sendable so we construct a fresh
+            // instance per call rather than capturing the outer `iso`.
+            let refreshHistory: @Sendable () async -> Void = { [weak self] in
+                guard let self = self else { return }
+                let key = buildCacheKey("equityHistory", [
+                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                ])
+                self.historyCache.delete(key)
+                guard let fresh = try? await self.getEquityHistory(path: path, from: from, to: to, points: points) else { return }
+                resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
+                let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
+                hourBoundaryBox.update { $0 = boundary }
+                let filtered = fresh.equityPoints.filter { $0.status != .open }
+                historicalBox.update { $0 = filtered }
+                var allPoints = filtered
+                if let agg = aggStream.aggregation.value {
+                    liveEquityBox.update { $0 = agg.totalEquityUsd }
+                    let localIso = ISO8601DateFormatter()
+                    localIso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    allPoints.append(EquityPoint(timestamp: localIso.string(from: Date()), equityUsd: agg.totalEquityUsd, status: .open))
+                }
+                chartBox.update { $0 = allPoints }
+                continuation.yield(EquityChartUpdate(points: allPoints))
+            }
+
             let task = Task {
                 for await agg in aggStream.updates {
                     let previousLiveEquity = liveEquityBox.value
@@ -372,28 +402,24 @@ extension Arca {
                 let events = await ws.chartSnapshotEvents()
                 for await (eventWatchId, _) in events {
                     guard eventWatchId == chartWatchId else { continue }
-                    let key = buildCacheKey("equityHistory", [
-                        "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
-                    ])
-                    historyCache.delete(key)
-                    guard let fresh = try? await getEquityHistory(path: path, from: from, to: to, points: points) else { continue }
-                    resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
-                    let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
-                    hourBoundaryBox.update { $0 = boundary }
-                    let filtered = fresh.equityPoints.filter { $0.status != .open }
-                    historicalBox.update { $0 = filtered }
-                    var allPoints = filtered
-                    if let agg = aggStream.aggregation.value {
-                        liveEquityBox.update { $0 = agg.totalEquityUsd }
-                        allPoints.append(EquityPoint(timestamp: iso.string(from: Date()), equityUsd: agg.totalEquityUsd, status: .open))
+                    await refreshHistory()
+                }
+            }
+            let statusTask = Task { [ws] in
+                let statusStream = await ws.statusStream
+                for await s in statusStream {
+                    if s == .disconnected && state.value != .loading {
+                        state.update { $0 = .reconnecting }
+                    } else if s == .connected && state.value == .reconnecting {
+                        await refreshHistory()
+                        state.update { $0 = .connected }
                     }
-                    chartBox.update { $0 = allPoints }
-                    continuation.yield(EquityChartUpdate(points: allPoints))
                 }
             }
             continuation.onTermination = { _ in
                 task.cancel()
                 chartTask.cancel()
+                statusTask.cancel()
             }
         }
 
@@ -528,6 +554,46 @@ extension Arca {
         }
 
         let updates = AsyncStream(PnlChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+            // Refetches historical P&L from the server and re-yields the chart
+            // with the freshly-fetched points + the current live tip. Shared by
+            // the chart_snapshot path (server pushes when a bucket closes) and
+            // the reconnect path (WS status flips reconnecting → connected
+            // after a long network pause / iOS process suspension).
+            // ISO8601DateFormatter is non-Sendable so we construct a fresh
+            // instance per call rather than capturing the outer `iso`.
+            let refreshHistory: @Sendable () async -> Void = { [weak self] in
+                guard let self = self else { return }
+                let key = buildCacheKey("pnlHistory", [
+                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                ])
+                self.historyCache.delete(key)
+                guard let fresh = try? await self.getPnlHistory(path: path, from: from, to: to, points: points) else { return }
+                resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
+                let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
+                hourBoundaryBox.update { $0 = boundary }
+                let filtered = fresh.pnlPoints.filter { $0.status != .open }
+                historicalBox.update { $0 = filtered }
+                flowsBox.update { $0 = fresh.externalFlows ?? [] }
+                var allPoints = filtered
+                if let agg = aggStream.aggregation.value {
+                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
+                    let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
+                    let localIso = ISO8601DateFormatter()
+                    localIso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    allPoints.append(PnlPoint(
+                        timestamp: localIso.string(from: Date()),
+                        pnlUsd: String(format: "%.2f", pnl),
+                        equityUsd: agg.totalEquityUsd,
+                        status: .open
+                    ))
+                }
+                if anchor == .equity {
+                    applyEquityAnchor(to: &allPoints)
+                }
+                chartBox.update { $0 = allPoints }
+                continuation.yield(PnlChartUpdate(points: allPoints, externalFlows: flowsBox.value))
+            }
+
             let aggTask = Task {
                 for await agg in aggStream.updates {
                     let liveEquity = Double(agg.totalEquityUsd) ?? 0
@@ -595,39 +661,25 @@ extension Arca {
                 let events = await ws.chartSnapshotEvents()
                 for await (eventWatchId, _) in events {
                     guard eventWatchId == chartWatchId else { continue }
-                    let key = buildCacheKey("pnlHistory", [
-                        "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
-                    ])
-                    historyCache.delete(key)
-                    guard let fresh = try? await getPnlHistory(path: path, from: from, to: to, points: points) else { continue }
-                    resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
-                    let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
-                    hourBoundaryBox.update { $0 = boundary }
-                    let filtered = fresh.pnlPoints.filter { $0.status != .open }
-                    historicalBox.update { $0 = filtered }
-                    flowsBox.update { $0 = fresh.externalFlows ?? [] }
-                    var allPoints = filtered
-                    if let agg = aggStream.aggregation.value {
-                        let liveEquity = Double(agg.totalEquityUsd) ?? 0
-                        let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
-                        allPoints.append(PnlPoint(
-                            timestamp: iso.string(from: Date()),
-                            pnlUsd: String(format: "%.2f", pnl),
-                            equityUsd: agg.totalEquityUsd,
-                            status: .open
-                        ))
+                    await refreshHistory()
+                }
+            }
+            let statusTask = Task { [ws] in
+                let statusStream = await ws.statusStream
+                for await s in statusStream {
+                    if s == .disconnected && state.value != .loading {
+                        state.update { $0 = .reconnecting }
+                    } else if s == .connected && state.value == .reconnecting {
+                        await refreshHistory()
+                        state.update { $0 = .connected }
                     }
-                    if anchor == .equity {
-                        applyEquityAnchor(to: &allPoints)
-                    }
-                    chartBox.update { $0 = allPoints }
-                    continuation.yield(PnlChartUpdate(points: allPoints, externalFlows: flowsBox.value))
                 }
             }
 
             continuation.onTermination = { _ in
                 aggTask.cancel()
                 chartTask.cancel()
+                statusTask.cancel()
             }
         }
 
