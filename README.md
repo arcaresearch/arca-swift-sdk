@@ -48,10 +48,9 @@ let arca = try Arca(
     }
 )
 
-// Ensure a denominated wallet exists
+// Ensure a denominated wallet exists (USD-only today)
 let response = try await arca.ensureDenominatedArca(
-    ref: "/wallets/main",
-    denomination: "USD"
+    ref: "/wallets/main"
 )
 
 // Deposit funds

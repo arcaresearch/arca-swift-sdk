@@ -10,13 +10,11 @@ extension Arca {
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
     ///
     /// - Parameters:
-    ///   - ref: Full Arca path (e.g. `/users/u123/usd/main`)
-    ///   - denomination: Currency denomination (e.g. `USD`, `BTC`)
+    ///   - ref: Full Arca path (e.g. `/users/u123/main`)
     ///   - metadata: Optional metadata string
     ///   - operationPath: Optional idempotency key (use nonce API with separator `:`)
     public func ensureDenominatedArca(
         ref: String,
-        denomination: String,
         metadata: String? = nil,
         operationPath: String? = nil
     ) -> OperationHandle<CreateArcaObjectResponse> {
@@ -25,7 +23,6 @@ extension Arca {
                 realmId: realm,
                 path: ref,
                 type: "denominated",
-                denomination: denomination,
                 metadata: metadata,
                 operationPath: operationPath
             ))
@@ -40,13 +37,11 @@ extension Arca {
     /// - Parameters:
     ///   - ref: Full Arca path
     ///   - type: Object type
-    ///   - denomination: Denomination (required for `denominated` type)
     ///   - metadata: Optional metadata string
     ///   - operationPath: Optional idempotency key
     public func ensureArca(
         ref: String,
         type: ArcaObjectType,
-        denomination: String? = nil,
         metadata: String? = nil,
         operationPath: String? = nil
     ) -> OperationHandle<CreateArcaObjectResponse> {
@@ -55,7 +50,6 @@ extension Arca {
                 realmId: realm,
                 path: ref,
                 type: type.rawValue,
-                denomination: denomination,
                 metadata: metadata,
                 operationPath: operationPath
             ))
@@ -163,7 +157,6 @@ private struct CreateObjectRequest: Encodable {
     let realmId: String
     let path: String
     let type: String
-    let denomination: String?
     let metadata: String?
     let operationPath: String?
 }

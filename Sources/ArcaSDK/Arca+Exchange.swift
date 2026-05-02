@@ -4,8 +4,7 @@ import Foundation
 
 extension Arca {
 
-    /// Ensure a Perps Exchange Arca object exists.
-    /// Automatically sets type=exchange and denomination=USD.
+    /// Ensure a Perps Exchange Arca object exists. Automatically sets type=exchange.
     ///
     /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
     /// for full settlement, or `try await handle.submitted` for the HTTP response.
@@ -27,7 +26,6 @@ extension Arca {
                 realmId: realm,
                 path: ref,
                 type: "exchange",
-                denomination: "USD",
                 metadata: metadataString,
                 operationPath: operationPath
             ))
@@ -782,7 +780,6 @@ private struct CreateExchangeRequest: Encodable {
     let realmId: String
     let path: String
     let type: String
-    let denomination: String
     let metadata: String?
     let operationPath: String?
 }
