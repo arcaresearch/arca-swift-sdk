@@ -1,5 +1,41 @@
 import Foundation
 
+// `watchEquityChart` / `watchPnlChart` treat a watch as a "live tail" when
+// the requested `to` is within this distance of construction time, and
+// slide the window forward on every refresh. Watches with `to` further in
+// the past are treated as fixed-window watches and stay pinned.
+internal let LIVE_TAIL_THRESHOLD_S: TimeInterval = 60
+
+// In the chart streams' boundary timer: if no aggregation event has arrived
+// for this much wall-clock time AND the bucket boundary has advanced, treat
+// it as a tab freeze / quiet realm and refetch the dense server window.
+// 1.5 x interval gives one grace bucket for ordinary network jitter before
+// we suspect the stream.
+internal let BOUNDARY_AGG_SILENCE_FACTOR: Double = 1.5
+
+// Helper: format a `Date` to RFC 3339 with fractional seconds. Each call
+// constructs a fresh formatter because `ISO8601DateFormatter` is non-Sendable.
+@inline(__always)
+internal func iso8601String(from date: Date) -> String {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f.string(from: date)
+}
+
+/// Range presets accepted by `Arca.watchEquityChartLive` /
+/// `watchPnlChartLive` and by `Arca.computeChartRange`. Mirror of the
+/// TypeScript `ChartRangePreset`.
+public enum ChartRangePreset: String, Sendable {
+    case oneHour = "1h"
+    case twentyFourHours = "24h"
+    case sevenDays = "7d"
+    case thirtyDays = "30d"
+    case threeMonths = "3m"
+    case oneYear = "1y"
+    case ytd = "ytd"
+    case all = "all"
+}
+
 // chartResolutionSeconds maps a server-side resolution string (the same set
 // returned by /history's `resolution` field) to the seconds-per-bucket the
 // chart streams use to detect bucket-boundary crossings. The branches must
@@ -255,9 +291,36 @@ extension Arca {
         exchange: String = "sim"
     ) async throws -> EquityChartStream {
         try validatePath(path)
+        // Live-tail heuristic: if `to` was within ~60s of construction time,
+        // the caller wants a "last N hours up to now" sliding window. On
+        // every refresh, recompute `from`/`to` so the window stays current.
+        // Otherwise the watch is fixed-window — keep `from`/`to` pinned.
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let createdAt = Date()
+        let fromDateOrig = iso.date(from: from)
+        let toDateOrig = iso.date(from: to)
+        let isLiveTail: Bool = {
+            guard let f = fromDateOrig, let t = toDateOrig else { return false }
+            _ = f
+            return abs(t.timeIntervalSince(createdAt)) <= LIVE_TAIL_THRESHOLD_S
+        }()
+        let windowSeconds: TimeInterval = isLiveTail
+            ? max(0, (toDateOrig?.timeIntervalSince1970 ?? 0) - (fromDateOrig?.timeIntervalSince1970 ?? 0))
+            : 0
+        let windowBox = SendableBox<(from: String, to: String)>((from, to))
+        let slideIfLive: @Sendable () -> Void = {
+            guard isLiveTail else { return }
+            let now = Date()
+            let newFrom = iso8601String(from: now.addingTimeInterval(-windowSeconds))
+            let newTo = iso8601String(from: now)
+            windowBox.update { $0 = (newFrom, newTo) }
+        }
+
         var history: EquityHistoryResponse
         do {
-            history = try await getEquityHistory(path: path, from: from, to: to, points: points)
+            let w = windowBox.value
+            history = try await getEquityHistory(path: path, from: w.from, to: w.to, points: points)
         } catch {
             history = EquityHistoryResponse(prefix: path, from: from, to: to, points: 0, equityPoints: [])
         }
@@ -273,18 +336,17 @@ extension Arca {
             let allZero = history.equityPoints.isEmpty ||
                 history.equityPoints.allSatisfy { abs(Double($0.equityUsd) ?? 0) < 0.01 }
             if allZero {
+                let w = windowBox.value
                 let key = buildCacheKey("equityHistory", [
-                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": w.from, "to": w.to, "points": String(points),
                 ])
                 historyCache.delete(key)
-                if let fresh = try? await getEquityHistory(path: path, from: from, to: to, points: points) {
+                if let fresh = try? await getEquityHistory(path: path, from: w.from, to: w.to, points: points) {
                     history = fresh
                 }
             }
         }
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let resolutionSecondsBox = SendableBox<Int64>(chartResolutionSeconds(history.resolution))
         let initialHourBoundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
 
@@ -308,15 +370,18 @@ extension Arca {
         let chartBox = SendableBox<[EquityPoint]>(initialChart)
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
         let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
+        let lastAggAtBox = SendableBox<Date>(Date())
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
                 guard let self = self else { return }
+                slideIfLive()
+                let w = windowBox.value
                 let key = buildCacheKey("equityHistory", [
-                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": w.from, "to": w.to, "points": String(points),
                 ])
                 self.historyCache.delete(key)
-                if let fresh = try? await self.getEquityHistory(path: path, from: from, to: to, points: points) {
+                if let fresh = try? await self.getEquityHistory(path: path, from: w.from, to: w.to, points: points) {
                     resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
                     let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
                     hourBoundaryBox.update { $0 = boundary }
@@ -330,18 +395,21 @@ extension Arca {
         let updates = AsyncStream(EquityChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             // Refetches historical equity from the server and re-yields the
             // chart with the freshly-fetched points + the current live tip.
-            // Shared by the chart_snapshot path (server pushes when a bucket
-            // closes) and the reconnect path (WS status flips reconnecting →
-            // connected after a long network pause / iOS process suspension).
+            // Shared by every recovery trigger: chart_snapshot push, WS
+            // reconnect, app foreground (`onResume`), every successful auth
+            // (`onAuthenticated`), wall-clock boundary timer for quiet realms,
+            // and multi-bucket gaps detected on the agg-tick path.
             // ISO8601DateFormatter is non-Sendable so we construct a fresh
             // instance per call rather than capturing the outer `iso`.
             let refreshHistory: @Sendable () async -> Void = { [weak self] in
                 guard let self = self else { return }
+                slideIfLive()
+                let w = windowBox.value
                 let key = buildCacheKey("equityHistory", [
-                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": w.from, "to": w.to, "points": String(points),
                 ])
                 self.historyCache.delete(key)
-                guard let fresh = try? await self.getEquityHistory(path: path, from: from, to: to, points: points) else { return }
+                guard let fresh = try? await self.getEquityHistory(path: path, from: w.from, to: w.to, points: points) else { return }
                 resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
                 let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
                 hourBoundaryBox.update { $0 = boundary }
@@ -360,13 +428,22 @@ extension Arca {
 
             let task = Task {
                 for await agg in aggStream.updates {
+                    lastAggAtBox.update { $0 = Date() }
                     let previousLiveEquity = liveEquityBox.value
                     let liveEquity = agg.totalEquityUsd
                     let nowEpoch = Int64(Date().timeIntervalSince1970)
                     let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
                     let lastBoundary = hourBoundaryBox.value
 
-                    if currentHourBoundary > lastBoundary, let previousLiveEquity {
+                    if currentHourBoundary - lastBoundary > resolutionSecondsBox.value && !historicalBox.value.isEmpty {
+                        // Multi-bucket gap: more than one bucket has elapsed
+                        // since the last agg event. Single-point patching here
+                        // would leave intermediate buckets empty (the
+                        // visible-on-resume bug). Refetch the dense server
+                        // window which fills every bucket.
+                        await refreshHistory()
+                        continue
+                    } else if currentHourBoundary > lastBoundary, let previousLiveEquity {
                         historicalBox.update { historical in
                             guard !historical.isEmpty else { return }
                             let boundaryDate = Date(timeIntervalSince1970: TimeInterval(lastBoundary))
@@ -411,8 +488,46 @@ extension Arca {
                     if s == .disconnected && state.value != .loading {
                         state.update { $0 = .reconnecting }
                     } else if s == .connected && state.value == .reconnecting {
-                        await refreshHistory()
+                        // Refresh handled by `authenticatedStream` below —
+                        // that fires after the WS has finished re-issuing
+                        // all subscriptions, so the chart-history watch is
+                        // already re-registered before we refetch.
                         state.update { $0 = .connected }
+                    }
+                }
+            }
+            // Tab/app resume: refresh on foreground after a hidden period.
+            let resumeTask = Task { [ws] in
+                let stream = await ws.resumeStream
+                for await _ in stream {
+                    await refreshHistory()
+                }
+            }
+            // Every successful auth (initial post-reconnect re-auth, token
+            // refresh re-auth, etc.). Registered after the manager is already
+            // authenticated, so the very first auth does not fire.
+            let authTask = Task { [ws] in
+                let stream = await ws.authenticatedStream
+                for await _ in stream {
+                    await refreshHistory()
+                }
+            }
+            // Wall-clock boundary timer for quiet realms: the materializer
+            // pushes chart snapshots only on data change, so a no-fill window
+            // produces no events. Refetch when the boundary advances without
+            // any agg activity.
+            let boundaryTask = Task {
+                let tickSeconds = max(min(Int64(30), resolutionSecondsBox.value), 1)
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(tickSeconds) * 1_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    let nowEpoch = Int64(Date().timeIntervalSince1970)
+                    let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
+                    let lastBoundary = hourBoundaryBox.value
+                    let aggSilence = Date().timeIntervalSince(lastAggAtBox.value)
+                    if currentHourBoundary > lastBoundary,
+                       aggSilence > BOUNDARY_AGG_SILENCE_FACTOR * Double(resolutionSecondsBox.value) {
+                        await refreshHistory()
                     }
                 }
             }
@@ -420,6 +535,9 @@ extension Arca {
                 task.cancel()
                 chartTask.cancel()
                 statusTask.cancel()
+                resumeTask.cancel()
+                authTask.cancel()
+                boundaryTask.cancel()
             }
         }
 
@@ -693,6 +811,61 @@ extension Arca {
                 await self.ws.unwatchPath(path)
                 await aggStream.stop()
             }
+        )
+    }
+
+    /// Compute `from`/`to` ISO timestamps for a chart range preset, anchored
+    /// to the current wall clock. Mirror of the TypeScript SDK's
+    /// `computeChartRange`. Use to derive the same windows the SDK uses
+    /// when building custom UIs.
+    public static func computeChartRange(_ range: ChartRangePreset) -> (from: String, to: String) {
+        let now = Date()
+        let calendar = Calendar(identifier: .gregorian)
+        let fromDate: Date
+        switch range {
+        case .oneHour:         fromDate = calendar.date(byAdding: .hour, value: -1, to: now) ?? now
+        case .twentyFourHours: fromDate = calendar.date(byAdding: .hour, value: -24, to: now) ?? now
+        case .sevenDays:       fromDate = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        case .thirtyDays:      fromDate = calendar.date(byAdding: .day, value: -30, to: now) ?? now
+        case .threeMonths:     fromDate = calendar.date(byAdding: .month, value: -3, to: now) ?? now
+        case .oneYear:         fromDate = calendar.date(byAdding: .year, value: -1, to: now) ?? now
+        case .ytd:
+            var comps = calendar.dateComponents([.year], from: now)
+            comps.month = 1; comps.day = 1; comps.hour = 0; comps.minute = 0; comps.second = 0
+            fromDate = calendar.date(from: comps) ?? now
+        case .all:             fromDate = calendar.date(byAdding: .year, value: -5, to: now) ?? now
+        }
+        return (iso8601String(from: fromDate), iso8601String(from: now))
+    }
+
+    /// Convenience: open a live equity chart for a sliding range preset.
+    /// Computes `from`/`to` from the current wall clock and delegates to
+    /// `watchEquityChart`, which handles sliding the window forward on
+    /// every refresh and self-healing across app suspension.
+    public func watchEquityChartLive(
+        path: String,
+        range: ChartRangePreset,
+        points: Int = 1000,
+        exchange: String = "sim"
+    ) async throws -> EquityChartStream {
+        let (from, to) = Arca.computeChartRange(range)
+        return try await watchEquityChart(
+            path: path, from: from, to: to, points: points, exchange: exchange
+        )
+    }
+
+    /// Convenience: open a live P&L chart for a sliding range preset.
+    /// See ``watchEquityChartLive``.
+    public func watchPnlChartLive(
+        path: String,
+        range: ChartRangePreset,
+        points: Int = 1000,
+        exchange: String = "sim",
+        anchor: PnlAnchor = .zero
+    ) async throws -> PnlChartStream {
+        let (from, to) = Arca.computeChartRange(range)
+        return try await watchPnlChart(
+            path: path, from: from, to: to, points: points, exchange: exchange, anchor: anchor
         )
     }
 

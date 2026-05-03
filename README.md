@@ -160,6 +160,8 @@ await chart.stop()
 
 The rightmost point reflects the current live equity. When the hour boundary crosses, the live point is promoted to historical and a new one starts — no manual stitching required.
 
+The chart self-heals across iOS / macOS app suspension. On every successful `WebSocketManager.onAuthenticated`, `onResume` (foreground after a hidden period), wall-clock boundary advance with no aggregation activity, and multi-bucket time jump detected on the agg-tick path, the stream refetches the visible window from the server. When the requested `to` is within ~60s of construction time, both `from` and `to` slide forward on every refresh so the displayed window stays anchored to "now" — no manual reload needed when the user returns to a backgrounded app. `onResume` is wired to `UIApplication.willEnterForegroundNotification` (iOS / tvOS / visionOS) and `NSApplication.willBecomeActiveNotification` (macOS); on Linux/server-side Swift it's a no-op since there's no foreground/background concept.
+
 ## P&L chart (historical + live)
 
 `watchPnlChart` uses the **same** historical endpoint and live aggregation stream as the equity chart, and subscribes to **operation** events so completed deposits and transfers update cumulative inflows/outflows **on the client** (no extra `getPnlHistory` call per operation). Non-USD flows use `midPrices` from the initial `getPnlHistory` response.

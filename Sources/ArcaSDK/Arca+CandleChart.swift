@@ -230,45 +230,65 @@ extension Arca {
                 continuation.finish()
             }
 
-            let statusTask = Task { [weak self] in
-                var wasConnected = false
+            // Recover candle gap by refetching the last `gapRecoveryCandles`
+            // bars. Shared between the WS reconnect path (every successful
+            // re-auth) and the app foreground path (`onResume`). The
+            // status-driven `wasConnected` gating that this replaced was
+            // race-prone — a queued message landing before the disconnect
+            // callback fired meant the chart never recovered.
+            let recoverGap: @Sendable () async -> Void = { [weak self] in
+                guard let self = self else { return }
+                let gapStart = Int(Date().timeIntervalSince1970 * 1000)
+                    - interval.milliseconds * gapRecoveryCandles
+                do {
+                    let res = try await self.getCandles(
+                        coin: coin,
+                        interval: interval,
+                        startTime: gapStart
+                    )
+                    if !res.candles.isEmpty {
+                        let snapshot = candlesBox.updateAndGet { arr in
+                            arr.append(contentsOf: res.candles)
+                            arr = dedupCandles(arr)
+                        }
+                        let gapEnd = Int(Date().timeIntervalSince1970 * 1000)
+                        coverage.add(from: gapStart, to: gapEnd)
+                        if let last = snapshot.last {
+                            yieldSnapshot(continuation, snapshot, last)
+                        }
+                    }
+                } catch {
+                    self.log.warning("candle",
+                                     "gap recovery refetch failed",
+                                     error: error,
+                                     metadata: [
+                                         "coin": coin,
+                                         "interval": interval.rawValue,
+                                     ])
+                }
+            }
+
+            let statusTask = Task {
                 for await s in statusStream {
                     if s == .disconnected {
                         state.update { $0 = .reconnecting }
                     } else if s == .connected {
                         state.update { $0 = .connected }
-                        if wasConnected, let self = self {
-                            let gapStart = Int(Date().timeIntervalSince1970 * 1000)
-                                - interval.milliseconds * gapRecoveryCandles
-                            do {
-                                let res = try await self.getCandles(
-                                    coin: coin,
-                                    interval: interval,
-                                    startTime: gapStart
-                                )
-                                if !res.candles.isEmpty {
-                                    let snapshot = candlesBox.updateAndGet { arr in
-                                        arr.append(contentsOf: res.candles)
-                                        arr = dedupCandles(arr)
-                                    }
-                                    let gapEnd = Int(Date().timeIntervalSince1970 * 1000)
-                                    coverage.add(from: gapStart, to: gapEnd)
-                                    if let last = snapshot.last {
-                                        yieldSnapshot(continuation, snapshot, last)
-                                    }
-                                }
-                            } catch {
-                                self.log.warning("candle",
-                                                 "gap recovery refetch failed",
-                                                 error: error,
-                                                 metadata: [
-                                                     "coin": coin,
-                                                     "interval": interval.rawValue,
-                                                 ])
-                            }
-                        }
+                        // Recovery handled by `authenticatedStream` below —
+                        // every successful re-auth (post-reconnect) recovers.
                     }
-                    wasConnected = true
+                }
+            }
+            let authTask = Task { [ws] in
+                let stream = await ws.authenticatedStream
+                for await _ in stream {
+                    await recoverGap()
+                }
+            }
+            let resumeTask = Task { [ws] in
+                let stream = await ws.resumeStream
+                for await _ in stream {
+                    await recoverGap()
                 }
             }
 
@@ -315,6 +335,8 @@ extension Arca {
             continuation.onTermination = { _ in
                 candleTask.cancel()
                 statusTask.cancel()
+                authTask.cancel()
+                resumeTask.cancel()
                 retryTask?.cancel()
             }
         }

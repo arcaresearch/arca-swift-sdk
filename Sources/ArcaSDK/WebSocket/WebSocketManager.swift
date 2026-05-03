@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
 /// Actor-based WebSocket manager for real-time Arca events.
 ///
 /// Handles authentication, channel subscriptions, automatic reconnection
@@ -50,9 +56,22 @@ public actor WebSocketManager {
     private var lastMessageAt: Date = Date()
     private static let pingIntervalNs: UInt64 = 30_000_000_000  // 30s
     private static let staleThresholdS: TimeInterval = 45        // 45s
+    // Hidden duration shorter than this is treated as a quick switch and
+    // does NOT trigger a resume signal.
+    private static let resumeHiddenThresholdS: TimeInterval = 5
+    // After resuming, ping and wait this long for any inbound traffic;
+    // absence is treated as a half-open TCP and forces a reconnect.
+    private static let resumePingTimeoutNs: UInt64 = 2_000_000_000  // 2s
 
     private var lastDeliverySeq: Int = 0
     private var gapHandlers: [UUID: @Sendable (Int) -> Void] = [:]
+    private var resumeHandlers: [UUID: @Sendable (TimeInterval) -> Void] = [:]
+    private var authenticatedHandlers: [UUID: @Sendable () -> Void] = [:]
+    private var resumeContinuations: [UUID: AsyncStream<TimeInterval>.Continuation] = [:]
+    private var authenticatedContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var hiddenAt: Date?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var resumeProbeTask: Task<Void, Never>?
 
     /// If set, called on each reconnect to obtain a fresh token.
     private let getToken: (@Sendable () async throws -> String)?
@@ -98,6 +117,11 @@ public actor WebSocketManager {
     /// Connect to the WebSocket.
     public func connect() {
         shouldReconnect = true
+        // Install lifecycle observers lazily on first connect so we
+        // observe app foreground/background only when actually using the
+        // network. `installLifecycleObservers()` is idempotent so repeat
+        // connects after `disconnect()` work too.
+        installLifecycleObservers()
         doConnect()
     }
 
@@ -114,6 +138,8 @@ public actor WebSocketManager {
         reconnectTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        resumeProbeTask?.cancel()
+        resumeProbeTask = nil
         stopHeartbeat()
         cancelIdleTimer()
         for task in unsubTasks.values { task.cancel() }
@@ -121,6 +147,7 @@ public actor WebSocketManager {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         setStatus(.disconnected)
+        removeLifecycleObservers()
     }
 
     /// Subscribe to real-time mid price updates.
@@ -677,6 +704,13 @@ public actor WebSocketManager {
                 for (watchId, req) in chartHistoryWatches {
                     sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId))
                 }
+                // Notify subscribers AFTER all subscriptions are re-issued so
+                // any chart-history watch IDs they depend on are already
+                // registered.
+                for handler in authenticatedHandlers.values { handler() }
+                for continuation in authenticatedContinuations.values {
+                    continuation.yield(())
+                }
                 return
             }
 
@@ -816,6 +850,192 @@ public actor WebSocketManager {
     /// Remove a previously registered gap handler.
     public func removeGapHandler(_ id: UUID) {
         gapHandlers.removeValue(forKey: id)
+    }
+
+    /// Register a handler that fires when the host app returns from a
+    /// backgrounded state (iOS / tvOS / visionOS:
+    /// `UIApplication.willEnterForegroundNotification`; macOS:
+    /// `NSApplication.willBecomeActiveNotification`) after at least
+    /// `resumeHiddenThresholdS` seconds hidden. The handler receives the
+    /// hidden duration. Watch streams use this to refresh historical data
+    /// even when the WS stayed nominally connected through the freeze.
+    /// Returns an ID that can be passed to ``removeResumeHandler`` to unregister.
+    @discardableResult
+    public func onResume(_ handler: @escaping @Sendable (TimeInterval) -> Void) -> UUID {
+        let id = UUID()
+        resumeHandlers[id] = handler
+        return id
+    }
+
+    /// Remove a previously registered resume handler.
+    public func removeResumeHandler(_ id: UUID) {
+        resumeHandlers.removeValue(forKey: id)
+    }
+
+    /// Register a handler that fires on every successful WebSocket
+    /// `authenticated` message. Includes the very first auth and every
+    /// subsequent reconnect-and-auth. Watch streams use this to refresh
+    /// on fresh auth instead of relying on observing a `disconnected ->
+    /// connected` status transition (which can be missed if the WS
+    /// reconnects faster than the disconnect callback fires).
+    /// Returns an ID that can be passed to ``removeAuthenticatedHandler`` to unregister.
+    @discardableResult
+    public func onAuthenticated(_ handler: @escaping @Sendable () -> Void) -> UUID {
+        let id = UUID()
+        authenticatedHandlers[id] = handler
+        return id
+    }
+
+    /// Remove a previously registered authenticated handler.
+    public func removeAuthenticatedHandler(_ id: UUID) {
+        authenticatedHandlers.removeValue(forKey: id)
+    }
+
+    /// A stream of resume events. Each emission carries the hidden
+    /// duration in seconds. Mirrors ``onResume`` for SwiftUI / structured-
+    /// concurrency consumers.
+    public var resumeStream: AsyncStream<TimeInterval> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuation.onTermination = { [weak self] _ in
+                Task { [weak self] in
+                    await self?.removeResumeContinuation(id: id)
+                }
+            }
+            self.resumeContinuations[id] = continuation
+        }
+    }
+
+    /// A stream that emits whenever the WebSocket completes authentication.
+    /// Mirrors ``onAuthenticated`` for SwiftUI / structured-concurrency consumers.
+    public var authenticatedStream: AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuation.onTermination = { [weak self] _ in
+                Task { [weak self] in
+                    await self?.removeAuthenticatedContinuation(id: id)
+                }
+            }
+            self.authenticatedContinuations[id] = continuation
+        }
+    }
+
+    private func removeResumeContinuation(id: UUID) {
+        resumeContinuations.removeValue(forKey: id)
+    }
+
+    private func removeAuthenticatedContinuation(id: UUID) {
+        authenticatedContinuations.removeValue(forKey: id)
+    }
+
+    // MARK: - App Lifecycle Observation
+
+    private func installLifecycleObservers() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+
+        let foregroundHandler: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { [weak self] in await self?.handleAppWillEnterForeground() }
+        }
+        let backgroundHandler: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { [weak self] in await self?.handleAppDidEnterBackground() }
+        }
+
+        #if canImport(UIKit) && (os(iOS) || os(tvOS) || os(visionOS))
+        let foreground = center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: nil,
+            using: foregroundHandler
+        )
+        let background = center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: nil,
+            using: backgroundHandler
+        )
+        lifecycleObservers = [foreground, background]
+        #elseif canImport(AppKit) && os(macOS)
+        let active = center.addObserver(
+            forName: NSApplication.willBecomeActiveNotification,
+            object: nil,
+            queue: nil,
+            using: foregroundHandler
+        )
+        let inactive = center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: nil,
+            using: backgroundHandler
+        )
+        lifecycleObservers = [active, inactive]
+        #else
+        // Linux / server-side Swift: no native foreground/background signal.
+        _ = foregroundHandler; _ = backgroundHandler
+        #endif
+    }
+
+    private func removeLifecycleObservers() {
+        let center = NotificationCenter.default
+        for observer in lifecycleObservers {
+            center.removeObserver(observer)
+        }
+        lifecycleObservers.removeAll()
+    }
+
+    private func handleAppDidEnterBackground() {
+        hiddenAt = Date()
+    }
+
+    private func handleAppWillEnterForeground() {
+        guard let hiddenAt = hiddenAt else { return }
+        self.hiddenAt = nil
+        let hiddenDuration = Date().timeIntervalSince(hiddenAt)
+        guard hiddenDuration >= WebSocketManager.resumeHiddenThresholdS else { return }
+        fireResume(hiddenDuration: hiddenDuration)
+        probeStaleConnection()
+    }
+
+    /// Internal: invoked when the host app foregrounds after a hidden
+    /// period beyond the threshold. Exposed for tests to drive without
+    /// requiring `NotificationCenter`.
+    public func triggerResume(hiddenDuration: TimeInterval) {
+        fireResume(hiddenDuration: hiddenDuration)
+        probeStaleConnection()
+    }
+
+    private func fireResume(hiddenDuration: TimeInterval) {
+        for handler in resumeHandlers.values { handler(hiddenDuration) }
+        for continuation in resumeContinuations.values {
+            continuation.yield(hiddenDuration)
+        }
+    }
+
+    private func probeStaleConnection() {
+        resumeProbeTask?.cancel()
+        guard webSocketTask != nil, _status == .connected else { return }
+        let baselineMessageAt = lastMessageAt
+        sendMessage(.ping)
+        resumeProbeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.resumePingTimeoutNs)
+            guard !Task.isCancelled else { return }
+            await self?.checkResumeProbe(baselineMessageAt: baselineMessageAt)
+        }
+    }
+
+    private func checkResumeProbe(baselineMessageAt: Date) {
+        resumeProbeTask = nil
+        guard lastMessageAt == baselineMessageAt else { return } // any inbound message means alive
+        log.warning("websocket", "resume probe timeout, forcing reconnect")
+        stopHeartbeat()
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        setStatus(.disconnected)
+        if shouldReconnect {
+            scheduleReconnect()
+        }
     }
 
     // MARK: - Private: Reconnection

@@ -420,4 +420,109 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(gapRecords.first?.level, .warning)
         XCTAssertEqual(gapRecords.first?.metadata["missed"], "3")
     }
+
+    // MARK: - Resume / Authenticated lifecycle
+
+    func testTriggerResumeFiresOnResumeHandlersWithDuration() async {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let captured = SendableBox<[TimeInterval]>([])
+        _ = await manager.onResume { duration in
+            captured.update { $0.append(duration) }
+        }
+
+        await manager.triggerResume(hiddenDuration: 30.0)
+
+        XCTAssertEqual(captured.value, [30.0])
+    }
+
+    func testRemoveResumeHandlerStopsFurtherCalls() async {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let captured = SendableBox<[TimeInterval]>([])
+        let id = await manager.onResume { duration in
+            captured.update { $0.append(duration) }
+        }
+
+        await manager.triggerResume(hiddenDuration: 10.0)
+        await manager.removeResumeHandler(id)
+        await manager.triggerResume(hiddenDuration: 20.0)
+
+        XCTAssertEqual(captured.value, [10.0])
+    }
+
+    func testAuthenticatedHandlerFiresOnEveryAuthMessage() async {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let count = SendableBox<Int>(0)
+        _ = await manager.onAuthenticated {
+            count.update { $0 += 1 }
+        }
+
+        // Two synthetic re-auths (e.g. token refresh path) — both fire.
+        await manager.injectMessage(#"{"type":"authenticated","message":null}"#)
+        await manager.injectMessage(#"{"type":"authenticated","message":null}"#)
+
+        // injectMessage is async-dispatched; give the actor a chance to drain.
+        let deadline = Date().addingTimeInterval(0.5)
+        while count.value < 2, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(count.value, 2)
+    }
+
+    func testAuthenticatedHandlerDoesNotFireForAuthBeforeRegistration() async {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        // Authenticate first.
+        await manager.injectMessage(#"{"type":"authenticated","message":null}"#)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        // Register AFTER auth — should NOT retroactively fire.
+        let count = SendableBox<Int>(0)
+        _ = await manager.onAuthenticated {
+            count.update { $0 += 1 }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(count.value, 0)
+    }
+
+    func testRemoveAuthenticatedHandlerStopsFurtherCalls() async {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let count = SendableBox<Int>(0)
+        let id = await manager.onAuthenticated {
+            count.update { $0 += 1 }
+        }
+
+        await manager.injectMessage(#"{"type":"authenticated","message":null}"#)
+        // Wait for first fire.
+        let deadline1 = Date().addingTimeInterval(0.5)
+        while count.value < 1, Date() < deadline1 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        await manager.removeAuthenticatedHandler(id)
+        await manager.injectMessage(#"{"type":"authenticated","message":null}"#)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(count.value, 1)
+    }
 }
