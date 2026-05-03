@@ -582,6 +582,33 @@ extension Arca {
         anchor: PnlAnchor = .zero
     ) async throws -> PnlChartStream {
         try validatePath(path)
+        // Live-tail heuristic: if `to` was within ~60s of construction time,
+        // the caller wants a "last N hours up to now" sliding window. On
+        // every refresh, recompute `from`/`to` so the window stays current.
+        // Otherwise the watch is fixed-window — keep `from`/`to` pinned.
+        // Mirrors `watchEquityChart`; see there for the full rationale.
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let createdAt = Date()
+        let fromDateOrig = iso.date(from: from)
+        let toDateOrig = iso.date(from: to)
+        let isLiveTail: Bool = {
+            guard let f = fromDateOrig, let t = toDateOrig else { return false }
+            _ = f
+            return abs(t.timeIntervalSince(createdAt)) <= LIVE_TAIL_THRESHOLD_S
+        }()
+        let windowSeconds: TimeInterval = isLiveTail
+            ? max(0, (toDateOrig?.timeIntervalSince1970 ?? 0) - (fromDateOrig?.timeIntervalSince1970 ?? 0))
+            : 0
+        let windowBox = SendableBox<(from: String, to: String)>((from, to))
+        let slideIfLive: @Sendable () -> Void = {
+            guard isLiveTail else { return }
+            let now = Date()
+            let newFrom = iso8601String(from: now.addingTimeInterval(-windowSeconds))
+            let newTo = iso8601String(from: now)
+            windowBox.update { $0 = (newFrom, newTo) }
+        }
+
         let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
         await ws.watchPath(path)
         let flowsSince = history.effectiveFrom ?? from
@@ -601,8 +628,6 @@ extension Arca {
             else { currentCumOutflows += val }
         }
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let resolutionSecondsBox = SendableBox<Int64>(chartResolutionSeconds(history.resolution))
         let initialHourBoundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
 
@@ -651,15 +676,19 @@ extension Arca {
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
         let cumInflowsBox = SendableBox<Double>(currentCumInflows)
         let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
+        let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
+        let lastAggAtBox = SendableBox<Date>(Date())
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
                 guard let self = self else { return }
+                slideIfLive()
+                let w = windowBox.value
                 let key = buildCacheKey("pnlHistory", [
-                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": w.from, "to": w.to, "points": String(points),
                 ])
                 self.historyCache.delete(key)
-                if let fresh = try? await self.getPnlHistory(path: path, from: from, to: to, points: points) {
+                if let fresh = try? await self.getPnlHistory(path: path, from: w.from, to: w.to, points: points) {
                     resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
                     let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
                     hourBoundaryBox.update { $0 = boundary }
@@ -674,18 +703,21 @@ extension Arca {
         let updates = AsyncStream(PnlChartUpdate.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             // Refetches historical P&L from the server and re-yields the chart
             // with the freshly-fetched points + the current live tip. Shared by
-            // the chart_snapshot path (server pushes when a bucket closes) and
-            // the reconnect path (WS status flips reconnecting → connected
-            // after a long network pause / iOS process suspension).
+            // every recovery trigger: chart_snapshot push, WS reconnect, app
+            // foreground (`onResume`), every successful auth (`onAuthenticated`),
+            // wall-clock boundary timer for quiet realms, and multi-bucket gaps
+            // detected on the agg-tick path.
             // ISO8601DateFormatter is non-Sendable so we construct a fresh
             // instance per call rather than capturing the outer `iso`.
             let refreshHistory: @Sendable () async -> Void = { [weak self] in
                 guard let self = self else { return }
+                slideIfLive()
+                let w = windowBox.value
                 let key = buildCacheKey("pnlHistory", [
-                    "target": path, "kind": "path", "from": from, "to": to, "points": String(points),
+                    "target": path, "kind": "path", "from": w.from, "to": w.to, "points": String(points),
                 ])
                 self.historyCache.delete(key)
-                guard let fresh = try? await self.getPnlHistory(path: path, from: from, to: to, points: points) else { return }
+                guard let fresh = try? await self.getPnlHistory(path: path, from: w.from, to: w.to, points: points) else { return }
                 resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
                 let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
                 hourBoundaryBox.update { $0 = boundary }
@@ -714,20 +746,39 @@ extension Arca {
 
             let aggTask = Task {
                 for await agg in aggStream.updates {
-                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
+                    lastAggAtBox.update { $0 = Date() }
+                    // Capture the previous live values BEFORE absorbing the
+                    // new agg, so a boundary cross emits the equity / pnl
+                    // that was current right before the boundary (matching
+                    // the TS PnlChartStream behaviour). The previous-bucket
+                    // approach used here used to copy the last historical
+                    // point's pnl/equity, which is the prior bucket's close
+                    // and not the value the user saw at the boundary.
+                    let previousLiveEquityStr = liveEquityBox.value
+                    let previousLiveEquity = Double(previousLiveEquityStr ?? "0") ?? 0
+                    let previousLivePnl = previousLiveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
+
                     let nowEpoch = Int64(Date().timeIntervalSince1970)
                     let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
                     let lastBoundary = hourBoundaryBox.value
 
-                    if currentHourBoundary > lastBoundary {
-                        historicalBox.update { pts in
-                            guard !pts.isEmpty else { return }
-                            let last = pts[pts.count - 1]
-                            let boundaryDate = Date(timeIntervalSince1970: TimeInterval(lastBoundary))
-                            pts.append(PnlPoint(
+                    if currentHourBoundary - lastBoundary > resolutionSecondsBox.value && !historicalBox.value.isEmpty {
+                        // Multi-bucket gap: more than one bucket has elapsed
+                        // since the last agg event. Single-point patching here
+                        // would leave intermediate buckets empty (the
+                        // visible-on-resume bug). Refetch the dense server
+                        // window which fills every bucket.
+                        await refreshHistory()
+                        continue
+                    } else if currentHourBoundary > lastBoundary,
+                              let prevStr = previousLiveEquityStr,
+                              !historicalBox.value.isEmpty {
+                        let boundaryDate = Date(timeIntervalSince1970: TimeInterval(lastBoundary))
+                        historicalBox.update { historical in
+                            historical.append(PnlPoint(
                                 timestamp: iso.string(from: boundaryDate),
-                                pnlUsd: last.pnlUsd,
-                                equityUsd: last.equityUsd
+                                pnlUsd: String(format: "%.2f", previousLivePnl),
+                                equityUsd: prevStr
                             ))
                         }
                         hourBoundaryBox.update { $0 = currentHourBoundary }
@@ -739,7 +790,9 @@ extension Arca {
                     if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
                         cumOutflowsBox.update { $0 = outVal }
                     }
+                    liveEquityBox.update { $0 = agg.totalEquityUsd }
 
+                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
                     let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
                     let livePnlStr = String(format: "%.2f", pnl)
                     let livePoint = PnlPoint(
@@ -788,8 +841,46 @@ extension Arca {
                     if s == .disconnected && state.value != .loading {
                         state.update { $0 = .reconnecting }
                     } else if s == .connected && state.value == .reconnecting {
-                        await refreshHistory()
+                        // Refresh handled by `authenticatedStream` below —
+                        // that fires after the WS has finished re-issuing
+                        // all subscriptions, so the chart-history watch is
+                        // already re-registered before we refetch.
                         state.update { $0 = .connected }
+                    }
+                }
+            }
+            // Tab/app resume: refresh on foreground after a hidden period.
+            let resumeTask = Task { [ws] in
+                let stream = await ws.resumeStream
+                for await _ in stream {
+                    await refreshHistory()
+                }
+            }
+            // Every successful auth (initial post-reconnect re-auth, token
+            // refresh re-auth, etc.). Registered after the manager is already
+            // authenticated, so the very first auth does not fire.
+            let authTask = Task { [ws] in
+                let stream = await ws.authenticatedStream
+                for await _ in stream {
+                    await refreshHistory()
+                }
+            }
+            // Wall-clock boundary timer for quiet realms: the materializer
+            // pushes chart snapshots only on data change, so a no-fill window
+            // produces no events. Refetch when the boundary advances without
+            // any agg activity.
+            let boundaryTask = Task {
+                let tickSeconds = max(min(Int64(30), resolutionSecondsBox.value), 1)
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(tickSeconds) * 1_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    let nowEpoch = Int64(Date().timeIntervalSince1970)
+                    let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
+                    let lastBoundary = hourBoundaryBox.value
+                    let aggSilence = Date().timeIntervalSince(lastAggAtBox.value)
+                    if currentHourBoundary > lastBoundary,
+                       aggSilence > BOUNDARY_AGG_SILENCE_FACTOR * Double(resolutionSecondsBox.value) {
+                        await refreshHistory()
                     }
                 }
             }
@@ -798,6 +889,9 @@ extension Arca {
                 aggTask.cancel()
                 chartTask.cancel()
                 statusTask.cancel()
+                resumeTask.cancel()
+                authTask.cancel()
+                boundaryTask.cancel()
             }
         }
 
