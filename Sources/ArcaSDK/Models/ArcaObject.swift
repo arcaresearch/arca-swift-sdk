@@ -49,6 +49,34 @@ public enum ArcaObjectStatus: String, Codable, Sendable {
     case deleted
 }
 
+/// Per-boundary recovery-hatch state surfaced on `ArcaObject`. Present
+/// (non-nil) only when the object's isolation boundary is currently
+/// `soft_frozen` or `hard_frozen` — i.e. the recovery key holder has
+/// taken action on-chain and the platform has refused to dispatch new
+/// operations into the boundary. Active boundaries omit the field.
+///
+/// `softFrozen` is reversible: the recovery key holder may unlock the
+/// boundary on-chain and the platform will return to `active`. Once a
+/// `Withdrawn` event fires, the boundary becomes `hardFrozen` and is
+/// terminal — the platform sweeps every wallet in the boundary into a
+/// system-owned recovery arca at `recoveryArcaPath`. New operations
+/// against the boundary return HTTP 409 `BOUNDARY_FROZEN`.
+public enum BoundaryStatus: String, Codable, Sendable {
+    case active
+    case softFrozen = "soft_frozen"
+    case hardFrozen = "hard_frozen"
+}
+
+public struct BoundarySnapshot: Codable, Sendable {
+    public let boundaryId: String
+    public let status: BoundaryStatus
+    public let lockedAt: String?
+    public let frozenAt: String?
+    public let recoveryActor: String?
+    public let recoveryTxHash: String?
+    public let recoveryArcaPath: String?
+}
+
 public struct ArcaObject: Codable, Sendable {
     public let id: ObjectID
     public let realmId: RealmID
@@ -61,6 +89,12 @@ public struct ArcaObject: Codable, Sendable {
     public let systemOwned: Bool
     public let createdAt: String
     public let updatedAt: String
+    /// Recovery-hatch state. Nil when the boundary is `active` (the
+    /// happy path). When non-nil, callers should refuse to dispatch new
+    /// operations on this object — the server will reject them with
+    /// `BOUNDARY_FROZEN` anyway. Frozen wallets read $0 after the
+    /// platform's recovery sweep lands.
+    public let boundary: BoundarySnapshot?
 }
 
 // MARK: - Balances

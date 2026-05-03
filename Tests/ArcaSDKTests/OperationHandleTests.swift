@@ -260,7 +260,8 @@ final class OperationResponseConformanceTests: XCTestCase {
             path: "/wallets/main", type: .denominated, denomination: "USD",
             status: .active, metadata: nil, deletedAt: nil, systemOwned: false,
             createdAt: "2026-03-08T00:00:00.000000Z",
-            updatedAt: "2026-03-08T00:00:00.000000Z"
+            updatedAt: "2026-03-08T00:00:00.000000Z",
+            boundary: nil
         )
         let original = CreateArcaObjectResponse(object: obj, operation: makeOperation(state: .pending))
         let updated = original.withOperation(makeOperation(state: .completed))
@@ -275,7 +276,8 @@ final class OperationResponseConformanceTests: XCTestCase {
             status: .deleted, metadata: nil, deletedAt: "2026-03-08T00:00:00.000000Z",
             systemOwned: false,
             createdAt: "2026-03-08T00:00:00.000000Z",
-            updatedAt: "2026-03-08T00:00:00.000000Z"
+            updatedAt: "2026-03-08T00:00:00.000000Z",
+            boundary: nil
         )
         let original = DeleteArcaObjectResponse(object: obj, operation: makeOperation(state: .pending))
         let updated = original.withOperation(makeOperation(state: .completed))
