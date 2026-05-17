@@ -201,6 +201,13 @@ public final class Arca: Sendable {
         }
     }
 
+    /// Manually force the WebSocket to disconnect and immediately reconnect.
+    /// Useful for proactive recovery during OS lifecycle events (e.g., returning to foreground)
+    /// if the automatic lifecycle observers are insufficient.
+    public func reconnect() async {
+        await ws.reconnect()
+    }
+
     /// Register a listener for unrecoverable authentication errors.
     /// Returns an ID to pass to ``removeAuthErrorHandler(_:)`` to unsubscribe.
     @discardableResult

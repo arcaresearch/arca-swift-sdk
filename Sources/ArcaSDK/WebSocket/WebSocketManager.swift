@@ -131,6 +131,17 @@ public actor WebSocketManager {
         connect()
     }
 
+    /// Manually force the WebSocket to disconnect and immediately reconnect.
+    /// Useful for proactive recovery during OS lifecycle events if automatic
+    /// observers are insufficient.
+    public func reconnect() {
+        log.info("websocket", "manual reconnect requested")
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempt = 0
+        doConnect()
+    }
+
     /// Disconnect and stop reconnecting.
     public func disconnect() {
         shouldReconnect = false
@@ -954,7 +965,19 @@ public actor WebSocketManager {
             queue: nil,
             using: backgroundHandler
         )
-        lifecycleObservers = [foreground, background]
+        let sceneForeground = center.addObserver(
+            forName: UIScene.willEnterForegroundNotification,
+            object: nil,
+            queue: nil,
+            using: foregroundHandler
+        )
+        let sceneBackground = center.addObserver(
+            forName: UIScene.didEnterBackgroundNotification,
+            object: nil,
+            queue: nil,
+            using: backgroundHandler
+        )
+        lifecycleObservers = [foreground, background, sceneForeground, sceneBackground]
         #elseif canImport(AppKit) && os(macOS)
         let active = center.addObserver(
             forName: NSApplication.willBecomeActiveNotification,
