@@ -150,7 +150,8 @@ extension Arca {
         grouping: TpslGrouping? = nil,
         useMax: Bool? = nil,
         sizeTolerance: Double? = nil,
-        maxSizeTolerance: Double? = nil
+        maxSizeTolerance: Double? = nil,
+        isolated: Bool? = nil
     ) -> OrderHandle {
         let effectiveTolerance = sizeTolerance ?? maxSizeTolerance
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
@@ -173,7 +174,8 @@ extension Arca {
                 tpsl: tpsl?.rawValue,
                 grouping: grouping?.rawValue,
                 useMax: useMax,
-                sizeTolerance: effectiveTolerance
+                sizeTolerance: effectiveTolerance,
+                isolated: isolated == true ? true : nil
             ))
         }
 
@@ -246,6 +248,12 @@ extension Arca {
     /// `size` for a partial close). Always sets `reduceOnly: true` so the order
     /// can never accidentally open or increase a position.
     ///
+    /// Automatically threads the position's `leverage` into the order body and
+    /// sets `isolated: true` for HIP-3 (`onlyIsolated`) markets such as
+    /// `hl:1:CL`. Hyperliquid buckets isolated positions by leverage — a close
+    /// that doesn't carry `leverage` is rejected by the matching engine.
+    /// Pass `isolated` or `leverage` to override the auto-fill.
+    ///
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
@@ -254,6 +262,9 @@ extension Arca {
     ///   - timeInForce: Time in force (default: .ioc)
     ///   - builderFeeBps: Builder fee in tenths of a basis point
     ///   - feeTargets: Fee routing targets
+    ///   - isolated: Override `isolated` inference. Defaults to `onlyIsolated`
+    ///     from market meta.
+    ///   - leverage: Override leverage. Defaults to the position's leverage.
     public func closePosition(
         path: String,
         objectId: String,
@@ -261,7 +272,9 @@ extension Arca {
         size: String? = nil,
         timeInForce: TimeInForce = .ioc,
         builderFeeBps: Int? = nil,
-        feeTargets: [FeeTarget]? = nil
+        feeTargets: [FeeTarget]? = nil,
+        isolated: Bool? = nil,
+        leverage: Int? = nil
     ) -> OrderHandle {
         let positionFetch = Task { [self] in
             let positions = try await listPositions(objectId: objectId)
@@ -282,6 +295,16 @@ extension Arca {
             } else {
                 closeSize = position.size
             }
+
+            let effectiveLeverage: Int? = leverage ?? position.leverage
+            let effectiveIsolated: Bool
+            if let override = isolated {
+                effectiveIsolated = override
+            } else {
+                let meta = try? await self.asset(coin)
+                effectiveIsolated = meta?.onlyIsolated == true
+            }
+
             return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
@@ -290,7 +313,7 @@ extension Arca {
                 orderType: OrderType.market.rawValue,
                 size: closeSize,
                 price: nil,
-                leverage: nil,
+                leverage: effectiveLeverage,
                 reduceOnly: true,
                 timeInForce: timeInForce.rawValue,
                 builderFeeBps: builderFeeBps,
@@ -301,7 +324,8 @@ extension Arca {
                 tpsl: nil,
                 grouping: nil,
                 useMax: nil,
-                sizeTolerance: nil
+                sizeTolerance: nil,
+                isolated: effectiveIsolated ? true : nil
             ))
         }
 
@@ -809,4 +833,9 @@ private struct PlaceOrderRequest: Encodable {
     let grouping: String?
     let useMax: Bool?
     let sizeTolerance: Double?
+    /// Whether the order targets the asset's isolated-margin bucket.
+    /// Required (with positive `leverage`) on `onlyIsolated=true`
+    /// markets such as HIP-3 (`hl:1:*`). Encoded as `nil` (omitted)
+    /// by default so existing call sites don't change shape.
+    let isolated: Bool?
 }
