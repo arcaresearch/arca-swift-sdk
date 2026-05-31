@@ -31,6 +31,11 @@ final class MarketMetaCacheTests: XCTestCase {
         XCTAssertEqual(btc?.logoUrl, "https://example.com/btc.png")
         XCTAssertEqual(btc?.logoSources?.count, 1)
         XCTAssertEqual(btc?.logoSources?.first?.width, 128)
+        XCTAssertEqual(btc?.assetType, "crypto")
+        XCTAssertEqual(btc?.categoryLabel, "Crypto")
+        XCTAssertEqual(btc?.mapped, true)
+        XCTAssertEqual(btc?.hasLogo, true)
+        XCTAssertEqual(btc?.descriptionStatus, "curated")
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
     }
 
@@ -87,6 +92,10 @@ final class MarketMetaCacheTests: XCTestCase {
         XCTAssertNotNil(tsla)
         XCTAssertEqual(tsla?.symbol, "TSLA")
         XCTAssertEqual(tsla?.displayName, "Tesla")
+        XCTAssertEqual(tsla?.assetType, "equity")
+        XCTAssertEqual(tsla?.categoryLabel, "Equity")
+        XCTAssertEqual(tsla?.hasDisplayName, true)
+        XCTAssertEqual(tsla?.descriptionStatus, "curated")
         XCTAssertEqual(tsla?.isHip3, true)
         XCTAssertEqual(tsla?.feeScale, 3.0)
     }
@@ -197,6 +206,12 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "logoUrl": "https://example.com/btc.png",
                 "logoSources": [{"url": "https://example.com/btc-128.webp", "format": "webp", "width": 128}],
                 "exchange": "hl",
+                "assetType": "crypto",
+                "categoryLabel": "Crypto",
+                "mapped": true,
+                "hasDisplayName": false,
+                "hasLogo": true,
+                "descriptionStatus": "curated",
                 "isHip3": false,
                 "deployerDisplayName": null,
                 "index": 0,
@@ -212,6 +227,12 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "displayName": null,
                 "logoUrl": "https://example.com/eth.png",
                 "exchange": "hl",
+                "assetType": "crypto",
+                "categoryLabel": "Crypto",
+                "mapped": true,
+                "hasDisplayName": false,
+                "hasLogo": true,
+                "descriptionStatus": "curated",
                 "isHip3": false,
                 "deployerDisplayName": null,
                 "index": 1,
@@ -227,6 +248,12 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "displayName": "Tesla",
                 "logoUrl": "https://example.com/tsla.png",
                 "exchange": "hl",
+                "assetType": "equity",
+                "categoryLabel": "Equity",
+                "mapped": true,
+                "hasDisplayName": true,
+                "hasLogo": true,
+                "descriptionStatus": "curated",
                 "isHip3": true,
                 "deployerDisplayName": "xyz",
                 "index": 2,

@@ -545,6 +545,18 @@ public struct SimMetaAsset: Codable, Sendable {
     public let logoUrl: String?
     public let logoSources: [LogoSource]?
     public let exchange: String
+    /// Machine-readable asset class when Arca recognizes the underlying instrument.
+    public let assetType: String?
+    /// Human-readable label for `assetType`, suitable for UI grouping.
+    public let categoryLabel: String?
+    /// True when the asset is mapped to Arca's underlying-instrument registry.
+    public let mapped: Bool?
+    /// True when a curated display name is available.
+    public let hasDisplayName: Bool?
+    /// True when a curated logo URL or logo source set is available.
+    public let hasLogo: Bool?
+    /// Whether curated display metadata is available or the asset is only known from the live venue listing.
+    public let descriptionStatus: String?
     public let isHip3: Bool?
     public let deployerDisplayName: String?
     public let index: Int
