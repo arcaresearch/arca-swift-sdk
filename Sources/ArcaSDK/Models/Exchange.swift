@@ -478,8 +478,11 @@ public struct MarginTable: Codable, Sendable {
 }
 
 public struct SimMetaAsset: Codable, Sendable {
+    /// Case-sensitive canonical market ID to pass back to trading and market-data APIs
+    /// (for example, "hl:BTC", "hl:kSHIB", or "hl:1:TSLA").
     public let name: String
     public let dex: String?
+    /// Display symbol only. Do not reconstruct API coin IDs from this field.
     public let symbol: String
     public let displayName: String?
     public let logoUrl: String?
