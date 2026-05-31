@@ -26,6 +26,7 @@ final class MarketMetaCacheTests: XCTestCase {
         let btc = try await arca.asset("hl:BTC")
         XCTAssertNotNil(btc)
         XCTAssertEqual(btc?.symbol, "BTC")
+        XCTAssertEqual(btc?.venueSymbol, "BTC")
         XCTAssertEqual(btc?.exchange, "hl")
         XCTAssertEqual(btc?.maxLeverage, 50)
         XCTAssertEqual(btc?.logoUrl, "https://example.com/btc.png")
@@ -91,6 +92,7 @@ final class MarketMetaCacheTests: XCTestCase {
         let tsla = try await arca.asset("hl:1:TSLA")
         XCTAssertNotNil(tsla)
         XCTAssertEqual(tsla?.symbol, "TSLA")
+        XCTAssertEqual(tsla?.venueSymbol, "xyz:TSLA")
         XCTAssertEqual(tsla?.displayName, "Tesla")
         XCTAssertEqual(tsla?.assetType, "equity")
         XCTAssertEqual(tsla?.categoryLabel, "Equity")
@@ -202,6 +204,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "name": "hl:BTC",
                 "dex": null,
                 "symbol": "BTC",
+                "venueSymbol": "BTC",
                 "displayName": null,
                 "logoUrl": "https://example.com/btc.png",
                 "logoSources": [{"url": "https://example.com/btc-128.webp", "format": "webp", "width": 128}],
@@ -224,6 +227,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "name": "hl:ETH",
                 "dex": null,
                 "symbol": "ETH",
+                "venueSymbol": "ETH",
                 "displayName": null,
                 "logoUrl": "https://example.com/eth.png",
                 "exchange": "hl",
@@ -245,6 +249,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "name": "hl:1:TSLA",
                 "dex": "xyz",
                 "symbol": "TSLA",
+                "venueSymbol": "xyz:TSLA",
                 "displayName": "Tesla",
                 "logoUrl": "https://example.com/tsla.png",
                 "exchange": "hl",

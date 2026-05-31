@@ -541,6 +541,9 @@ public struct SimMetaAsset: Codable, Sendable {
     public let dex: String?
     /// Display symbol only. Do not reconstruct API coin IDs from this field.
     public let symbol: String
+    /// Venue-native market symbol for display or venue deep links, for example "BTC" or "xyz:TSLA".
+    /// Do not pass this value to Arca APIs; use `name` instead.
+    public let venueSymbol: String?
     public let displayName: String?
     public let logoUrl: String?
     public let logoSources: [LogoSource]?
