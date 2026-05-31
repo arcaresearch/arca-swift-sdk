@@ -565,7 +565,16 @@ public struct SimMetaAsset: Codable, Sendable {
     public let index: Int
     public let szDecimals: Int
     public let maxLeverage: Int
+    /// Hyperliquid-specific. Deprecated in favor of `marginModes` — read that
+    /// instead. `onlyIsolated == true` is equivalent to `marginModes` being
+    /// `["isolated"]`.
     public let onlyIsolated: Bool
+    /// The margin modes this asset supports: `["isolated"]` for isolated-only
+    /// markets, `["cross", "isolated"]` otherwise. Read this instead of
+    /// inferring from `onlyIsolated` or `isHip3` — margin mode is independent of
+    /// HIP-3 (some HIP-3 markets, e.g. `hl:1:TSLA`, are cross-eligible).
+    /// Optional for backward compatibility with older servers.
+    public let marginModes: [String]?
     /// HIP-3 fee multiplier. Nil or absent for standard perps (defaults to 1.0).
     public let feeScale: Double?
     public let marginTableId: Int?
