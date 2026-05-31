@@ -2351,4 +2351,80 @@ final class ModelDecodingTests: XCTestCase {
         // equity = 100 + 0 = 100, maintenance = 200 → floor at 0
         XCTAssertEqual(result.marginSummary.availableToWithdraw, "0")
     }
+
+    // MARK: - Isolated Margin & Margin Mode
+
+    func testSimPositionDecoding_IsolatedFields() throws {
+        let json = """
+        {
+            "id": "sps_01abc",
+            "accountId": "act_01abc",
+            "realmId": "rlm_01def",
+            "coin": "hl:1:CL",
+            "side": "LONG",
+            "size": "1",
+            "entryPrice": "50",
+            "leverage": 5,
+            "marginUsed": "10",
+            "marginMode": "isolated",
+            "isolatedMargin": "125",
+            "liquidationPrice": "40"
+        }
+        """.data(using: .utf8)!
+
+        let pos = try decoder.decode(SimPosition.self, from: json)
+        XCTAssertEqual(pos.marginMode, .isolated)
+        XCTAssertEqual(pos.isolatedMargin, "125")
+    }
+
+    func testSimPositionDecoding_CrossPositionOmitsIsolatedFields() throws {
+        let json = """
+        {
+            "id": "sps_02abc",
+            "coin": "hl:BTC",
+            "side": "LONG",
+            "size": "0.1",
+            "entryPrice": "65000",
+            "leverage": 5,
+            "marginUsed": "1300"
+        }
+        """.data(using: .utf8)!
+
+        let pos = try decoder.decode(SimPosition.self, from: json)
+        XCTAssertEqual(pos.marginMode, .cross)
+        XCTAssertNil(pos.isolatedMargin)
+    }
+
+    func testLeverageSettingDecoding_WithMarginMode() throws {
+        let json = Data(#"{ "coin": "hl:1:CL", "leverage": 5, "marginMode": "isolated" }"#.utf8)
+        let setting = try decoder.decode(LeverageSetting.self, from: json)
+        XCTAssertEqual(setting.coin, "hl:1:CL")
+        XCTAssertEqual(setting.leverage, 5)
+        XCTAssertEqual(setting.marginMode, .isolated)
+    }
+
+    func testUpdateIsolatedMarginResponseDecoding() throws {
+        let json = """
+        {
+            "accountId": "act_01abc",
+            "coin": "hl:1:CL",
+            "isolatedMargin": "125",
+            "liquidationPrice": "50"
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(UpdateIsolatedMarginResponse.self, from: json)
+        XCTAssertEqual(resp.accountId, "act_01abc")
+        XCTAssertEqual(resp.coin, "hl:1:CL")
+        XCTAssertEqual(resp.isolatedMargin, "125")
+        XCTAssertEqual(resp.liquidationPrice, "50")
+    }
+
+    func testSetMarginModeResponseDecoding() throws {
+        let json = Data(#"{ "accountId": "act_01abc", "coin": "hl:BTC", "marginMode": "isolated" }"#.utf8)
+        let resp = try decoder.decode(SetMarginModeResponse.self, from: json)
+        XCTAssertEqual(resp.accountId, "act_01abc")
+        XCTAssertEqual(resp.coin, "hl:BTC")
+        XCTAssertEqual(resp.marginMode, .isolated)
+    }
 }

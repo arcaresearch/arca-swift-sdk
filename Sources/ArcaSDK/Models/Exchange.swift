@@ -30,6 +30,14 @@ public struct SimPosition: Codable, Sendable {
     public let entryPrice: String
     public let leverage: Int
     public let marginUsed: String
+    /// The position's margin mode. Isolated positions carry their own dedicated
+    /// collateral (`isolatedMargin`) and are liquidated independently of the
+    /// cross pool.
+    public var marginMode: MarginMode = .cross
+    /// Locked collateral for an isolated position (decimal string); may exceed
+    /// the leverage-implied margin after `updateIsolatedMargin`. `nil` for
+    /// cross positions.
+    public var isolatedMargin: String? = nil
     public let liquidationPrice: String?
     public let unrealizedPnl: String?
     public let returnOnEquity: String?
@@ -57,6 +65,38 @@ public struct SimPosition: Codable, Sendable {
     public let cumulativeBuilderFee: String?
     public let createdAt: String?
     public let updatedAt: String?
+}
+
+extension SimPosition {
+    /// Custom decoder so an absent `marginMode` key decodes as `.cross` rather
+    /// than throwing. `encode(to:)` and the memberwise initializer remain
+    /// synthesized.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(SimPositionID.self, forKey: .id)
+        self.accountId = try c.decodeIfPresent(SimAccountID.self, forKey: .accountId)
+        self.realmId = try c.decodeIfPresent(RealmID.self, forKey: .realmId)
+        self.coin = try c.decode(String.self, forKey: .coin)
+        self.side = try c.decode(PositionSide.self, forKey: .side)
+        self.size = try c.decode(String.self, forKey: .size)
+        self.entryPrice = try c.decode(String.self, forKey: .entryPrice)
+        self.leverage = try c.decode(Int.self, forKey: .leverage)
+        self.marginUsed = try c.decode(String.self, forKey: .marginUsed)
+        self.marginMode = try c.decodeIfPresent(MarginMode.self, forKey: .marginMode) ?? .cross
+        self.isolatedMargin = try c.decodeIfPresent(String.self, forKey: .isolatedMargin)
+        self.liquidationPrice = try c.decodeIfPresent(String.self, forKey: .liquidationPrice)
+        self.unrealizedPnl = try c.decodeIfPresent(String.self, forKey: .unrealizedPnl)
+        self.returnOnEquity = try c.decodeIfPresent(String.self, forKey: .returnOnEquity)
+        self.positionValue = try c.decodeIfPresent(String.self, forKey: .positionValue)
+        self.error = try c.decodeIfPresent(String.self, forKey: .error)
+        self.cumulativeFunding = try c.decodeIfPresent(String.self, forKey: .cumulativeFunding)
+        self.cumulativeFee = try c.decodeIfPresent(String.self, forKey: .cumulativeFee)
+        self.cumulativeExchangeFee = try c.decodeIfPresent(String.self, forKey: .cumulativeExchangeFee)
+        self.cumulativePlatformFee = try c.decodeIfPresent(String.self, forKey: .cumulativePlatformFee)
+        self.cumulativeBuilderFee = try c.decodeIfPresent(String.self, forKey: .cumulativeBuilderFee)
+        self.createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        self.updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
 }
 
 struct PositionListResponse: Codable, Sendable {
@@ -431,6 +471,23 @@ public struct UpdateLeverageResponse: Codable, Sendable {
 public struct LeverageSetting: Codable, Sendable {
     public let coin: String
     public let leverage: Int
+    /// Asset's configured margin mode.
+    public let marginMode: MarginMode
+}
+
+public struct UpdateIsolatedMarginResponse: Codable, Sendable {
+    public let accountId: String
+    public let coin: String
+    /// Resulting locked isolated collateral.
+    public let isolatedMargin: String
+    /// Recomputed liquidation price.
+    public let liquidationPrice: String
+}
+
+public struct SetMarginModeResponse: Codable, Sendable {
+    public let accountId: String
+    public let coin: String
+    public let marginMode: MarginMode
 }
 
 // MARK: - Order Operation
@@ -716,7 +773,8 @@ extension SimPosition {
         return SimPosition(
             id: id, accountId: accountId, realmId: realmId, coin: coin,
             side: side, size: size, entryPrice: entryPrice, leverage: leverage,
-            marginUsed: marginUsed, liquidationPrice: liquidationPrice,
+            marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin,
+            liquidationPrice: liquidationPrice,
             unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
             positionValue: "\(posVal)", error: nil,
             cumulativeFunding: cumulativeFunding,

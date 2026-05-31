@@ -86,6 +86,41 @@ extension Arca {
         ))
     }
 
+    /// Add or remove collateral from an isolated-margin position.
+    ///
+    /// Isolated positions carry their own dedicated collateral and are
+    /// liquidated independently of the cross pool. A positive `amount` (decimal
+    /// USD string) moves balance into the position, lowering its liquidation
+    /// price; a negative `amount` removes collateral, raising it. Removal is
+    /// rejected if it would drop the position below its maintenance margin.
+    /// Only valid on isolated positions.
+    public func updateIsolatedMargin(
+        objectId: String,
+        coin: String,
+        amount: String
+    ) async throws -> UpdateIsolatedMarginResponse {
+        try await client.post("/objects/\(objectId)/exchange/isolated-margin", body: UpdateIsolatedMarginRequest(
+            coin: coin,
+            amount: amount
+        ))
+    }
+
+    /// Switch an asset between cross and isolated margin for an exchange object.
+    ///
+    /// Rejected on isolated-only (HIP-3) markets and while an open position
+    /// exists for the asset — close the position first. Leverage is remembered
+    /// per mode, so switching restores the leverage last set for that mode.
+    public func setMarginMode(
+        objectId: String,
+        coin: String,
+        marginMode: MarginMode
+    ) async throws -> SetMarginModeResponse {
+        try await client.post("/objects/\(objectId)/exchange/margin-mode", body: SetMarginModeRequest(
+            coin: coin,
+            marginMode: marginMode
+        ))
+    }
+
     /// Get leverage settings for a coin (or all coins) on an exchange object.
     public func getLeverage(objectId: String, coin: String? = nil) async throws -> [LeverageSetting] {
         var query: [String: String] = [:]
@@ -792,6 +827,11 @@ public enum LeverageType: String, Codable, Sendable {
     case isolated
 }
 
+public enum MarginMode: String, Codable, Sendable {
+    case cross
+    case isolated
+}
+
 public enum TimeInForce: String, Codable, Sendable {
     case gtc = "GTC"
     case ioc = "IOC"
@@ -811,6 +851,16 @@ private struct CreateExchangeRequest: Encodable {
 private struct UpdateLeverageRequest: Encodable {
     let coin: String
     let leverage: Int
+}
+
+private struct UpdateIsolatedMarginRequest: Encodable {
+    let coin: String
+    let amount: String
+}
+
+private struct SetMarginModeRequest: Encodable {
+    let coin: String
+    let marginMode: MarginMode
 }
 
 private struct PlaceOrderRequest: Encodable {
