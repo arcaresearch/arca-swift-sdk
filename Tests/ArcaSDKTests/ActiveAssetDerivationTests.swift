@@ -346,4 +346,81 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertNotNil(derived)
         XCTAssertEqual(derived?.maintenanceMarginRate, "0.03")
     }
+
+    // MARK: - Directional spread pricing
+
+    func testAskRatioShrinksMaxBuySize() {
+        // ask = mid * 1.001 (10 bps above mid). Buys execute at the ask, so the
+        // same budget buys fewer tokens than a mid-priced estimate assumes.
+        let state = makeState(equity: "10000")
+        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        let askAware = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            askRatio: 1.001, bidRatio: 1
+        )
+        guard let m = mid, let a = askAware else { XCTFail("expected non-nil"); return }
+        XCTAssertLessThan(Double(a.maxBuySize)!, Double(m.maxBuySize)!)
+        // Reduction tracks the ask premium (~0.1%), not a wild swing.
+        let ratio = Double(a.maxBuySize)! / Double(m.maxBuySize)!
+        XCTAssertGreaterThan(ratio, 0.995)
+        XCTAssertLessThan(ratio, 1)
+        XCTAssertEqual(Double(a.askPx!)!, 80000 * 1.001, accuracy: 1)
+    }
+
+    func testBidRatioGrowsMaxSellSizeTowardServerParity() {
+        // bid = mid * 0.999 (10 bps below mid). Sells execute at the bid, so the
+        // same (price-independent) max notional fits *more* tokens than at the
+        // mid — mirrors the server (sellCostPerToken uses the bid).
+        let state = makeState(equity: "10000")
+        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .sell)
+        let bidAware = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .sell,
+            askRatio: 1, bidRatio: 0.999
+        )
+        guard let m = mid, let b = bidAware else { XCTFail("expected non-nil"); return }
+        XCTAssertGreaterThan(Double(b.maxSellSize)!, Double(m.maxSellSize)!)
+        XCTAssertEqual(Double(b.bidPx!)!, 80000 * 0.999, accuracy: 1)
+    }
+
+    func testDefaultRatiosReproduceMidBasedSizing() {
+        let state = makeState(equity: "10000")
+        let explicit = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            askRatio: 1, bidRatio: 1
+        )
+        let implicit = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        guard let e = explicit, let i = implicit else { XCTFail("expected non-nil"); return }
+        XCTAssertEqual(e.maxBuySize, i.maxBuySize)
+        XCTAssertEqual(e.maxSellSize, i.maxSellSize)
+        // With no spread, the directional prices collapse to the mid.
+        XCTAssertEqual(e.bidPx, i.markPx)
+        XCTAssertEqual(e.askPx, i.markPx)
+    }
+
+    func testIgnoresNonPositiveRatios() {
+        let state = makeState(equity: "10000")
+        let bad = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            askRatio: 0, bidRatio: Double.nan
+        )
+        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        guard let bd = bad, let m = mid else { XCTFail("expected non-nil"); return }
+        XCTAssertEqual(bd.maxBuySize, m.maxBuySize)
+    }
+
+    func testSpreadRatioAppliesToLiveMidNotSnapshotMid() {
+        // A ratio resolved at one mid keeps adjusting after the mid moves —
+        // proving the ratio (not a stale absolute ask) is what's applied.
+        let state = makeState(equity: "10000")
+        let askRatio = 1.002
+        let atSnapshot = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
+        )
+        let afterMove = deriveActiveAssetData(
+            from: state, coin: "hl:BTC", markPx: 90000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
+        )
+        guard let s0 = atSnapshot, let s1 = afterMove else { XCTFail("expected non-nil"); return }
+        XCTAssertEqual(Double(s0.askPx!)!, 80000 * askRatio, accuracy: 1)
+        XCTAssertEqual(Double(s1.askPx!)!, 90000 * askRatio, accuracy: 1)
+    }
 }

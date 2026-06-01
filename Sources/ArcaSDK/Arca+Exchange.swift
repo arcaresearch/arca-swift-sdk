@@ -672,22 +672,46 @@ extension Arca {
             }
         }
 
-        // MMR is per-asset and effectively static, but it depends on the
-        // asset's margin table on the server (`0.5 / firstTier.maxLeverage`).
-        // The client can't derive it from market meta alone (margin tables
-        // aren't exposed), so we fetch it once via getActiveAssetData and
-        // feed it into recompute. Without this, every recompute would
-        // hardcode "0.03", producing wrong liquidation estimates in
-        // `Arca.orderBreakdown` for any tiered asset (e.g. BTC at 1%).
+        // Resolve the per-asset MMR, margin tiers, and top-of-book spread once
+        // via getActiveAssetData and feed them into every recompute. None of
+        // these are derivable from market meta alone (the margin table and the
+        // order book aren't exposed there), so one fetch resolves all three:
+        //  - maintenanceMarginRate: without it every recompute hardcodes "0.03",
+        //    producing wrong liquidation estimates in `Arca.orderBreakdown` for
+        //    any tiered asset (e.g. BTC at 1%).
+        //  - marginTiers: tiered assets ladder their initial-margin rate by
+        //    notional; without the server tiers the derivation assumes a flat
+        //    1/leverage rate and over-states the max, which is then rejected at
+        //    placement with "insufficient balance".
+        //  - bid/ask: market buys are margin-checked at the ask and sells at the
+        //    bid, so we size against that directional price (carried as a spread
+        //    ratio applied to the live mid) rather than the mid alone.
         let mmrBox = SendableBox<String?>(opts.maintenanceMarginRate)
-        if opts.maintenanceMarginRate == nil {
-            if let data = try? await getActiveAssetData(
-                objectId: opts.objectId,
-                coin: opts.coin,
-                builderFeeBps: opts.builderFeeBps,
-                leverage: opts.leverage
-            ) {
+        let tiersBox = SendableBox<[MarginTier]?>(nil)
+        let askRatioBox = SendableBox<Double>(1)
+        let bidRatioBox = SendableBox<Double>(1)
+        if let data = try? await getActiveAssetData(
+            objectId: opts.objectId,
+            coin: opts.coin,
+            builderFeeBps: opts.builderFeeBps,
+            leverage: opts.leverage
+        ) {
+            if opts.maintenanceMarginRate == nil {
                 mmrBox.update { $0 = data.maintenanceMarginRate }
+            }
+            if let tiers = data.marginTiers, !tiers.isEmpty {
+                tiersBox.update { $0 = tiers }
+            }
+            // Spread ratio = directional price / snapshot mid, applied to the
+            // live mid on each recompute so it stays stable as price moves. The
+            // server returns bid == ask == mark when there's no book (ratio 1).
+            if let mid = Double(data.markPx), mid > 0 {
+                if let bid = data.bidPx.flatMap(Double.init), bid > 0 {
+                    bidRatioBox.update { $0 = bid / mid }
+                }
+                if let ask = data.askPx.flatMap(Double.init), ask > 0 {
+                    askRatioBox.update { $0 = ask / mid }
+                }
             }
         }
 
@@ -706,7 +730,10 @@ extension Arca {
                 builderFeeBps: opts.builderFeeBps,
                 szDecimals: opts.szDecimals,
                 feeScale: resolvedFeeScale,
-                maintenanceMarginRate: mmrBox.value
+                maintenanceMarginRate: mmrBox.value,
+                marginTiers: tiersBox.value,
+                askRatio: askRatioBox.value,
+                bidRatio: bidRatioBox.value
             )
         }
 

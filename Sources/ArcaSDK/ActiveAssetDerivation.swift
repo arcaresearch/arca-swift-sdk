@@ -46,7 +46,13 @@ public func deriveActiveAssetData(
     // caller omits it.
     maintenanceMarginRate: String? = nil,
     // Ordered margin tiers for laddered leverage. Server populates this for tiered assets.
-    marginTiers: [MarginTier]? = nil
+    marginTiers: [MarginTier]? = nil,
+    // Directional spread ratios (ask/mid and bid/mid) resolved once from the
+    // server snapshot. The market-order margin check prices buys at the ask and
+    // sells at the bid, so we convert the live mid to the directional execution
+    // price via these ratios. Default 1 (no spread) reproduces mid-based sizing.
+    askRatio: Double = 1,
+    bidRatio: Double = 1
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
@@ -64,7 +70,17 @@ public func deriveActiveAssetData(
     let builderRate = builderFeeBps > 0 ? Double(builderFeeBps) / 100_000 : 0
     let feeRate = takerRate * effectiveScale + platformRate + builderRate
 
-    func maxTokensForDir(_ avail: Double) -> Double {
+    // Directional execution prices. Max notional is price-independent (a
+    // function of available budget, margin rate, and fee rate); the price only
+    // enters when converting notional -> tokens. Buys execute at the ask, sells
+    // at the bid, so dividing by the directional price (not the mid) makes the
+    // previewed max match the server's margin check.
+    let safeAskRatio = askRatio.isFinite && askRatio > 0 ? askRatio : 1
+    let safeBidRatio = bidRatio.isFinite && bidRatio > 0 ? bidRatio : 1
+    let buyPx = markPx * safeAskRatio
+    let sellPx = markPx * safeBidRatio
+
+    func maxTokensForDir(_ avail: Double, _ execPx: Double) -> Double {
         guard avail.isFinite, avail > 0 else { return 0 }
         let targetSpend = avail / safetyMarginFactor
 
@@ -103,7 +119,7 @@ public func deriveActiveAssetData(
 
         let notional = (targetSpend + deduction) / (activeRate + feeRate)
         guard notional.isFinite, notional > 0 else { return 0 }
-        return floorToDecimals(notional / markPx, szDecimals)
+        return floorToDecimals(notional / execPx, szDecimals)
     }
 
     let currentPosition = exchangeState.positions.first { $0.coin == coin }
@@ -118,15 +134,15 @@ public func deriveActiveAssetData(
 
         switch pos.side {
         case .long:
-            buyMax = maxTokensForDir(available)
-            sellMax = posSize + maxTokensForDir(availableAfterClose)
+            buyMax = maxTokensForDir(available, buyPx)
+            sellMax = posSize + maxTokensForDir(availableAfterClose, sellPx)
         case .short:
-            sellMax = maxTokensForDir(available)
-            buyMax = posSize + maxTokensForDir(availableAfterClose)
+            sellMax = maxTokensForDir(available, sellPx)
+            buyMax = posSize + maxTokensForDir(availableAfterClose, buyPx)
         }
     } else {
-        buyMax = maxTokensForDir(available)
-        sellMax = maxTokensForDir(available)
+        buyMax = maxTokensForDir(available, buyPx)
+        sellMax = maxTokensForDir(available, sellPx)
     }
 
     buyMax = floorToDecimals(buyMax, szDecimals)
@@ -145,6 +161,10 @@ public func deriveActiveAssetData(
         markPx: toDecimalString(markPx),
         feeRate: toDecimalString(feeRate),
         maintenanceMarginRate: maintenanceMarginRate ?? "0.03",
-        marginTiers: marginTiers
+        marginTiers: marginTiers,
+        // Live directional prices = mid * resolved spread ratio. Equal to markPx
+        // until the spread is resolved (ratio 1).
+        bidPx: toDecimalString(sellPx),
+        askPx: toDecimalString(buyPx)
     )
 }

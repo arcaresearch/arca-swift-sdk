@@ -294,6 +294,14 @@ public struct ActiveAssetData: Codable, Sendable {
     public let maintenanceMarginRate: String
     /// Ordered margin tiers for this asset, if any.
     public let marginTiers: [MarginTier]?
+    /// Top-of-book best bid as a decimal string. Market sells are margin-checked
+    /// at the bid, so this is the directional execution price for max-sell
+    /// sizing. Equals `markPx` when no order book is available.
+    public let bidPx: String?
+    /// Top-of-book best ask as a decimal string. Market buys are margin-checked
+    /// at the ask, so this is the directional execution price for max-buy
+    /// sizing. Equals `markPx` when no order book is available.
+    public let askPx: String?
 }
 
 // MARK: - Asset Fee Rates

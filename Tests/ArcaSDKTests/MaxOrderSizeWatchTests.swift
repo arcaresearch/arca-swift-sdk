@@ -17,8 +17,10 @@ import XCTest
 ///    the live mids stream must carry the same dynamic MMR, otherwise
 ///    `Arca.orderBreakdown`'s liquidation estimate flips between the right
 ///    value and `0.03` as prices tick.
-/// 4. When the caller supplies an explicit MMR, the stream uses it verbatim
-///    and does NOT make the extra `getActiveAssetData` HTTP call.
+/// 4. When the caller supplies an explicit MMR, the stream uses it verbatim.
+///    The one `getActiveAssetData` fetch still runs, because it is also the
+///    source of the asset's margin tiers and top-of-book bid/ask (neither of
+///    which the options carry nor the client can derive from market meta).
 final class MaxOrderSizeWatchTests: XCTestCase {
 
     private var sessionConfig: URLSessionConfiguration!
@@ -73,10 +75,13 @@ final class MaxOrderSizeWatchTests: XCTestCase {
 
     // MARK: - Explicit override
 
-    func testHonorsExplicitMaintenanceMarginRateWithoutFetching() async throws {
-        // When the caller already knows the MMR (e.g. cached from a prior
-        // call), we must not pay for an extra round trip — and we must not
-        // overwrite their value with whatever the server happens to return.
+    func testHonorsExplicitMaintenanceMarginRateButStillResolvesTiersAndSpread() async throws {
+        // A caller-supplied MMR must win over whatever the server returns. The
+        // getActiveAssetData fetch still happens once, though: it's also the
+        // source of the asset's margin tiers and top-of-book bid/ask, which the
+        // options can't carry and the client can't derive from market meta.
+        // (Matches the TS SDK, where supplying MMR alone does not short-circuit
+        // the fetch because tiers are still needed.)
         MaxOrderSizeMockProtocol.maintenanceMarginRate = "0.01"
 
         let arca = makeArca()
@@ -99,8 +104,8 @@ final class MaxOrderSizeWatchTests: XCTestCase {
 
         XCTAssertEqual(stream.activeAssetData.value?.maintenanceMarginRate, "0.005",
                        "Caller-supplied MMR must win over the auto-fetched value")
-        XCTAssertEqual(MaxOrderSizeMockProtocol.activeAssetDataRequestCount, 0,
-                       "Explicit MMR must short-circuit the getActiveAssetData fetch")
+        XCTAssertEqual(MaxOrderSizeMockProtocol.activeAssetDataRequestCount, 1,
+                       "The fetch still runs once to resolve margin tiers and the bid/ask spread")
 
         await stream.stop()
         await arca.ws.disconnect()
