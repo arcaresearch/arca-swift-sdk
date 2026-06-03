@@ -390,6 +390,269 @@ extension Arca {
         )
     }
 
+    // MARK: - Position TP/SL (existing positions)
+
+    /// Attach a stop-loss to the open position for `coin`.
+    ///
+    /// The trigger is placed with `grouping: .positionTpsl`, `reduceOnly: true`,
+    /// and `size: "0"` so the venue fills it from — and resizes it with — the
+    /// live position. The closing side is inferred from the position
+    /// (LONG → SELL, SHORT → BUY), and `leverage` / `isolated` are auto-filled
+    /// from the position and market meta exactly like ``closePosition(path:objectId:coin:size:timeInForce:builderFeeBps:feeTargets:isolated:leverage:)``.
+    ///
+    /// By default any existing stop-loss for the position is replaced; pass
+    /// `replace: false` to stack multiple triggers.
+    ///
+    /// - Parameters:
+    ///   - path: Operation path (idempotency key)
+    ///   - objectId: Exchange Arca object ID
+    ///   - coin: Coin in canonical format (e.g. `"hl:BTC"`)
+    ///   - triggerPx: Mark-price threshold that activates the order
+    ///   - isMarket: Execute as market (default) or limit when triggered
+    ///   - limitPrice: Resting limit price when `isMarket == false` (required then)
+    ///   - replace: Cancel any existing same-type positionTpsl trigger first (default true)
+    ///   - leverage: Override the position's leverage
+    ///   - isolated: Override the isolated-margin inference
+    ///   - timeInForce: Time in force (default `.gtc`)
+    ///   - builderFeeBps: Builder fee in tenths of a basis point
+    ///   - feeTargets: Fee routing targets
+    public func setStopLoss(
+        path: String,
+        objectId: String,
+        coin: String,
+        triggerPx: String,
+        isMarket: Bool? = nil,
+        limitPrice: String? = nil,
+        replace: Bool = true,
+        leverage: Int? = nil,
+        isolated: Bool? = nil,
+        timeInForce: TimeInForce = .gtc,
+        builderFeeBps: Int? = nil,
+        feeTargets: [FeeTarget]? = nil
+    ) -> OrderHandle {
+        setPositionTrigger(
+            tpsl: .stopLoss, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
+            isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
+            isolated: isolated, timeInForce: timeInForce, builderFeeBps: builderFeeBps, feeTargets: feeTargets
+        )
+    }
+
+    /// Attach a take-profit to the open position for `coin`. The
+    /// position-attached counterpart of ``setStopLoss(path:objectId:coin:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:builderFeeBps:feeTargets:)``.
+    public func setTakeProfit(
+        path: String,
+        objectId: String,
+        coin: String,
+        triggerPx: String,
+        isMarket: Bool? = nil,
+        limitPrice: String? = nil,
+        replace: Bool = true,
+        leverage: Int? = nil,
+        isolated: Bool? = nil,
+        timeInForce: TimeInForce = .gtc,
+        builderFeeBps: Int? = nil,
+        feeTargets: [FeeTarget]? = nil
+    ) -> OrderHandle {
+        setPositionTrigger(
+            tpsl: .takeProfit, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
+            isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
+            isolated: isolated, timeInForce: timeInForce, builderFeeBps: builderFeeBps, feeTargets: feeTargets
+        )
+    }
+
+    private func setPositionTrigger(
+        tpsl: TpslType,
+        path: String,
+        objectId: String,
+        coin: String,
+        triggerPx: String,
+        isMarket: Bool?,
+        limitPrice: String?,
+        replace: Bool,
+        leverage: Int?,
+        isolated: Bool?,
+        timeInForce: TimeInForce,
+        builderFeeBps: Int?,
+        feeTargets: [FeeTarget]?
+    ) -> OrderHandle {
+        let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
+            let market = isMarket ?? true
+            if !market, (limitPrice ?? "").isEmpty {
+                throw ArcaError.validation(
+                    message: "trigger-limit orders require a limitPrice (omit isMarket for a market trigger)",
+                    errorId: nil
+                )
+            }
+            let (side, effLeverage, effIsolated) = try await inferPositionCloseParams(
+                objectId: objectId, coin: coin, leverageOverride: leverage, isolatedOverride: isolated
+            )
+            if replace {
+                let existing = try await findPositionTpslOrders(objectId: objectId, coin: coin, tpsl: tpsl.rawValue)
+                for order in existing {
+                    _ = try await cancelOrder(
+                        path: path + "/replace-" + order.id.rawValue, objectId: objectId, orderId: order.id.rawValue
+                    ).submitted
+                }
+            }
+            return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
+                realmId: realm,
+                path: path,
+                coin: coin,
+                side: side.rawValue,
+                orderType: market ? OrderType.market.rawValue : OrderType.limit.rawValue,
+                size: "0",
+                price: market ? nil : limitPrice,
+                leverage: effLeverage,
+                reduceOnly: true,
+                timeInForce: timeInForce.rawValue,
+                builderFeeBps: builderFeeBps,
+                feeTargets: feeTargets,
+                isTrigger: true,
+                triggerPx: triggerPx,
+                isMarket: market,
+                tpsl: tpsl.rawValue,
+                grouping: TpslGrouping.positionTpsl.rawValue,
+                useMax: nil,
+                sizeTolerance: nil,
+                isolated: effIsolated ? true : nil
+            ))
+        }
+
+        return OrderHandle(
+            inner: inner,
+            objectId: objectId,
+            placementPath: path,
+            deps: makeOrderHandleDeps()
+        )
+    }
+
+    /// Attach a stop-loss and/or take-profit to an open position in one call.
+    /// At least one of `stopLossPx` / `takeProfitPx` must be provided. Legs are
+    /// placed sequentially (SL then TP); a placement failure surfaces
+    /// immediately. Returns the handles for the placed legs.
+    @discardableResult
+    public func setPositionTpsl(
+        path: String,
+        objectId: String,
+        coin: String,
+        stopLossPx: String? = nil,
+        takeProfitPx: String? = nil,
+        isMarket: Bool? = nil,
+        replace: Bool = true,
+        builderFeeBps: Int? = nil,
+        feeTargets: [FeeTarget]? = nil
+    ) async throws -> SetPositionTpslResult {
+        if (stopLossPx ?? "").isEmpty, (takeProfitPx ?? "").isEmpty {
+            throw ArcaError.validation(
+                message: "setPositionTpsl requires at least one of stopLossPx or takeProfitPx",
+                errorId: nil
+            )
+        }
+        var slHandle: OrderHandle?
+        var tpHandle: OrderHandle?
+        if let sl = stopLossPx, !sl.isEmpty {
+            let handle = setStopLoss(
+                path: path + "/sl", objectId: objectId, coin: coin, triggerPx: sl,
+                isMarket: isMarket, replace: replace, builderFeeBps: builderFeeBps, feeTargets: feeTargets
+            )
+            _ = try await handle.submitted
+            slHandle = handle
+        }
+        if let tp = takeProfitPx, !tp.isEmpty {
+            let handle = setTakeProfit(
+                path: path + "/tp", objectId: objectId, coin: coin, triggerPx: tp,
+                isMarket: isMarket, replace: replace, builderFeeBps: builderFeeBps, feeTargets: feeTargets
+            )
+            _ = try await handle.submitted
+            tpHandle = handle
+        }
+        return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
+    }
+
+    /// Cancel resting positionTpsl trigger orders for `coin`. `tpsl` narrows the
+    /// clear to a single leg; `nil` clears both. Returns the orders that were
+    /// targeted for cancellation.
+    @discardableResult
+    public func clearPositionTpsl(
+        path: String,
+        objectId: String,
+        coin: String,
+        tpsl: TpslType? = nil
+    ) async throws -> [SimOrder] {
+        let existing = try await findPositionTpslOrders(objectId: objectId, coin: coin, tpsl: tpsl?.rawValue)
+        for order in existing {
+            _ = try await cancelOrder(
+                path: path + "/" + order.id.rawValue, objectId: objectId, orderId: order.id.rawValue
+            ).submitted
+        }
+        return existing
+    }
+
+    /// Look up the open position for `coin` and derive the closing side,
+    /// leverage, and isolated flag needed by a reduce-only close/trigger order.
+    /// Optional overrides win over the inferred values.
+    private func inferPositionCloseParams(
+        objectId: String,
+        coin: String,
+        leverageOverride: Int?,
+        isolatedOverride: Bool?
+    ) async throws -> (OrderSide, Int, Bool) {
+        let positions = try await listPositions(objectId: objectId)
+        guard let position = positions.first(where: { $0.coin == coin }) else {
+            throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(coin)", errorId: nil)
+        }
+        let side: OrderSide = position.side == .long ? .sell : .buy
+        let leverage = leverageOverride ?? position.leverage
+        let isolated: Bool
+        if let override = isolatedOverride {
+            isolated = override
+        } else if let meta = try? await asset(coin) {
+            if let modes = meta.marginModes, !modes.isEmpty {
+                isolated = modes.count == 1 && modes.first == "isolated"
+            } else {
+                isolated = meta.onlyIsolated
+            }
+        } else {
+            isolated = false
+        }
+        return (side, leverage, isolated)
+    }
+
+    /// Return resting positionTpsl trigger orders for `coin`, optionally narrowed
+    /// to a single tp/sl leg.
+    private func findPositionTpslOrders(
+        objectId: String,
+        coin: String,
+        tpsl: String?
+    ) async throws -> [SimOrder] {
+        let orders = try await listOrders(objectId: objectId, status: OrderStatus.waitingForTrigger.rawValue)
+        return orders.filter {
+            $0.coin == coin
+                && $0.grouping == TpslGrouping.positionTpsl.rawValue
+                && (tpsl == nil || $0.tpsl == tpsl)
+        }
+    }
+
+    private func makeOrderHandleDeps() -> OrderHandleDeps {
+        OrderHandleDeps(
+            getOrder: { [self] objId, orderId in
+                try await self.getOrder(objectId: objId, orderId: orderId)
+            },
+            fillEvents: { [self] in
+                await self.ws.fillEvents()
+            },
+            cancelOrder: { [self] cancelPath, objId, orderId in
+                self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
+            },
+            waitForSettlement: { [self] operationId in
+                try await self.waitForSettlement(operationId)
+            },
+            listFills: { [self] objId in
+                try await self.listFills(objectId: objId)
+            }
+        )
+    }
+
     /// List historical fills (trades) for an exchange Arca object.
     /// Returns paginated fill data with P&L, fees, and resulting position state.
     ///
@@ -808,6 +1071,15 @@ extension Arca {
         )
         return stream
     }
+}
+
+// MARK: - Position TP/SL Result
+
+/// Handles for the legs placed by ``Arca/setPositionTpsl(path:objectId:coin:stopLossPx:takeProfitPx:isMarket:replace:builderFeeBps:feeTargets:)``.
+/// A leg is `nil` when its trigger price was not provided.
+public struct SetPositionTpslResult: Sendable {
+    public let stopLoss: OrderHandle?
+    public let takeProfit: OrderHandle?
 }
 
 // MARK: - Exchange Enums
