@@ -8,6 +8,22 @@ public enum AssetCategory: String, Codable, Sendable {
     case exchange
 }
 
+/// Indicates which side owns an object's price-derived valuation.
+///
+/// - `client`: the SDK recomputes price-derived fields (equity, uPnL, mark,
+///   max-order-size) locally from raw mid prices. This is the default for all
+///   traffic today.
+/// - `server`: those fields are authoritative as delivered by the server; the
+///   SDK must not recompute them from raw mids. Used by the (sim-only)
+///   price-overlay feature so a large order's market impact stays consistent
+///   across every surface.
+///
+/// Absent on the wire ⇒ treat as `.client` (byte-identical to today).
+public enum PricingMode: String, Codable, Sendable {
+    case client
+    case server
+}
+
 public struct AssetBreakdown: Codable, Sendable {
     public let asset: String
     public let category: AssetCategory
@@ -57,6 +73,33 @@ public struct ObjectValuation: Codable, Sendable {
     public let reservedBalances: [ReservedValue]?
     public let pendingInbound: [ReservedValue]?
     public let positions: [PositionValue]?
+    /// When `.server`, price-derived fields are server-authoritative and the
+    /// SDK does not recompute them from mids. Absent ⇒ `.client`.
+    public let pricingMode: PricingMode?
+
+    public init(
+        objectId: ObjectID,
+        path: String,
+        type: String,
+        denomination: String?,
+        valueUsd: String,
+        balances: [BalanceValue],
+        reservedBalances: [ReservedValue]?,
+        pendingInbound: [ReservedValue]?,
+        positions: [PositionValue]?,
+        pricingMode: PricingMode? = nil
+    ) {
+        self.objectId = objectId
+        self.path = path
+        self.type = type
+        self.denomination = denomination
+        self.valueUsd = valueUsd
+        self.balances = balances
+        self.reservedBalances = reservedBalances
+        self.pendingInbound = pendingInbound
+        self.positions = positions
+        self.pricingMode = pricingMode
+    }
 }
 
 public struct PathAggregation: Codable, Sendable {
@@ -68,6 +111,31 @@ public struct PathAggregation: Codable, Sendable {
     public let asOf: String?
     public let cumInflowsUsd: String?
     public let cumOutflowsUsd: String?
+    /// When `.server`, totals are server-authoritative and the SDK does not
+    /// recompute them from mids. Absent ⇒ `.client`.
+    public let pricingMode: PricingMode?
+
+    public init(
+        prefix: String,
+        totalEquityUsd: String,
+        departingUsd: String,
+        arrivingUsd: String?,
+        breakdown: [AssetBreakdown],
+        asOf: String?,
+        cumInflowsUsd: String?,
+        cumOutflowsUsd: String?,
+        pricingMode: PricingMode? = nil
+    ) {
+        self.prefix = prefix
+        self.totalEquityUsd = totalEquityUsd
+        self.departingUsd = departingUsd
+        self.arrivingUsd = arrivingUsd
+        self.breakdown = breakdown
+        self.asOf = asOf
+        self.cumInflowsUsd = cumInflowsUsd
+        self.cumOutflowsUsd = cumOutflowsUsd
+        self.pricingMode = pricingMode
+    }
 }
 
 // MARK: - Client-Side Revaluation
@@ -115,6 +183,9 @@ extension ObjectValuation {
     /// Returns a copy with all price-derived fields recomputed from mid prices.
     /// Static data (amounts, sizes, entry prices, paths) is preserved.
     public func revalued(with mids: [String: String]) -> ObjectValuation {
+        // Server-authoritative pricing: trust the server's values verbatim and
+        // never recompute from raw mids. Absent/`.client` ⇒ recompute as before.
+        if pricingMode == .server { return self }
         if type == "exchange" {
             let newPositions = positions?.map { $0.revalued(with: mids) }
             let cashStr = balances.first?.amount ?? "0"
@@ -128,7 +199,8 @@ extension ObjectValuation {
             return ObjectValuation(objectId: objectId, path: path, type: type,
                                    denomination: denomination, valueUsd: "\(equity)",
                                    balances: balances, reservedBalances: newReserved,
-                                   pendingInbound: newInbound, positions: newPositions)
+                                   pendingInbound: newInbound, positions: newPositions,
+                                   pricingMode: pricingMode)
         }
 
         let newBalances = balances.map { $0.revalued(with: mids) }
@@ -140,7 +212,8 @@ extension ObjectValuation {
         return ObjectValuation(objectId: objectId, path: path, type: type,
                                denomination: denomination, valueUsd: "\(objValue)",
                                balances: newBalances, reservedBalances: newReserved,
-                               pendingInbound: newInbound, positions: positions)
+                               pendingInbound: newInbound, positions: positions,
+                               pricingMode: pricingMode)
     }
 }
 
@@ -150,6 +223,8 @@ extension PathAggregation {
     /// Exchange rows keep server ``AssetBreakdown/valueUsd``.
     /// ``departingUsd`` and ``arrivingUsd`` are USD-denominated and pass through unchanged.
     public func revalued(with mids: [String: String]) -> PathAggregation {
+        // Server-authoritative pricing: totals are trusted as delivered.
+        if pricingMode == .server { return self }
         let newBreakdown = breakdown.map { entry -> AssetBreakdown in
             switch entry.category {
             case .spot:
@@ -205,7 +280,8 @@ extension PathAggregation {
             breakdown: newBreakdown,
             asOf: asOf,
             cumInflowsUsd: cumInflowsUsd,
-            cumOutflowsUsd: cumOutflowsUsd
+            cumOutflowsUsd: cumOutflowsUsd,
+            pricingMode: pricingMode
         )
     }
 }

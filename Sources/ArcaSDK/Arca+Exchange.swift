@@ -1000,7 +1000,26 @@ extension Arca {
             )
         }
 
-        if let initial = recompute() {
+        // Server-authoritative pricing: when the object is priced by the server
+        // (sim-only price overlay), max-order-size must come from the server's
+        // active-asset-data endpoint, not from local raw-mid derivation. The
+        // server value is refreshed on exchange-state events (below), not per
+        // mid tick. Absent/`.client` ⇒ local derivation, exactly as before.
+        let fetchServerActiveAssetData: @Sendable () async -> ActiveAssetData? = { [weak self] in
+            guard let self else { return nil }
+            return try? await self.getActiveAssetData(
+                objectId: opts.objectId,
+                coin: opts.coin,
+                builderFeeBps: opts.builderFeeBps,
+                leverage: opts.leverage
+            )
+        }
+
+        if initialExchangeState.pricingMode == .server {
+            if let initial = await fetchServerActiveAssetData() {
+                activeAssetBox.update { $0 = initial }
+            }
+        } else if let initial = recompute() {
             activeAssetBox.update { $0 = initial }
         }
 
@@ -1033,7 +1052,13 @@ extension Arca {
                         nextState = fetched
                     }
                     exchangeStateBox.update { $0 = nextState }
-                    if let data = recompute() {
+                    let data: ActiveAssetData?
+                    if nextState.pricingMode == .server {
+                        data = await fetchServerActiveAssetData()
+                    } else {
+                        data = recompute()
+                    }
+                    if let data {
                         activeAssetBox.update { $0 = data }
                         streamState.update { $0 = .connected }
                         continuation.yield(data)
@@ -1042,6 +1067,9 @@ extension Arca {
             }
             let midsTask = Task {
                 for await _ in midsUpdates {
+                    // Server-authoritative pricing: ignore raw mid ticks; the
+                    // server drives max-order-size via exchange-state events.
+                    if exchangeStateBox.value?.pricingMode == .server { continue }
                     if let data = recompute() {
                         activeAssetBox.update { $0 = data }
                         streamState.update { $0 = .connected }

@@ -6,13 +6,32 @@ final class WebSocketManagerTests: XCTestCase {
     // MARK: - WebSocket Message Encoding
 
     func testAuthMessageEncoding() throws {
-        let message = OutboundMessage.auth(token: "jwt_token", realmId: "rlm_01abc")
+        let message = OutboundMessage.auth(
+            token: "jwt_token",
+            realmId: "rlm_01abc",
+            capabilities: ["server-authoritative-pricing"]
+        )
         let data = try JSONEncoder().encode(message)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
         XCTAssertEqual(json["action"] as? String, "auth")
         XCTAssertEqual(json["token"] as? String, "jwt_token")
         XCTAssertEqual(json["realmId"] as? String, "rlm_01abc")
+        XCTAssertEqual(json["capabilities"] as? [String], ["server-authoritative-pricing"])
+    }
+
+    /// The WS manager advertises `ArcaClient.advertisedCapabilities` on every
+    /// `auth` send. Pin that the server-authoritative-pricing capability is in
+    /// the advertised set and survives encoding.
+    func testAuthMessageAdvertisesServerPricingCapability() throws {
+        XCTAssertTrue(ArcaClient.advertisedCapabilities.contains("server-authoritative-pricing"))
+        let message = OutboundMessage.auth(
+            token: "t", realmId: "r", capabilities: ArcaClient.advertisedCapabilities)
+        let data = try JSONEncoder().encode(message)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let caps = json["capabilities"] as? [String]
+        XCTAssertNotNil(caps)
+        XCTAssertTrue(caps?.contains("server-authoritative-pricing") ?? false)
     }
 
     func testWatchMessageEncoding() throws {

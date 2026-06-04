@@ -30,6 +30,14 @@ public final class ArcaClient: @unchecked Sendable {
     private static let maxRetries = 2
     private static let retryDelay: UInt64 = 1_000_000_000 // 1 second in nanoseconds
 
+    /// HTTP header carrying the SDK's advertised capabilities (comma-separated).
+    public static let clientCapabilitiesHeader = "X-Arca-Client-Capabilities"
+    /// Capabilities this SDK advertises to the server over REST and the WS
+    /// `auth` message. The server may gate opt-in features (e.g. the sim-only
+    /// price overlay / server-authoritative pricing) to clients that advertise
+    /// the matching token. Inert until a server-side feature reads it.
+    public static let advertisedCapabilities: [String] = ["server-authoritative-pricing"]
+
     public init(
         token: String,
         baseURL: URL,
@@ -148,6 +156,10 @@ public final class ArcaClient: @unchecked Sendable {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(
+            Self.advertisedCapabilities.joined(separator: ","),
+            forHTTPHeaderField: Self.clientCapabilitiesHeader
+        )
 
         if let body = body {
             request.httpBody = try JSONEncoder().encode(AnyEncodable(body))

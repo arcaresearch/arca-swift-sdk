@@ -160,6 +160,57 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    // MARK: - Server-authoritative pricing
+
+    func testServerModeUsesServerActiveAssetDataAndIgnoresMidTicks() async throws {
+        // Object priced by the server (sim-only overlay). Max-order-size must
+        // come from the server's active-asset-data endpoint, and raw mid ticks
+        // must NOT trigger a local recompute.
+        MaxOrderSizeMockProtocol.exchangePricingMode = "server"
+        MaxOrderSizeMockProtocol.maintenanceMarginRate = "0.01"
+
+        let arca = makeArca()
+        let watchTask = Task { () -> MaxOrderSizeWatchStream in
+            try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+                objectId: "obj_1",
+                coin: "hl:BTC",
+                side: .buy,
+                leverage: 5,
+                feeScale: 1.0
+            ))
+        }
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:BTC":"80000"}}"#)
+
+        let stream = try await watchTask.value
+        await stream.ready()
+
+        // The server's active-asset-data returns maxBuySize "0". Local derivation
+        // from equity 10000 / leverage 5 / mark 80000 would be non-zero, so "0"
+        // proves the value came from the server, not the raw-mid path.
+        XCTAssertEqual(stream.activeAssetData.value?.maxBuySize, "0",
+                       "server-mode max-order-size must come from getActiveAssetData, not local derivation")
+        XCTAssertEqual(stream.activeAssetData.value?.markPx, "80000")
+
+        // A mid tick must be ignored (no recompute, no emission) in server mode.
+        let noEmit = expectation(description: "no recompute emission on mid tick in server mode")
+        noEmit.isInverted = true
+        let consumer = Task {
+            for await _ in stream.updates {
+                noEmit.fulfill()
+                return
+            }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"81000"},"deliverySeq":1}"#)
+        await fulfillment(of: [noEmit], timeout: 0.4)
+
+        consumer.cancel()
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     // MARK: - Helpers
 
     private func makeArca() -> Arca {
@@ -191,6 +242,12 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _activeAssetDataRequestCount = 0
     private static var _maintenanceMarginRate: String = "0.01"
+    private static var _exchangePricingMode: String?
+
+    static var exchangePricingMode: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _exchangePricingMode }
+        set { lock.lock(); _exchangePricingMode = newValue; lock.unlock() }
+    }
 
     static var activeAssetDataRequestCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -206,6 +263,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
         lock.lock()
         _activeAssetDataRequestCount = 0
         _maintenanceMarginRate = "0.01"
+        _exchangePricingMode = nil
         lock.unlock()
     }
 
@@ -253,11 +311,15 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
             """#
 
         case "/api/v1/objects/obj_1/exchange/state":
-            body = #"""
+            Self.lock.lock()
+            let statePm = Self._exchangePricingMode
+            Self.lock.unlock()
+            let pmLine = statePm.map { "\"pricingMode\": \"\($0)\",\n                " } ?? ""
+            body = """
             {
               "success": true,
               "data": {
-                "account": {
+                \(pmLine)"account": {
                   "id": "act_1",
                   "realmId": "rlm_test",
                   "name": "main",
@@ -282,7 +344,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
                 "pendingIntents": []
               }
             }
-            """#
+            """
 
         case "/api/v1/objects/obj_1/exchange/active-asset-data":
             Self.lock.lock()

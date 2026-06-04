@@ -229,18 +229,24 @@ public struct ExchangeState: Codable, Sendable {
     public let feeRates: SimFeeRates?
     /// Pending order operations that haven't settled yet.
     public let pendingIntents: [ExchangeIntent]?
+    /// When `.server`, price-derived fields (position uPnL, margin summary
+    /// equity, max-order-size) are server-authoritative and the SDK does not
+    /// recompute them from mids. Absent ⇒ `.client`.
+    public let pricingMode: PricingMode?
 
     public init(
         account: SimAccount, marginSummary: SimMarginSummary,
         crossMarginSummary: SimMarginSummary?, crossMaintenanceMarginUsed: String?,
         positions: [SimPosition], openOrders: [SimOrder],
-        feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?
+        feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?,
+        pricingMode: PricingMode? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
         self.crossMaintenanceMarginUsed = crossMaintenanceMarginUsed
         self.positions = positions; self.openOrders = openOrders
         self.feeRates = feeRates; self.pendingIntents = pendingIntents
+        self.pricingMode = pricingMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -253,11 +259,12 @@ public struct ExchangeState: Codable, Sendable {
         openOrders = try container.decodeIfPresent([SimOrder].self, forKey: .openOrders) ?? []
         feeRates = try container.decodeIfPresent(SimFeeRates.self, forKey: .feeRates)
         pendingIntents = try container.decodeIfPresent([ExchangeIntent].self, forKey: .pendingIntents)
+        pricingMode = try container.decodeIfPresent(PricingMode.self, forKey: .pricingMode)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents
+        case positions, openOrders, feeRates, pendingIntents, pricingMode
     }
 }
 
@@ -847,6 +854,8 @@ extension ExchangeState {
     /// Position P&L, margin summary totals, and equity are updated.
     /// Structural data (orders, account, margins, intents) is preserved unchanged.
     public func revalued(with mids: [String: String]) -> ExchangeState {
+        // Server-authoritative pricing: trust server equity/uPnL verbatim.
+        if pricingMode == .server { return self }
         let newPositions = positions.map { $0.revalued(with: mids) }
         let newSummary = marginSummary.revalued(positions: newPositions)
         let newCross = crossMarginSummary?.revalued(positions: newPositions)
@@ -855,6 +864,7 @@ extension ExchangeState {
             crossMarginSummary: newCross,
             crossMaintenanceMarginUsed: crossMaintenanceMarginUsed,
             positions: newPositions, openOrders: openOrders,
-            feeRates: feeRates, pendingIntents: pendingIntents)
+            feeRates: feeRates, pendingIntents: pendingIntents,
+            pricingMode: pricingMode)
     }
 }

@@ -625,7 +625,7 @@ public actor WebSocketManager {
                 }
             }
         } else {
-            sendMessage(.auth(token: token, realmId: realmId))
+            sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
         }
 
         receiveTask = Task { [weak self] in
@@ -640,11 +640,11 @@ public actor WebSocketManager {
 
     private func applyTokenAndAuth(_ freshToken: String) {
         self.token = freshToken
-        sendMessage(.auth(token: freshToken, realmId: realmId))
+        sendMessage(.auth(token: freshToken, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
     }
 
     private func sendAuthWithCurrentToken() {
-        sendMessage(.auth(token: token, realmId: realmId))
+        sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
     }
 
     private func receiveLoop() async {

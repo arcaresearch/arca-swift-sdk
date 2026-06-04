@@ -2177,7 +2177,8 @@ final class ModelDecodingTests: XCTestCase {
         positions: [SimPosition] = [],
         equity: String = "10000",
         totalRawUsd: String = "10000",
-        maintenanceMarginRequired: String = "100"
+        maintenanceMarginRequired: String = "100",
+        pricingMode: PricingMode? = nil
     ) -> ExchangeState {
         let summary = SimMarginSummary(
             equity: equity, initialMarginUsed: "500",
@@ -2192,7 +2193,8 @@ final class ModelDecodingTests: XCTestCase {
             marginSummary: summary, crossMarginSummary: summary,
             crossMaintenanceMarginUsed: "100",
             positions: positions, openOrders: [],
-            feeRates: nil, pendingIntents: nil
+            feeRates: nil, pendingIntents: nil,
+            pricingMode: pricingMode
         )
     }
 
@@ -2350,6 +2352,157 @@ final class ModelDecodingTests: XCTestCase {
 
         // equity = 100 + 0 = 100, maintenance = 200 → floor at 0
         XCTAssertEqual(result.marginSummary.availableToWithdraw, "0")
+    }
+
+    // MARK: - Server-Authoritative Pricing (pricingMode)
+
+    /// Exchange-type ObjectValuation JSON, optionally carrying a `pricingMode`.
+    private func exchangeObjectValuationJSON(pricingMode: String?) -> Data {
+        let pmLine = pricingMode.map { ",\n  \"pricingMode\": \"\($0)\"" } ?? ""
+        return """
+        {
+          "objectId": "obj_x",
+          "path": "/u/x/ex",
+          "type": "exchange",
+          "denomination": "USD",
+          "valueUsd": "10000",
+          "balances": [{"denomination":"USD","amount":"10000","price":"1","valueUsd":"10000"}],
+          "positions": [{"coin":"hl:BTC","side":"LONG","size":"1","entryPrice":"50000","markPrice":"50000","unrealizedPnl":"0","valueUsd":"0"}]\(pmLine)
+        }
+        """.data(using: .utf8)!
+    }
+
+    func testObjectValuation_PricingMode_DecodesServerClientAbsent() throws {
+        let server = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: "server"))
+        let client = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: "client"))
+        let absent = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: nil))
+        XCTAssertEqual(server.pricingMode, .server)
+        XCTAssertEqual(client.pricingMode, .client)
+        XCTAssertNil(absent.pricingMode)
+    }
+
+    func testObjectValuationRevalued_ServerMode_IsNoOp() throws {
+        let server = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: "server"))
+        // A mid that would otherwise move equity 10000 → 20000 in client mode.
+        let re = server.revalued(with: ["hl:BTC": "60000"])
+        XCTAssertEqual(re.valueUsd, "10000", "server-authoritative valuation is trusted verbatim")
+        XCTAssertEqual(re.positions?.first?.markPrice, "50000")
+        XCTAssertEqual(re.positions?.first?.unrealizedPnl, "0")
+        XCTAssertEqual(re.pricingMode, .server)
+    }
+
+    func testObjectValuationRevalued_ClientAndAbsent_AreIdenticalAndRecompute() throws {
+        let client = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: "client"))
+        let absent = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: nil))
+        let server = try JSONDecoder().decode(ObjectValuation.self, from: exchangeObjectValuationJSON(pricingMode: "server"))
+        let mids = ["hl:BTC": "60000"]
+        let reClient = client.revalued(with: mids)
+        let reAbsent = absent.revalued(with: mids)
+        let reServer = server.revalued(with: mids)
+        // client == absent (both recompute), and both differ from the server no-op.
+        XCTAssertEqual(reClient.valueUsd, reAbsent.valueUsd)
+        XCTAssertEqual(reClient.positions?.first?.unrealizedPnl, reAbsent.positions?.first?.unrealizedPnl)
+        XCTAssertEqual(Decimal(string: reClient.valueUsd), Decimal(20000), "client mode recomputes equity from mids")
+        XCTAssertNotEqual(reClient.valueUsd, reServer.valueUsd)
+    }
+
+    func testObjectValuationRevalued_DenominatedServerMode_IsNoOp() throws {
+        let json = """
+        {
+          "objectId": "obj_d",
+          "path": "/u/x/wallet",
+          "type": "denominated",
+          "denomination": "hl:BTC",
+          "valueUsd": "50000",
+          "balances": [{"denomination":"hl:BTC","amount":"1","price":"50000","valueUsd":"50000"}],
+          "pricingMode": "server"
+        }
+        """.data(using: .utf8)!
+        let server = try JSONDecoder().decode(ObjectValuation.self, from: json)
+        let re = server.revalued(with: ["hl:BTC": "60000"])
+        XCTAssertEqual(re.valueUsd, "50000")
+        XCTAssertEqual(re.balances.first?.price, "50000")
+        XCTAssertEqual(re.balances.first?.valueUsd, "50000")
+    }
+
+    func testPathAggregation_PricingMode_DecodesServerClientAbsent() throws {
+        func aggJSON(_ pm: String?) -> Data {
+            let pmLine = pm.map { ",\n  \"pricingMode\": \"\($0)\"" } ?? ""
+            return """
+            {
+              "prefix": "/",
+              "totalEquityUsd": "100000",
+              "departingUsd": "0",
+              "breakdown": [{"asset":"hl:BTC","category":"spot","amount":"2","price":"50000","valueUsd":"100000"}]\(pmLine)
+            }
+            """.data(using: .utf8)!
+        }
+        XCTAssertEqual(try JSONDecoder().decode(PathAggregation.self, from: aggJSON("server")).pricingMode, .server)
+        XCTAssertEqual(try JSONDecoder().decode(PathAggregation.self, from: aggJSON("client")).pricingMode, .client)
+        XCTAssertNil(try JSONDecoder().decode(PathAggregation.self, from: aggJSON(nil)).pricingMode)
+    }
+
+    func testPathAggregationRevalued_ServerMode_IsNoOp() {
+        let agg = PathAggregation(
+            prefix: "/", totalEquityUsd: "100000", departingUsd: "0", arrivingUsd: nil,
+            breakdown: [AssetBreakdown(asset: "hl:BTC", category: .spot, amount: "2",
+                                       price: "50000", valueUsd: "100000",
+                                       weightedAvgLeverage: nil, avgEntryPrice: nil)],
+            asOf: nil, cumInflowsUsd: nil, cumOutflowsUsd: nil,
+            pricingMode: .server
+        )
+        let re = agg.revalued(with: ["hl:BTC": "60000"])
+        XCTAssertEqual(re.totalEquityUsd, "100000")
+        XCTAssertEqual(re.breakdown[0].valueUsd, "100000")
+        XCTAssertEqual(re.breakdown[0].price, "50000")
+        XCTAssertEqual(re.pricingMode, .server)
+    }
+
+    func testPathAggregationRevalued_ClientAndAbsent_AreIdenticalAndRecompute() {
+        func makeAgg(_ pm: PricingMode?) -> PathAggregation {
+            PathAggregation(
+                prefix: "/", totalEquityUsd: "100000", departingUsd: "0", arrivingUsd: nil,
+                breakdown: [AssetBreakdown(asset: "hl:BTC", category: .spot, amount: "2",
+                                           price: "50000", valueUsd: "100000",
+                                           weightedAvgLeverage: nil, avgEntryPrice: nil)],
+                asOf: nil, cumInflowsUsd: nil, cumOutflowsUsd: nil, pricingMode: pm
+            )
+        }
+        let mids = ["hl:BTC": "60000"]
+        let reClient = makeAgg(.client).revalued(with: mids)
+        let reAbsent = makeAgg(nil).revalued(with: mids)
+        XCTAssertEqual(reClient.totalEquityUsd, reAbsent.totalEquityUsd)
+        XCTAssertEqual(reClient.breakdown[0].valueUsd, reAbsent.breakdown[0].valueUsd)
+        XCTAssertEqual(Decimal(string: reClient.breakdown[0].valueUsd), Decimal(120000),
+                       "client mode recomputes spot value from mids")
+    }
+
+    func testExchangeState_PricingMode_DecodesServerClientAbsent() throws {
+        func stateJSON(_ pm: String?) -> Data {
+            let pmLine = pm.map { ",\n  \"pricingMode\": \"\($0)\"" } ?? ""
+            return """
+            {
+              "account": {"id":"act_1","realmId":"rlm_1","name":"m","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},
+              "marginSummary": {"equity":"10000","initialMarginUsed":"0","maintenanceMarginRequired":"0","availableToWithdraw":"10000","totalNtlPos":"0","totalUnrealizedPnl":"0"},
+              "positions": [],
+              "openOrders": []\(pmLine)
+            }
+            """.data(using: .utf8)!
+        }
+        XCTAssertEqual(try JSONDecoder().decode(ExchangeState.self, from: stateJSON("server")).pricingMode, .server)
+        XCTAssertEqual(try JSONDecoder().decode(ExchangeState.self, from: stateJSON("client")).pricingMode, .client)
+        XCTAssertNil(try JSONDecoder().decode(ExchangeState.self, from: stateJSON(nil)).pricingMode)
+    }
+
+    func testExchangeStateRevalued_ServerMode_IsNoOp() {
+        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+                                   entryPrice: "50000", marginUsed: "5000")
+        let state = makeTestExchangeState(positions: [pos], pricingMode: .server)
+        let result = state.revalued(with: ["hl:BTC": "60000"])
+        // Server-authoritative: position uPnL and equity are NOT recomputed.
+        XCTAssertEqual(result.positions[0].unrealizedPnl, "0")
+        XCTAssertEqual(result.marginSummary.equity, "10000")
+        XCTAssertEqual(result.pricingMode, .server)
     }
 
     // MARK: - Isolated Margin & Margin Mode
