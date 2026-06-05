@@ -58,7 +58,7 @@ final class MemoryLeakTests: XCTestCase {
             let handle = arca.placeOrder(
                 path: "/op/test",
                 objectId: "obj_test",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 side: .buy,
                 orderType: .limit,
                 size: "1",

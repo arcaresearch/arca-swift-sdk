@@ -483,11 +483,11 @@ public actor WebSocketManager {
         filteredStream { event in
             guard event.type == EventType.candleClosed.rawValue
                || event.type == EventType.candleUpdated.rawValue,
-                  let coin = event.coin,
+                  let market = event.market,
                   let intervalStr = event.interval,
                   let interval = CandleInterval(rawValue: intervalStr),
                   let candle = event.candle else { return nil }
-            return CandleEvent(coin: coin, interval: interval, candle: candle)
+            return CandleEvent(market: market, interval: interval, candle: candle)
         }
     }
 
@@ -533,11 +533,11 @@ public actor WebSocketManager {
     public func candleClosedEvents() -> AsyncStream<CandleEvent> {
         filteredStream { event in
             guard event.type == EventType.candleClosed.rawValue,
-                  let coin = event.coin,
+                  let market = event.market,
                   let intervalStr = event.interval,
                   let interval = CandleInterval(rawValue: intervalStr),
                   let candle = event.candle else { return nil }
-            return CandleEvent(coin: coin, interval: interval, candle: candle)
+            return CandleEvent(market: market, interval: interval, candle: candle)
         }
     }
 
@@ -757,7 +757,7 @@ public actor WebSocketManager {
                     checkDeliveryGap(seq)
                 }
                 for item in items {
-                    guard let coin = item["coin"] as? String,
+                    guard let market = item["market"] as? String,
                           let interval = item["interval"] as? String,
                           let candleRaw = item["candle"],
                           let candleData = try? JSONSerialization.data(withJSONObject: candleRaw),
@@ -766,7 +766,7 @@ public actor WebSocketManager {
                     }
                     let syntheticEvent = RealmEvent(
                         type: EventType.candleUpdated.rawValue,
-                        coin: coin,
+                        market: market,
                         interval: interval,
                         candle: candle
                     )

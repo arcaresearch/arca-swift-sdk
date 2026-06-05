@@ -196,7 +196,6 @@ public struct FeeBreakdown: Codable, Sendable {
 }
 
 public struct FillContext: Codable, Sendable {
-    public let coin: String
     public let side: String
     public let size: String
     public let price: String
@@ -235,7 +234,7 @@ public struct WithdrawalContext: Codable, Sendable {
 
 public struct OrderPlacedContext: Codable, Sendable {
     public let orderId: String
-    public let coin: String
+    public let market: String
     public let side: String
     public let orderType: String
     public let size: String

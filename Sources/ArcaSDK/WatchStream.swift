@@ -443,7 +443,7 @@ public struct CandleChartStream: Sendable {
 /// Options for ``Arca/watchMaxOrderSize(options:)``.
 public struct MaxOrderSizeWatchOptions: Sendable {
     public let objectId: String
-    public let coin: String
+    public let market: String
     public let side: OrderSide
     public let leverage: Int
     public let builderFeeBps: Int
@@ -460,7 +460,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
 
     public init(
         objectId: String,
-        coin: String,
+        market: String,
         side: OrderSide,
         leverage: Int,
         applicationFeeTenthsBps: Int? = nil,
@@ -469,7 +469,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         maintenanceMarginRate: String? = nil
     ) {
         self.objectId = objectId
-        self.coin = coin
+        self.market = market
         self.side = side
         self.leverage = leverage
         self.builderFeeBps = applicationFeeTenthsBps ?? 0

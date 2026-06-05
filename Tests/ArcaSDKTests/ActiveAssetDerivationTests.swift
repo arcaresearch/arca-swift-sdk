@@ -44,12 +44,12 @@ final class ActiveAssetDerivationTests: XCTestCase {
         )
     }
 
-    private func makePosition(coin: String, side: PositionSide, size: String, marginUsed: String) -> SimPosition {
+    private func makePosition(market: String, side: PositionSide, size: String, marginUsed: String) -> SimPosition {
         SimPosition(
             id: SimPositionID("pos_1"),
             accountId: SimAccountID("act_1"),
             realmId: RealmID("rlm_1"),
-            coin: coin,
+            market: market,
             side: side,
             size: size,
             entryPrice: "50000",
@@ -85,7 +85,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
                                   tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
             pendingIntents: nil)
 
-        let result = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        let result = deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
         guard let data = result else { XCTFail("expected non-nil"); return }
         let maxBuyUsd = Double(data.maxBuyUsd)!
         // available = equity - initialMarginUsed = 100, NOT availableToWithdraw = 488
@@ -98,7 +98,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
         let state = makeState(equity: "1000")
         let result = deriveActiveAssetData(
             from: state,
-            coin: "hl:BTC",
+            market: "hl:BTC",
             markPx: 50000,
             leverage: 10,
             side: .buy
@@ -106,7 +106,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
 
         XCTAssertNotNil(result)
         guard let data = result else { return }
-        XCTAssertEqual(data.coin, "hl:BTC")
+        XCTAssertEqual(data.market, "hl:BTC")
         XCTAssertEqual(data.leverage.type, .cross)
         XCTAssertEqual(data.leverage.value, 10)
         XCTAssertEqual(data.maxBuySize, data.maxSellSize, "without a position, buy and sell max should be equal")
@@ -114,11 +114,11 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testLongPosition_SellMaxIncludesClose() {
-        let pos = makePosition(coin: "hl:BTC", side: .long, size: "0.1", marginUsed: "500")
+        let pos = makePosition(market: "hl:BTC", side: .long, size: "0.1", marginUsed: "500")
         let state = makeState(equity: "1500", initialMarginUsed: "500", positions: [pos])
         let result = deriveActiveAssetData(
             from: state,
-            coin: "hl:BTC",
+            market: "hl:BTC",
             markPx: 50000,
             leverage: 10,
             side: .sell
@@ -131,11 +131,11 @@ final class ActiveAssetDerivationTests: XCTestCase {
     }
 
     func testShortPosition_BuyMaxIncludesClose() {
-        let pos = makePosition(coin: "hl:BTC", side: .short, size: "0.1", marginUsed: "500")
+        let pos = makePosition(market: "hl:BTC", side: .short, size: "0.1", marginUsed: "500")
         let state = makeState(equity: "1500", initialMarginUsed: "500", positions: [pos])
         let result = deriveActiveAssetData(
             from: state,
-            coin: "hl:BTC",
+            market: "hl:BTC",
             markPx: 50000,
             leverage: 10,
             side: .buy
@@ -149,20 +149,20 @@ final class ActiveAssetDerivationTests: XCTestCase {
 
     func testInvalidMarkPx_ReturnsNil() {
         let state = makeState()
-        XCTAssertNil(deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 0, leverage: 10, side: .buy))
-        XCTAssertNil(deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: -1, leverage: 10, side: .buy))
+        XCTAssertNil(deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 0, leverage: 10, side: .buy))
+        XCTAssertNil(deriveActiveAssetData(from: state, market: "hl:BTC", markPx: -1, leverage: 10, side: .buy))
     }
 
     func testInvalidLeverage_ReturnsNil() {
         let state = makeState()
-        XCTAssertNil(deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 50000, leverage: 0, side: .buy))
+        XCTAssertNil(deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 50000, leverage: 0, side: .buy))
     }
 
     func testZeroAvailable_ReturnsZeroMax() {
         let state = makeState(equity: "500", initialMarginUsed: "500")
         let result = deriveActiveAssetData(
             from: state,
-            coin: "hl:BTC",
+            market: "hl:BTC",
             markPx: 50000,
             leverage: 10,
             side: .buy
@@ -176,10 +176,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testBuilderFeeBps_ReducesMaxSize() {
         let state = makeState(equity: "1000")
         let withoutFee = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, builderFeeBps: 0
+            from: state, market: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, builderFeeBps: 0
         )
         let withFee = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, builderFeeBps: 100
+            from: state, market: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, builderFeeBps: 100
         )
 
         guard let a = withoutFee, let b = withFee else { XCTFail("expected non-nil"); return }
@@ -189,7 +189,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testMaxNotional_NeverExceedsAvailable() {
         let state = makeState(equity: "282.51")
         let result = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 68995, leverage: 1, side: .sell, szDecimals: 4
+            from: state, market: "hl:BTC", markPx: 68995, leverage: 1, side: .sell, szDecimals: 4
         )
         guard let data = result else { XCTFail("expected non-nil"); return }
         let sellMax = Double(data.maxSellSize)!
@@ -204,7 +204,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
         let state = makeState(equity: "1000")
         for markPx in stride(from: 50000.0, to: 70000.0, by: 137.0) {
             let result = deriveActiveAssetData(
-                from: state, coin: "hl:BTC", markPx: markPx, leverage: 1, side: .buy, szDecimals: 4
+                from: state, market: "hl:BTC", markPx: markPx, leverage: 1, side: .buy, szDecimals: 4
             )
             guard let data = result else { continue }
             let buyMax = Double(data.maxBuySize)!
@@ -217,7 +217,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testDefaultPlatformFee_UsedWhenMissing() {
         let state = makeState(equity: "1000", platformFee: nil)
         let result = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
+            from: state, market: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
         )
         XCTAssertNotNil(result)
         XCTAssertTrue(Double(result!.maxBuySize)! > 0)
@@ -226,10 +226,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testFeeScale_ReducesMaxSize() {
         let state = makeState(equity: "1000")
         let withoutScale = deriveActiveAssetData(
-            from: state, coin: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 1
+            from: state, market: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 1
         )
         let withScale = deriveActiveAssetData(
-            from: state, coin: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 2
+            from: state, market: "hl:1:TSLA", markPx: 250, leverage: 10, side: .buy, feeScale: 2
         )
 
         guard let a = withoutScale, let b = withScale else { XCTFail("expected non-nil"); return }
@@ -242,7 +242,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // which matches 1x behavior. At 10x the notional should be ~$2,000.
         let state = makeState(equity: "200")
         let result = deriveActiveAssetData(
-            from: state, coin: "hl:1:SILVER", markPx: 70.87, leverage: 10,
+            from: state, market: "hl:1:SILVER", markPx: 70.87, leverage: 10,
             side: .buy, builderFeeBps: 40, szDecimals: 5
         )
 
@@ -260,10 +260,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testFeeScale_DefaultsToOne() {
         let state = makeState(equity: "1000")
         let explicit = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, feeScale: 1
+            from: state, market: "hl:BTC", markPx: 50000, leverage: 10, side: .buy, feeScale: 1
         )
         let implicit = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
+            from: state, market: "hl:BTC", markPx: 50000, leverage: 10, side: .buy
         )
 
         guard let a = explicit, let b = implicit else { XCTFail("expected non-nil"); return }
@@ -328,7 +328,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // liquidation estimate for tiered assets like BTC (true MMR ~= 0.01).
         let derived = deriveActiveAssetData(
             from: makeState(),
-            coin: "BTC", markPx: 80000, leverage: 5, side: .buy,
+            market: "BTC", markPx: 80000, leverage: 5, side: .buy,
             maintenanceMarginRate: "0.01"
         )
         XCTAssertNotNil(derived)
@@ -341,7 +341,7 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // uses for assets without a margin table.
         let derived = deriveActiveAssetData(
             from: makeState(),
-            coin: "BTC", markPx: 80000, leverage: 5, side: .buy
+            market: "BTC", markPx: 80000, leverage: 5, side: .buy
         )
         XCTAssertNotNil(derived)
         XCTAssertEqual(derived?.maintenanceMarginRate, "0.03")
@@ -353,9 +353,9 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // ask = mid * 1.001 (10 bps above mid). Buys execute at the ask, so the
         // same budget buys fewer tokens than a mid-priced estimate assumes.
         let state = makeState(equity: "10000")
-        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        let mid = deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
         let askAware = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
             askRatio: 1.001, bidRatio: 1
         )
         guard let m = mid, let a = askAware else { XCTFail("expected non-nil"); return }
@@ -372,9 +372,9 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // same (price-independent) max notional fits *more* tokens than at the
         // mid — mirrors the server (sellCostPerToken uses the bid).
         let state = makeState(equity: "10000")
-        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .sell)
+        let mid = deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .sell)
         let bidAware = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .sell,
+            from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .sell,
             askRatio: 1, bidRatio: 0.999
         )
         guard let m = mid, let b = bidAware else { XCTFail("expected non-nil"); return }
@@ -385,10 +385,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testDefaultRatiosReproduceMidBasedSizing() {
         let state = makeState(equity: "10000")
         let explicit = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
             askRatio: 1, bidRatio: 1
         )
-        let implicit = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        let implicit = deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
         guard let e = explicit, let i = implicit else { XCTFail("expected non-nil"); return }
         XCTAssertEqual(e.maxBuySize, i.maxBuySize)
         XCTAssertEqual(e.maxSellSize, i.maxSellSize)
@@ -400,10 +400,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
     func testIgnoresNonPositiveRatios() {
         let state = makeState(equity: "10000")
         let bad = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
+            from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy,
             askRatio: 0, bidRatio: Double.nan
         )
-        let mid = deriveActiveAssetData(from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
+        let mid = deriveActiveAssetData(from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy)
         guard let bd = bad, let m = mid else { XCTFail("expected non-nil"); return }
         XCTAssertEqual(bd.maxBuySize, m.maxBuySize)
     }
@@ -414,10 +414,10 @@ final class ActiveAssetDerivationTests: XCTestCase {
         let state = makeState(equity: "10000")
         let askRatio = 1.002
         let atSnapshot = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 80000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
+            from: state, market: "hl:BTC", markPx: 80000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
         )
         let afterMove = deriveActiveAssetData(
-            from: state, coin: "hl:BTC", markPx: 90000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
+            from: state, market: "hl:BTC", markPx: 90000, leverage: 5, side: .buy, askRatio: askRatio, bidRatio: 1
         )
         guard let s0 = atSnapshot, let s1 = afterMove else { XCTFail("expected non-nil"); return }
         XCTAssertEqual(Double(s0.askPx!)!, 80000 * askRatio, accuracy: 1)

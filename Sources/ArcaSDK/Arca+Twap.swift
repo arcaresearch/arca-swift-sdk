@@ -10,7 +10,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key).
     ///   - exchangeId: Exchange Arca object ID.
-    ///   - coin: Canonical coin identifier (e.g. `"hl:BTC"`).
+    ///   - market: Canonical market identifier (e.g. `"hl:BTC"`).
     ///   - side: `"BUY"` or `"SELL"`.
     ///   - totalSize: Total size to execute over the duration.
     ///   - durationMinutes: Duration in minutes (1 to 43200).
@@ -22,7 +22,7 @@ extension Arca {
     public func placeTwap(
         path: String,
         exchangeId: String,
-        coin: String,
+        market: String,
         side: OrderSide,
         totalSize: String,
         durationMinutes: Int,
@@ -36,7 +36,7 @@ extension Arca {
             try await client.post("/objects/\(exchangeId)/exchange/twap", body: PlaceTwapRequest(
                 realmId: realm,
                 path: path,
-                coin: coin,
+                market: market,
                 side: side.rawValue,
                 totalSize: totalSize,
                 durationMinutes: durationMinutes,
@@ -199,7 +199,7 @@ private actor TwapLimitsCache {
 private struct PlaceTwapRequest: Encodable {
     let realmId: String
     let path: String
-    let coin: String
+    let market: String
     let side: String
     let totalSize: String
     let durationMinutes: Int

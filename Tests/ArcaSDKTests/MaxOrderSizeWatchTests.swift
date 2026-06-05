@@ -51,7 +51,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -88,7 +88,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0,
@@ -123,7 +123,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -173,7 +173,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -355,7 +355,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
             {
               "success": true,
               "data": {
-                "coin": "hl:BTC",
+                "market": "hl:BTC",
                 "leverage": { "type": "cross", "value": 5 },
                 "maxBuySize": "0",
                 "maxSellSize": "0",

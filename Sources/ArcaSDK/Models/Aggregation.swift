@@ -42,7 +42,7 @@ public struct BalanceValue: Codable, Sendable {
 }
 
 public struct PositionValue: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let side: String
     public let size: String
     public let entryPrice: String
@@ -155,12 +155,12 @@ extension BalanceValue {
 extension PositionValue {
     /// Returns a copy with `markPrice`, `unrealizedPnl`, and `valueUsd` recomputed.
     public func revalued(with mids: [String: String]) -> PositionValue {
-        guard let mid = mids[coin], let markDec = Decimal(string: mid) else { return self }
+        guard let mid = mids[market], let markDec = Decimal(string: mid) else { return self }
         let sizeDec = Decimal(string: size) ?? 0
         let entryDec = Decimal(string: entryPrice) ?? 0
         let signedSize: Decimal = (side == "SHORT") ? -sizeDec : sizeDec
         let pnl = signedSize * (markDec - entryDec)
-        return PositionValue(coin: coin, side: side, size: size, entryPrice: entryPrice,
+        return PositionValue(market: market, side: side, size: size, entryPrice: entryPrice,
                              markPrice: mid, unrealizedPnl: "\(pnl)", valueUsd: "\(pnl)")
     }
 }

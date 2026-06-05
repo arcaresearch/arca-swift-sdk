@@ -97,8 +97,8 @@ public enum CandleCDN {
     }
 
     /// Constructs the CDN URL for a chunk file.
-    static func chunkUrl(baseUrl: String, coin: String, interval: CandleInterval, chunkKey: String) -> String {
-        "\(baseUrl)/candles/\(coin)/\(interval.rawValue)/\(chunkKey).json"
+    static func chunkUrl(baseUrl: String, market: String, interval: CandleInterval, chunkKey: String) -> String {
+        "\(baseUrl)/candles/\(market)/\(interval.rawValue)/\(chunkKey).json"
     }
 
     /// Fetches candles from CDN for a time range, falling back to the REST API
@@ -109,7 +109,7 @@ public enum CandleCDN {
     /// is still propagated to the caller.
     public static func fetchCandlesFromCDN(
         baseUrl: String,
-        coin: String,
+        market: String,
         interval: CandleInterval,
         startMs: Int,
         endMs: Int,
@@ -129,7 +129,7 @@ public enum CandleCDN {
 
                     let isClosed = nowMs >= chunk.endMs
                     let metaBase: [String: String] = [
-                        "coin": coin,
+                        "market": market,
                         "interval": interval.rawValue,
                         "chunkKey": chunk.key,
                     ]
@@ -150,7 +150,7 @@ public enum CandleCDN {
                         }
                     }
 
-                    let url = URL(string: chunkUrl(baseUrl: baseUrl, coin: coin, interval: interval, chunkKey: chunk.key))!
+                    let url = URL(string: chunkUrl(baseUrl: baseUrl, market: market, interval: interval, chunkKey: chunk.key))!
                     do {
                         let (data, response) = try await session.data(from: url)
                         if let http = response as? HTTPURLResponse, http.statusCode == 404 {

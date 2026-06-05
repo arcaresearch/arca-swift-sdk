@@ -32,7 +32,7 @@ private func toDecimalString(_ value: Double, decimals: Int = 8) -> String {
 /// `deriveActiveAssetDataFromState` implementation.
 public func deriveActiveAssetData(
     from exchangeState: ExchangeState,
-    coin: String,
+    market: String,
     markPx: Double,
     leverage: Int,
     side: OrderSide,
@@ -122,7 +122,7 @@ public func deriveActiveAssetData(
         return floorToDecimals(notional / execPx, szDecimals)
     }
 
-    let currentPosition = exchangeState.positions.first { $0.coin == coin }
+    let currentPosition = exchangeState.positions.first { $0.market == market }
     var buyMax: Double = 0
     var sellMax: Double = 0
 
@@ -151,7 +151,7 @@ public func deriveActiveAssetData(
     let rawAvailableUsd = max(0, equity - initialMarginUsed)
 
     return ActiveAssetData(
-        coin: coin,
+        market: market,
         leverage: LeverageInfo(type: .cross, value: leverage),
         maxBuySize: toDecimalString(buyMax, decimals: szDecimals),
         maxSellSize: toDecimalString(sellMax, decimals: szDecimals),

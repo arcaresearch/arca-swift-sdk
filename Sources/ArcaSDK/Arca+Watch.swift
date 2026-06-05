@@ -901,7 +901,7 @@ extension Arca {
                         fillId: nil,
                         orderOperationId: nil,
                         orderId: orderId,
-                        market: simFill.coin,
+                        market: simFill.market,
                         side: simFill.side,
                         size: simFill.size,
                         price: simFill.price,
@@ -998,7 +998,7 @@ extension Arca {
 
     /// Subscribe to raw real-time candle events (no history blending).
     ///
-    /// **For candlestick charts, use ``watchCandleChart(coin:interval:count:)``
+    /// **For candlestick charts, use ``watchCandleChart(market:interval:count:)``
     /// instead** — it loads historical candles, merges live events, and handles
     /// reconnection gaps automatically.
     ///
@@ -1033,7 +1033,7 @@ extension Arca {
         let updates = AsyncStream<CandleEvent> { continuation in
             let task = Task {
                 for await event in candleStream {
-                    if coinSet.isEmpty || coinSet.contains(event.coin) {
+                    if coinSet.isEmpty || coinSet.contains(event.market) {
                         continuation.yield(event)
                     }
                 }

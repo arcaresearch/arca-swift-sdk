@@ -314,8 +314,8 @@ final class ModelDecodingTests: XCTestCase {
                 "equity": "10500.25",
                 "positionCount": 3,
                 "positionDetail": [
-                    {"coin": "BTC", "size": "0.1", "side": "LONG"},
-                    {"coin": "ETH", "size": "2.0", "side": "SHORT"}
+                    {"market": "BTC", "size": "0.1", "side": "LONG"},
+                    {"market": "ETH", "size": "2.0", "side": "SHORT"}
                 ],
                 "isReconciled": true,
                 "extra": null
@@ -348,7 +348,7 @@ final class ModelDecodingTests: XCTestCase {
             XCTFail("first element should be an object")
             return
         }
-        XCTAssertEqual(first["coin"], .string("BTC"))
+        XCTAssertEqual(first["market"], .string("BTC"))
         XCTAssertEqual(first["side"], .string("LONG"))
     }
 
@@ -734,7 +734,7 @@ final class ModelDecodingTests: XCTestCase {
                     "id": "sps_01abc",
                     "accountId": "act_01abc",
                     "realmId": "rlm_01def",
-                    "coin": "BTC",
+                    "market": "BTC",
                     "side": "LONG",
                     "size": "0.1",
                     "entryPrice": "65000",
@@ -757,7 +757,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(pos.id.rawValue, "sps_01abc")
         XCTAssertEqual(pos.accountId?.rawValue, "act_01abc")
         XCTAssertEqual(pos.realmId?.rawValue, "rlm_01def")
-        XCTAssertEqual(pos.coin, "BTC")
+        XCTAssertEqual(pos.market, "BTC")
         XCTAssertEqual(pos.side, .long)
         XCTAssertEqual(pos.size, "0.1")
         XCTAssertEqual(pos.entryPrice, "65000")
@@ -777,7 +777,7 @@ final class ModelDecodingTests: XCTestCase {
                     "id": "sps_01kme4wd4wft3sz9cjaj7vedmb",
                     "accountId": "act_01kmb3yn78ff3vrcseym39hqjv",
                     "realmId": "rlm_01kmb3gpdde24vxnppyc77j08y",
-                    "coin": "hl:BTC",
+                    "market": "hl:BTC",
                     "side": "LONG",
                     "size": "0.1",
                     "entryPrice": "65000",
@@ -798,7 +798,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(response.total, 1)
         let pos = response.positions[0]
         XCTAssertEqual(pos.id.rawValue, "sps_01kme4wd4wft3sz9cjaj7vedmb")
-        XCTAssertEqual(pos.coin, "hl:BTC")
+        XCTAssertEqual(pos.market, "hl:BTC")
         XCTAssertEqual(pos.side, .long)
         XCTAssertEqual(pos.size, "0.1")
         XCTAssertNil(pos.cumulativeFunding)
@@ -812,7 +812,7 @@ final class ModelDecodingTests: XCTestCase {
                     "id": "sps_01kme4wd4wft3sz9cjaj7vedmb",
                     "accountId": "act_01kmb3yn78ff3vrcseym39hqjv",
                     "realmId": "rlm_01kmb3gpdde24vxnppyc77j08y",
-                    "coin": "hl:ETH",
+                    "market": "hl:ETH",
                     "side": "SHORT",
                     "size": "1.0",
                     "entryPrice": "3500",
@@ -845,7 +845,7 @@ final class ModelDecodingTests: XCTestCase {
                         "id": "sps_01abc",
                         "accountId": "act_01abc",
                         "realmId": "rlm_01def",
-                        "coin": "hl:BTC",
+                        "market": "hl:BTC",
                         "side": "LONG",
                         "size": "0.5",
                         "entryPrice": "50000",
@@ -861,7 +861,7 @@ final class ModelDecodingTests: XCTestCase {
         let envelope = try decoder.decode(APIResponse<PositionListResponse>.self, from: json)
         XCTAssertTrue(envelope.success)
         XCTAssertEqual(envelope.data?.positions.count, 1)
-        XCTAssertEqual(envelope.data?.positions[0].coin, "hl:BTC")
+        XCTAssertEqual(envelope.data?.positions[0].market, "hl:BTC")
     }
 
     func testOrderListResponseDecoding() throws {
@@ -872,7 +872,7 @@ final class ModelDecodingTests: XCTestCase {
                     "id": "ord_01abc",
                     "accountId": "act_01abc",
                     "realmId": "rlm_01def",
-                    "coin": "hl:BTC",
+                    "market": "hl:BTC",
                     "side": "SELL",
                     "orderType": "LIMIT",
                     "price": "66300",
@@ -899,7 +899,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(response.total, 1)
         let order = response.orders[0]
         XCTAssertEqual(order.id.rawValue, "ord_01abc")
-        XCTAssertEqual(order.coin, "hl:BTC")
+        XCTAssertEqual(order.market, "hl:BTC")
         XCTAssertEqual(order.side, .sell)
         XCTAssertEqual(order.isTrigger, true)
         XCTAssertEqual(order.triggerPx, "66300")
@@ -915,7 +915,7 @@ final class ModelDecodingTests: XCTestCase {
                 "orders": [
                     {
                         "id": "ord_01abc",
-                        "coin": "hl:BTC",
+                        "market": "hl:BTC",
                         "side": "BUY",
                         "orderType": "LIMIT",
                         "price": "60000",
@@ -935,7 +935,7 @@ final class ModelDecodingTests: XCTestCase {
         let envelope = try decoder.decode(APIResponse<OrderListResponse>.self, from: json)
         XCTAssertTrue(envelope.success)
         XCTAssertEqual(envelope.data?.orders.count, 1)
-        XCTAssertEqual(envelope.data?.orders[0].coin, "hl:BTC")
+        XCTAssertEqual(envelope.data?.orders[0].market, "hl:BTC")
     }
 
     func testExchangeStateDecodingWithOpenOrders() throws {
@@ -963,7 +963,7 @@ final class ModelDecodingTests: XCTestCase {
                     "id": "ord_01abc",
                     "accountId": "act_01abc",
                     "realmId": "rlm_01def",
-                    "coin": "ETH",
+                    "market": "ETH",
                     "side": "BUY",
                     "orderType": "LIMIT",
                     "price": "3000",
@@ -989,7 +989,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(order.id.rawValue, "ord_01abc")
         XCTAssertEqual(order.accountId?.rawValue, "act_01abc")
         XCTAssertEqual(order.realmId?.rawValue, "rlm_01def")
-        XCTAssertEqual(order.coin, "ETH")
+        XCTAssertEqual(order.market, "ETH")
         XCTAssertEqual(order.side, .buy)
         XCTAssertEqual(order.orderType, .limit)
         XCTAssertEqual(order.price, "3000")
@@ -1007,10 +1007,10 @@ final class ModelDecodingTests: XCTestCase {
 
     func testUpdateLeverageRequestEncodesLeverageAsInt() throws {
         struct LeverageBody: Encodable {
-            let coin: String
+            let market: String
             let leverage: Int
         }
-        let body = LeverageBody(coin: "BTC", leverage: 40)
+        let body = LeverageBody(market: "BTC", leverage: 40)
         let data = try JSONEncoder().encode(body)
         let json = String(data: data, encoding: .utf8)!
 
@@ -1023,7 +1023,7 @@ final class ModelDecodingTests: XCTestCase {
     func testActiveAssetDataDecoding() throws {
         let json = """
         {
-            "coin": "BTC",
+            "market": "BTC",
             "leverage": { "type": "cross", "value": 5 },
             "maxBuySize": "0.1538",
             "maxSellSize": "-0.1538",
@@ -1037,7 +1037,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let data = try decoder.decode(ActiveAssetData.self, from: json)
-        XCTAssertEqual(data.coin, "BTC")
+        XCTAssertEqual(data.market, "BTC")
         XCTAssertEqual(data.leverage.type, .cross)
         XCTAssertEqual(data.leverage.value, 5)
         XCTAssertEqual(data.maxBuySize, "0.1538")
@@ -1371,7 +1371,7 @@ final class ModelDecodingTests: XCTestCase {
                 "orderId": "ord_01xyz",
                 "accountId": "act_01abc",
                 "realmId": "rlm_01abc",
-                "coin": "hl:BTC",
+                "market": "hl:BTC",
                 "side": "BUY",
                 "size": "0.1",
                 "price": "65000",
@@ -1388,7 +1388,7 @@ final class ModelDecodingTests: XCTestCase {
 
         switch typed {
         case .fillPreview(let fill, let envelope):
-            XCTAssertEqual(fill.coin, "hl:BTC")
+            XCTAssertEqual(fill.market, "hl:BTC")
             XCTAssertEqual(fill.side, .buy)
             XCTAssertEqual(envelope.correlationId, "ord_01xyz")
             XCTAssertEqual(envelope.sequence, 1)
@@ -1446,7 +1446,7 @@ final class ModelDecodingTests: XCTestCase {
             "deliverySeq": 10,
             "funding": {
                 "accountId": "act_01abc",
-                "coin": "hl:BTC",
+                "market": "hl:BTC",
                 "side": "LONG",
                 "size": "0.5",
                 "price": "65000",
@@ -1461,7 +1461,7 @@ final class ModelDecodingTests: XCTestCase {
 
         switch typed {
         case .fundingPayment(let payment, let envelope):
-            XCTAssertEqual(payment.coin, "hl:BTC")
+            XCTAssertEqual(payment.market, "hl:BTC")
             XCTAssertEqual(payment.payment, "-0.25")
             XCTAssertEqual(envelope.entityId, "obj_01def")
         default:
@@ -1517,10 +1517,10 @@ final class ModelDecodingTests: XCTestCase {
             "type": "trade.executed",
             "realmId": "rlm_01abc",
             "entityId": "hl:BTC",
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "deliverySeq": 50,
             "trade": {
-                "coin": "hl:BTC",
+                "market": "hl:BTC",
                 "px": "60500.00",
                 "sz": "0.5",
                 "side": "buy",
@@ -1535,7 +1535,7 @@ final class ModelDecodingTests: XCTestCase {
 
         switch typed {
         case .tradeExecuted(let tradeEvent, let envelope):
-            XCTAssertEqual(tradeEvent.coin, "hl:BTC")
+            XCTAssertEqual(tradeEvent.market, "hl:BTC")
             XCTAssertEqual(tradeEvent.trade.px, "60500.00")
             XCTAssertEqual(tradeEvent.trade.side, "buy")
             XCTAssertEqual(tradeEvent.trade.hash, "0xabc123")
@@ -1744,7 +1744,7 @@ final class ModelDecodingTests: XCTestCase {
     func testMarketTickerDecoding() throws {
         let json = """
         {
-            "coin": "hl:1:TSLA",
+            "market": "hl:1:TSLA",
             "dex": "xyz",
             "symbol": "TSLA",
             "exchange": "hl",
@@ -1762,7 +1762,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let ticker = try decoder.decode(MarketTicker.self, from: json)
-        XCTAssertEqual(ticker.coin, "hl:1:TSLA")
+        XCTAssertEqual(ticker.market, "hl:1:TSLA")
         XCTAssertEqual(ticker.dex, "xyz")
         XCTAssertEqual(ticker.feeScale, 2.0)
         XCTAssertFalse(ticker.isDelisted)
@@ -1771,7 +1771,7 @@ final class ModelDecodingTests: XCTestCase {
     func testMarketTickerDecoding_StandardPerp() throws {
         let json = """
         {
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "symbol": "BTC",
             "exchange": "hl",
             "markPx": "64000",
@@ -1787,7 +1787,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let ticker = try decoder.decode(MarketTicker.self, from: json)
-        XCTAssertEqual(ticker.coin, "hl:BTC")
+        XCTAssertEqual(ticker.market, "hl:BTC")
         XCTAssertEqual(ticker.feeScale, 1.0)
         XCTAssertNil(ticker.dex)
         XCTAssertNil(ticker.nextFundingTime)
@@ -1796,7 +1796,7 @@ final class ModelDecodingTests: XCTestCase {
     func testSimBookResponseDecoding() throws {
         let json = """
         {
-            "coin": "BTC",
+            "market": "BTC",
             "bids": [{"price": "65000", "size": "1.5", "orderCount": 3}],
             "asks": [{"price": "65100", "size": "2.0", "orderCount": 5}],
             "time": 1709805600
@@ -1804,7 +1804,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let book = try decoder.decode(SimBookResponse.self, from: json)
-        XCTAssertEqual(book.coin, "BTC")
+        XCTAssertEqual(book.market, "BTC")
         XCTAssertEqual(book.bids.count, 1)
         XCTAssertEqual(book.bids[0].price, "65000")
         XCTAssertEqual(book.asks[0].orderCount, 5)
@@ -1817,7 +1817,7 @@ final class ModelDecodingTests: XCTestCase {
         {
             "id": "sf_01abc",
             "orderId": "ord_01xyz",
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "side": "BUY",
             "size": "0.1",
             "price": "65000",
@@ -1829,7 +1829,7 @@ final class ModelDecodingTests: XCTestCase {
 
         let fill = try decoder.decode(SimFill.self, from: json)
         XCTAssertEqual(fill.id.rawValue, "sf_01abc")
-        XCTAssertEqual(fill.coin, "hl:BTC")
+        XCTAssertEqual(fill.market, "hl:BTC")
         XCTAssertEqual(fill.side, .buy)
         XCTAssertNil(fill.accountId)
         XCTAssertNil(fill.realmId)
@@ -1843,7 +1843,7 @@ final class ModelDecodingTests: XCTestCase {
             "orderId": "ord_01xyz",
             "accountId": "act_01abc",
             "realmId": "rlm_01def",
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "side": "SELL",
             "size": "0.5",
             "price": "64000",
@@ -1869,7 +1869,7 @@ final class ModelDecodingTests: XCTestCase {
         {
             "id": "sf_01abc",
             "orderId": "ord_01xyz",
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "side": "BUY",
             "size": "0.1",
             "price": "65000",
@@ -1892,7 +1892,7 @@ final class ModelDecodingTests: XCTestCase {
             "fill": {
                 "id": "sf_01abc",
                 "orderId": "ord_01xyz",
-                "coin": "hl:BTC",
+                "market": "hl:BTC",
                 "side": "BUY",
                 "size": "0.1",
                 "price": "65000",
@@ -1906,7 +1906,7 @@ final class ModelDecodingTests: XCTestCase {
         let event = try decoder.decode(RealmEvent.self, from: json)
         XCTAssertEqual(event.type, "fill.previewed")
         XCTAssertNotNil(event.fill)
-        XCTAssertEqual(event.fill?.coin, "hl:BTC")
+        XCTAssertEqual(event.fill?.market, "hl:BTC")
         XCTAssertNil(event.fill?.accountId)
     }
 
@@ -2199,12 +2199,12 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     private func makeTestPosition(
-        coin: String, side: PositionSide, size: String,
+        market: String, side: PositionSide, size: String,
         entryPrice: String, marginUsed: String
     ) -> SimPosition {
         SimPosition(
             id: SimPositionID("sps_1"), accountId: SimAccountID("act_1"),
-            realmId: RealmID("rlm_1"), coin: coin, side: side,
+            realmId: RealmID("rlm_1"), market: market, side: side,
             size: size, entryPrice: entryPrice, leverage: 10,
             marginUsed: marginUsed, liquidationPrice: nil,
             unrealizedPnl: "0", returnOnEquity: "0",
@@ -2219,7 +2219,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_LongPositionPnl() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "0.5",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "0.5",
                                    entryPrice: "50000", marginUsed: "2500")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:BTC": "60000"])
@@ -2230,7 +2230,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_ShortPositionPnl() {
-        let pos = makeTestPosition(coin: "hl:ETH", side: .short, size: "2",
+        let pos = makeTestPosition(market: "hl:ETH", side: .short, size: "2",
                                    entryPrice: "3200", marginUsed: "1280")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:ETH": "3000"])
@@ -2240,7 +2240,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_ReturnOnEquity() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:BTC": "55000"])
@@ -2251,9 +2251,9 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_MarginSummaryRecomputed() {
-        let pos1 = makeTestPosition(coin: "hl:BTC", side: .long, size: "0.5",
+        let pos1 = makeTestPosition(market: "hl:BTC", side: .long, size: "0.5",
                                     entryPrice: "50000", marginUsed: "2500")
-        let pos2 = makeTestPosition(coin: "hl:ETH", side: .short, size: "2",
+        let pos2 = makeTestPosition(market: "hl:ETH", side: .short, size: "2",
                                     entryPrice: "3200", marginUsed: "1280")
         let state = makeTestExchangeState(positions: [pos1, pos2])
         let result = state.revalued(with: ["hl:BTC": "60000", "hl:ETH": "3000"])
@@ -2267,7 +2267,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_CrossMarginSummaryAlsoRevalued() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:BTC": "55000"])
@@ -2277,7 +2277,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_PreservesWhenMidMissing() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:ETH": "3000"])
@@ -2289,7 +2289,7 @@ final class ModelDecodingTests: XCTestCase {
     func testExchangeStateRevalued_ClearsError() {
         let pos = SimPosition(
             id: SimPositionID("sps_1"), accountId: SimAccountID("act_1"),
-            realmId: RealmID("rlm_1"), coin: "hl:BTC", side: .long,
+            realmId: RealmID("rlm_1"), market: "hl:BTC", side: .long,
             size: "1", entryPrice: "50000", leverage: 10,
             marginUsed: "5000", liquidationPrice: nil,
             unrealizedPnl: nil, returnOnEquity: nil,
@@ -2309,7 +2309,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_PreservesStructuralFields() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos])
         let result = state.revalued(with: ["hl:BTC": "55000"])
@@ -2330,7 +2330,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_Idempotent() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos])
         let mids = ["hl:BTC": "55000"]
@@ -2342,7 +2342,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_FloorsAvailableToWithdrawAtZero() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(
             positions: [pos], equity: "100", totalRawUsd: "100",
@@ -2367,7 +2367,7 @@ final class ModelDecodingTests: XCTestCase {
           "denomination": "USD",
           "valueUsd": "10000",
           "balances": [{"denomination":"USD","amount":"10000","price":"1","valueUsd":"10000"}],
-          "positions": [{"coin":"hl:BTC","side":"LONG","size":"1","entryPrice":"50000","markPrice":"50000","unrealizedPnl":"0","valueUsd":"0"}]\(pmLine)
+          "positions": [{"market":"hl:BTC","side":"LONG","size":"1","entryPrice":"50000","markPrice":"50000","unrealizedPnl":"0","valueUsd":"0"}]\(pmLine)
         }
         """.data(using: .utf8)!
     }
@@ -2495,7 +2495,7 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testExchangeStateRevalued_ServerMode_IsNoOp() {
-        let pos = makeTestPosition(coin: "hl:BTC", side: .long, size: "1",
+        let pos = makeTestPosition(market: "hl:BTC", side: .long, size: "1",
                                    entryPrice: "50000", marginUsed: "5000")
         let state = makeTestExchangeState(positions: [pos], pricingMode: .server)
         let result = state.revalued(with: ["hl:BTC": "60000"])
@@ -2513,7 +2513,7 @@ final class ModelDecodingTests: XCTestCase {
             "id": "sps_01abc",
             "accountId": "act_01abc",
             "realmId": "rlm_01def",
-            "coin": "hl:1:CL",
+            "market": "hl:1:CL",
             "side": "LONG",
             "size": "1",
             "entryPrice": "50",
@@ -2534,7 +2534,7 @@ final class ModelDecodingTests: XCTestCase {
         let json = """
         {
             "id": "sps_02abc",
-            "coin": "hl:BTC",
+            "market": "hl:BTC",
             "side": "LONG",
             "size": "0.1",
             "entryPrice": "65000",
@@ -2549,9 +2549,9 @@ final class ModelDecodingTests: XCTestCase {
     }
 
     func testLeverageSettingDecoding_WithMarginMode() throws {
-        let json = Data(#"{ "coin": "hl:1:CL", "leverage": 5, "marginMode": "isolated" }"#.utf8)
+        let json = Data(#"{ "market": "hl:1:CL", "leverage": 5, "marginMode": "isolated" }"#.utf8)
         let setting = try decoder.decode(LeverageSetting.self, from: json)
-        XCTAssertEqual(setting.coin, "hl:1:CL")
+        XCTAssertEqual(setting.market, "hl:1:CL")
         XCTAssertEqual(setting.leverage, 5)
         XCTAssertEqual(setting.marginMode, .isolated)
     }
@@ -2560,7 +2560,7 @@ final class ModelDecodingTests: XCTestCase {
         let json = """
         {
             "accountId": "act_01abc",
-            "coin": "hl:1:CL",
+            "market": "hl:1:CL",
             "isolatedMargin": "125",
             "liquidationPrice": "50"
         }
@@ -2568,16 +2568,16 @@ final class ModelDecodingTests: XCTestCase {
 
         let resp = try decoder.decode(UpdateIsolatedMarginResponse.self, from: json)
         XCTAssertEqual(resp.accountId, "act_01abc")
-        XCTAssertEqual(resp.coin, "hl:1:CL")
+        XCTAssertEqual(resp.market, "hl:1:CL")
         XCTAssertEqual(resp.isolatedMargin, "125")
         XCTAssertEqual(resp.liquidationPrice, "50")
     }
 
     func testSetMarginModeResponseDecoding() throws {
-        let json = Data(#"{ "accountId": "act_01abc", "coin": "hl:BTC", "marginMode": "isolated" }"#.utf8)
+        let json = Data(#"{ "accountId": "act_01abc", "market": "hl:BTC", "marginMode": "isolated" }"#.utf8)
         let resp = try decoder.decode(SetMarginModeResponse.self, from: json)
         XCTAssertEqual(resp.accountId, "act_01abc")
-        XCTAssertEqual(resp.coin, "hl:BTC")
+        XCTAssertEqual(resp.market, "hl:BTC")
         XCTAssertEqual(resp.marginMode, .isolated)
     }
 }

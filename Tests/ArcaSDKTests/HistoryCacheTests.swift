@@ -129,17 +129,17 @@ final class BuildCacheKeyTests: XCTestCase {
 
     func testOmitsNilValues() {
         let key = buildCacheKey("candles", [
-            "coin": "BTC",
+            "market": "BTC",
             "interval": "1h",
             "startTime": nil,
             "endTime": nil,
         ])
-        XCTAssertEqual(key, "candles:coin=BTC&interval=1h")
+        XCTAssertEqual(key, "candles:interval=1h&market=BTC")
     }
 
     func testDifferentParamsProduceDifferentKeys() {
-        let k1 = buildCacheKey("candles", ["coin": "BTC", "interval": "1h"])
-        let k2 = buildCacheKey("candles", ["coin": "BTC", "interval": "4h"])
+        let k1 = buildCacheKey("candles", ["market": "BTC", "interval": "1h"])
+        let k2 = buildCacheKey("candles", ["market": "BTC", "interval": "4h"])
         XCTAssertNotEqual(k1, k2)
     }
 }

@@ -22,7 +22,7 @@ public struct Twap: Codable, Sendable {
     public let exchangeObjectPath: String
     public let simAccountId: String
     public let type: TwapType
-    public let coin: String
+    public let market: String
     public let side: String
     public let totalSize: String?
     public let executedSize: String

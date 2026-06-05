@@ -99,11 +99,11 @@ extension Arca {
     /// ``CandleChartStream/candles`` so dropped intermediates are recoverable.
     ///
     /// - Parameters:
-    ///   - coin: Canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
+    ///   - market: Canonical market ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
     ///   - interval: Candle interval (e.g. `.oneMinute`)
     ///   - count: Number of historical candles to load (default 300)
     public func watchCandleChart(
-        coin: String,
+        market: String,
         interval: CandleInterval,
         count: Int = 300
     ) async throws -> CandleChartStream {
@@ -119,12 +119,12 @@ extension Arca {
         let coverage = CoverageTracker()
         let rangeLoadState = SendableBox(RangeLoadState())
 
-        await ws.acquireCandles(coins: [coin], intervals: [interval])
+        await ws.acquireCandles(coins: [market], intervals: [interval])
 
         do {
             try Task.checkCancellation()
         } catch {
-            await ws.releaseCandles(coins: [coin], intervals: [interval])
+            await ws.releaseCandles(coins: [market], intervals: [interval])
             throw error
         }
 
@@ -137,13 +137,13 @@ extension Arca {
         var initialHistoryError: Error?
         do {
             history = try await getCandles(
-                coin: coin,
+                market: market,
                 interval: interval,
                 startTime: startTime,
                 skipBackfill: true
             )
         } catch is CancellationError {
-            await ws.releaseCandles(coins: [coin], intervals: [interval])
+            await ws.releaseCandles(coins: [market], intervals: [interval])
             throw CancellationError()
         } catch {
             initialHistoryError = error
@@ -151,11 +151,11 @@ extension Arca {
                         "initial getCandles failed; showing empty history",
                         error: error,
                         metadata: [
-                            "coin": coin,
+                            "market": market,
                             "interval": interval.rawValue,
                             "fingerprint": "initial_getcandles_failed"
                         ])
-            history = CandlesResponse(coin: coin, interval: interval.rawValue, candles: [])
+            history = CandlesResponse(market: market, interval: interval.rawValue, candles: [])
         }
 
         let needsRetry = history.candles.count < count / 2
@@ -213,7 +213,7 @@ extension Arca {
 
             let candleTask = Task { [weak ws] in
                 for await event in candleStream {
-                    guard event.coin == coin,
+                    guard event.market == market,
                           event.interval == interval else { continue }
 
                     let latest = event.candle
@@ -242,7 +242,7 @@ extension Arca {
                     - interval.milliseconds * gapRecoveryCandles
                 do {
                     let res = try await self.getCandles(
-                        coin: coin,
+                        market: market,
                         interval: interval,
                         startTime: gapStart
                     )
@@ -262,7 +262,7 @@ extension Arca {
                                      "gap recovery refetch failed",
                                      error: error,
                                      metadata: [
-                                         "coin": coin,
+                                         "market": market,
                                          "interval": interval.rawValue,
                                      ])
                 }
@@ -302,7 +302,7 @@ extension Arca {
                         let retryStart = Int(Date().timeIntervalSince1970 * 1000)
                             - interval.milliseconds * count
                         let res = try await self.getCandles(
-                            coin: coin,
+                            market: market,
                             interval: interval,
                             startTime: retryStart
                         )
@@ -324,7 +324,7 @@ extension Arca {
                                          "initial candle retry failed; backing off",
                                          error: error,
                                          metadata: [
-                                             "coin": coin,
+                                             "market": market,
                                              "interval": interval.rawValue,
                                          ])
                     }
@@ -359,7 +359,7 @@ extension Arca {
                         group.addTask { [self] in
                             do {
                                 let res = try await self.getCandles(
-                                    coin: coin,
+                                    market: market,
                                     interval: interval,
                                     startTime: gap.from,
                                     endTime: gap.to
@@ -370,7 +370,7 @@ extension Arca {
                                                  "range gap fetch failed",
                                                  error: error,
                                                  metadata: [
-                                                     "coin": coin,
+                                                     "market": market,
                                                      "interval": interval.rawValue,
                                                      "from": String(gap.from),
                                                      "to": String(gap.to),
@@ -515,7 +515,7 @@ extension Arca {
             stop: { [ws] in
                 stoppedBox.update { $0 = true }
                 continuationBox.update { $0 = nil }
-                await ws.releaseCandles(coins: [coin], intervals: [interval])
+                await ws.releaseCandles(coins: [market], intervals: [interval])
             }
         )
     }

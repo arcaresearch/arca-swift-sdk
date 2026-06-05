@@ -47,7 +47,7 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
-    ///   - coin: Coin/asset in canonical format (e.g. `"hl:BTC"`, `"hl:1:SILVER"`)
+    ///   - market: Coin/asset in canonical format (e.g. `"hl:BTC"`, `"hl:1:SILVER"`)
     ///   - applicationFeeTenthsBps: Optional application fee in tenths of a basis point
     ///   - leverage: Optional leverage override. When provided, the server uses
     ///     this value instead of the stored leverage setting. When `nil`, the
@@ -55,11 +55,11 @@ extension Arca {
     ///     (defaulting to 1x if none has been set via ``updateLeverage``).
     public func getActiveAssetData(
         objectId: String,
-        coin: String,
+        market: String,
         applicationFeeTenthsBps: Int? = nil,
         leverage: Int? = nil
     ) async throws -> ActiveAssetData {
-        var query: [String: String] = ["coin": coin]
+        var query: [String: String] = ["market": market]
         if let bps = applicationFeeTenthsBps, bps > 0 {
             query["applicationFeeTenthsBps"] = String(bps)
         }
@@ -83,11 +83,11 @@ extension Arca {
     /// Update leverage for a coin on an exchange object.
     public func updateLeverage(
         objectId: String,
-        coin: String,
+        market: String,
         leverage: Int
     ) async throws -> UpdateLeverageResponse {
         try await client.post("/objects/\(objectId)/exchange/leverage", body: UpdateLeverageRequest(
-            coin: coin,
+            market: market,
             leverage: leverage
         ))
     }
@@ -102,11 +102,11 @@ extension Arca {
     /// Only valid on isolated positions.
     public func updateIsolatedMargin(
         objectId: String,
-        coin: String,
+        market: String,
         amount: String
     ) async throws -> UpdateIsolatedMarginResponse {
         try await client.post("/objects/\(objectId)/exchange/isolated-margin", body: UpdateIsolatedMarginRequest(
-            coin: coin,
+            market: market,
             amount: amount
         ))
     }
@@ -118,21 +118,21 @@ extension Arca {
     /// per mode, so switching restores the leverage last set for that mode.
     public func setMarginMode(
         objectId: String,
-        coin: String,
+        market: String,
         marginMode: MarginMode
     ) async throws -> SetMarginModeResponse {
         try await client.post("/objects/\(objectId)/exchange/margin-mode", body: SetMarginModeRequest(
-            coin: coin,
+            market: market,
             marginMode: marginMode
         ))
     }
 
     /// Get leverage settings for a coin (or all coins) on an exchange object.
-    public func getLeverage(objectId: String, coin: String? = nil) async throws -> [LeverageSetting] {
+    public func getLeverage(objectId: String, market: String? = nil) async throws -> [LeverageSetting] {
         var query: [String: String] = [:]
-        if let coin = coin { query["coin"] = coin }
+        if let market = market { query["market"] = market }
 
-        if coin != nil {
+        if market != nil {
             let single: LeverageSetting = try await client.get(
                 "/objects/\(objectId)/exchange/leverage", query: query
             )
@@ -153,7 +153,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
-    ///   - coin: Coin/asset to trade
+    ///   - market: Coin/asset to trade
     ///   - side: Order side (`.buy` or `.sell`)
     ///   - orderType: Order type (`.market` or `.limit`)
     ///   - size: Order size as decimal string
@@ -174,7 +174,7 @@ extension Arca {
     public func placeOrder(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         side: OrderSide,
         orderType: OrderType,
         size: String,
@@ -199,7 +199,7 @@ extension Arca {
             try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
-                coin: coin,
+                market: market,
                 side: side.rawValue,
                 orderType: orderType.rawValue,
                 size: size,
@@ -298,7 +298,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
-    ///   - coin: Coin in canonical format (e.g. "hl:BTC")
+    ///   - market: Coin in canonical format (e.g. "hl:BTC")
     ///   - size: Partial close size. If nil, closes the full position.
     ///   - timeInForce: Time in force (default: .ioc)
     ///   - applicationFeeTenthsBps: Application fee in tenths of a basis point
@@ -309,7 +309,7 @@ extension Arca {
     public func closePosition(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         size: String? = nil,
         timeInForce: TimeInForce = .ioc,
         applicationFeeTenthsBps: Int? = nil,
@@ -319,8 +319,8 @@ extension Arca {
     ) -> OrderHandle {
         let positionFetch = Task { [self] in
             let positions = try await listPositions(objectId: objectId)
-            guard let position = positions.first(where: { $0.coin == coin }) else {
-                throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(coin)", errorId: nil)
+            guard let position = positions.first(where: { $0.market == market }) else {
+                throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(market)", errorId: nil)
             }
             return position
         }
@@ -342,14 +342,14 @@ extension Arca {
             if let override = isolated {
                 effectiveIsolated = override
             } else {
-                let meta = try? await self.asset(coin)
+                let meta = try? await self.asset(market)
                 effectiveIsolated = meta?.onlyIsolated == true
             }
 
             return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
-                coin: coin,
+                market: market,
                 side: closingSide.rawValue,
                 orderType: OrderType.market.rawValue,
                 size: closeSize,
@@ -398,13 +398,13 @@ extension Arca {
 
     // MARK: - Position TP/SL (existing positions)
 
-    /// Attach a stop-loss to the open position for `coin`.
+    /// Attach a stop-loss to the open position for `market`.
     ///
     /// The trigger is placed with `grouping: .positionTpsl`, `reduceOnly: true`,
     /// and `size: "0"` so the venue fills it from — and resizes it with — the
     /// live position. The closing side is inferred from the position
     /// (LONG → SELL, SHORT → BUY), and `leverage` / `isolated` are auto-filled
-    /// from the position and market meta exactly like ``closePosition(path:objectId:coin:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
+    /// from the position and market meta exactly like ``closePosition(path:objectId:market:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
     ///
     /// By default any existing stop-loss for the position is replaced; pass
     /// `replace: false` to stack multiple triggers.
@@ -412,7 +412,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
-    ///   - coin: Coin in canonical format (e.g. `"hl:BTC"`)
+    ///   - market: Coin in canonical format (e.g. `"hl:BTC"`)
     ///   - triggerPx: Mark-price threshold that activates the order
     ///   - isMarket: Execute as market (default) or limit when triggered
     ///   - limitPrice: Resting limit price when `isMarket == false` (required then)
@@ -425,7 +425,7 @@ extension Arca {
     public func setStopLoss(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         triggerPx: String,
         isMarket: Bool? = nil,
         limitPrice: String? = nil,
@@ -437,19 +437,19 @@ extension Arca {
         feeTargets: [FeeTarget]? = nil
     ) -> OrderHandle {
         setPositionTrigger(
-            tpsl: .stopLoss, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
+            tpsl: .stopLoss, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
             applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
         )
     }
 
-    /// Attach a take-profit to the open position for `coin`. The
-    /// position-attached counterpart of ``setStopLoss(path:objectId:coin:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:applicationFeeTenthsBps:feeTargets:)``.
+    /// Attach a take-profit to the open position for `market`. The
+    /// position-attached counterpart of ``setStopLoss(path:objectId:market:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:applicationFeeTenthsBps:feeTargets:)``.
     public func setTakeProfit(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         triggerPx: String,
         isMarket: Bool? = nil,
         limitPrice: String? = nil,
@@ -461,7 +461,7 @@ extension Arca {
         feeTargets: [FeeTarget]? = nil
     ) -> OrderHandle {
         setPositionTrigger(
-            tpsl: .takeProfit, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
+            tpsl: .takeProfit, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
             applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
@@ -472,7 +472,7 @@ extension Arca {
         tpsl: TpslType,
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         triggerPx: String,
         isMarket: Bool?,
         limitPrice: String?,
@@ -484,18 +484,18 @@ extension Arca {
         feeTargets: [FeeTarget]?
     ) -> OrderHandle {
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
-            let market = isMarket ?? true
-            if !market, (limitPrice ?? "").isEmpty {
+            let isMarketOrder = isMarket ?? true
+            if !isMarketOrder, (limitPrice ?? "").isEmpty {
                 throw ArcaError.validation(
                     message: "trigger-limit orders require a limitPrice (omit isMarket for a market trigger)",
                     errorId: nil
                 )
             }
             let (side, effLeverage, effIsolated) = try await inferPositionCloseParams(
-                objectId: objectId, coin: coin, leverageOverride: leverage, isolatedOverride: isolated
+                objectId: objectId, market: market, leverageOverride: leverage, isolatedOverride: isolated
             )
             if replace {
-                let existing = try await findPositionTpslOrders(objectId: objectId, coin: coin, tpsl: tpsl.rawValue)
+                let existing = try await findPositionTpslOrders(objectId: objectId, market: market, tpsl: tpsl.rawValue)
                 for order in existing {
                     _ = try await cancelOrder(
                         path: path + "/replace-" + order.id.rawValue, objectId: objectId, orderId: order.id.rawValue
@@ -505,11 +505,11 @@ extension Arca {
             return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
-                coin: coin,
+                market: market,
                 side: side.rawValue,
-                orderType: market ? OrderType.market.rawValue : OrderType.limit.rawValue,
+                orderType: isMarketOrder ? OrderType.market.rawValue : OrderType.limit.rawValue,
                 size: "0",
-                price: market ? nil : limitPrice,
+                price: isMarketOrder ? nil : limitPrice,
                 leverage: effLeverage,
                 reduceOnly: true,
                 timeInForce: timeInForce.rawValue,
@@ -517,7 +517,7 @@ extension Arca {
                 feeTargets: feeTargets,
                 isTrigger: true,
                 triggerPx: triggerPx,
-                isMarket: market,
+                isMarket: isMarketOrder,
                 tpsl: tpsl.rawValue,
                 grouping: TpslGrouping.positionTpsl.rawValue,
                 useMax: nil,
@@ -542,7 +542,7 @@ extension Arca {
     public func setPositionTpsl(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         stopLossPx: String? = nil,
         takeProfitPx: String? = nil,
         isMarket: Bool? = nil,
@@ -561,7 +561,7 @@ extension Arca {
         var tpHandle: OrderHandle?
         if let sl = stopLossPx, !sl.isEmpty {
             let handle = setStopLoss(
-                path: path + "/sl", objectId: objectId, coin: coin, triggerPx: sl,
+                path: path + "/sl", objectId: objectId, market: market, triggerPx: sl,
                 isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
             )
             _ = try await handle.submitted
@@ -569,7 +569,7 @@ extension Arca {
         }
         if let tp = takeProfitPx, !tp.isEmpty {
             let handle = setTakeProfit(
-                path: path + "/tp", objectId: objectId, coin: coin, triggerPx: tp,
+                path: path + "/tp", objectId: objectId, market: market, triggerPx: tp,
                 isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
             )
             _ = try await handle.submitted
@@ -578,17 +578,17 @@ extension Arca {
         return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
     }
 
-    /// Cancel resting positionTpsl trigger orders for `coin`. `tpsl` narrows the
+    /// Cancel resting positionTpsl trigger orders for `market`. `tpsl` narrows the
     /// clear to a single leg; `nil` clears both. Returns the orders that were
     /// targeted for cancellation.
     @discardableResult
     public func clearPositionTpsl(
         path: String,
         objectId: String,
-        coin: String,
+        market: String,
         tpsl: TpslType? = nil
     ) async throws -> [SimOrder] {
-        let existing = try await findPositionTpslOrders(objectId: objectId, coin: coin, tpsl: tpsl?.rawValue)
+        let existing = try await findPositionTpslOrders(objectId: objectId, market: market, tpsl: tpsl?.rawValue)
         for order in existing {
             _ = try await cancelOrder(
                 path: path + "/" + order.id.rawValue, objectId: objectId, orderId: order.id.rawValue
@@ -597,25 +597,25 @@ extension Arca {
         return existing
     }
 
-    /// Look up the open position for `coin` and derive the closing side,
+    /// Look up the open position for `market` and derive the closing side,
     /// leverage, and isolated flag needed by a reduce-only close/trigger order.
     /// Optional overrides win over the inferred values.
     private func inferPositionCloseParams(
         objectId: String,
-        coin: String,
+        market: String,
         leverageOverride: Int?,
         isolatedOverride: Bool?
     ) async throws -> (OrderSide, Int, Bool) {
         let positions = try await listPositions(objectId: objectId)
-        guard let position = positions.first(where: { $0.coin == coin }) else {
-            throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(coin)", errorId: nil)
+        guard let position = positions.first(where: { $0.market == market }) else {
+            throw ArcaError.notFound(code: "POSITION_NOT_FOUND", message: "No open position for \(market)", errorId: nil)
         }
         let side: OrderSide = position.side == .long ? .sell : .buy
         let leverage = leverageOverride ?? position.leverage
         let isolated: Bool
         if let override = isolatedOverride {
             isolated = override
-        } else if let meta = try? await asset(coin) {
+        } else if let meta = try? await asset(market) {
             if let modes = meta.marginModes, !modes.isEmpty {
                 isolated = modes.count == 1 && modes.first == "isolated"
             } else {
@@ -627,16 +627,16 @@ extension Arca {
         return (side, leverage, isolated)
     }
 
-    /// Return resting positionTpsl trigger orders for `coin`, optionally narrowed
+    /// Return resting positionTpsl trigger orders for `market`, optionally narrowed
     /// to a single tp/sl leg.
     private func findPositionTpslOrders(
         objectId: String,
-        coin: String,
+        market: String,
         tpsl: String?
     ) async throws -> [SimOrder] {
         let orders = try await listOrders(objectId: objectId, status: OrderStatus.waitingForTrigger.rawValue)
         return orders.filter {
-            $0.coin == coin
+            $0.market == market
                 && $0.grouping == TpslGrouping.positionTpsl.rawValue
                 && (tpsl == nil || $0.tpsl == tpsl)
         }
@@ -725,11 +725,11 @@ extension Arca {
     /// print(btc?.logoSources?.first?.width) // 256
     /// ```
     ///
-    /// - Parameter coin: Canonical coin ID (the `name` field on `SimMetaAsset`).
+    /// - Parameter market: Canonical market ID (the `name` field on `SimMetaAsset`).
     /// - Returns: The matching `SimMetaAsset`, or `nil` if not found.
-    public func asset(_ coin: String) async throws -> SimMetaAsset? {
+    public func asset(_ market: String) async throws -> SimMetaAsset? {
         let map = try await ensureMetaLoaded()
-        return map[coin]
+        return map[market]
     }
 
     /// Eagerly fetch and cache market metadata.
@@ -758,8 +758,8 @@ extension Arca {
     }
 
     /// Get L2 order book for a specific coin.
-    public func getOrderBook(coin: String) async throws -> SimBookResponse {
-        try await client.get("/exchange/market/book/\(coin)")
+    public func getOrderBook(market: String) async throws -> SimBookResponse {
+        try await client.get("/exchange/market/book/\(market)")
     }
 
     /// Get OHLCV candle data for a specific coin.
@@ -768,14 +768,14 @@ extension Arca {
     /// fetches from CDN chunks for historical data with REST API fallback.
     ///
     /// - Parameters:
-    ///   - coin: Canonical coin ID (e.g. `hl:BTC`, `hl:ETH`)
+    ///   - market: Canonical coin ID (e.g. `hl:BTC`, `hl:ETH`)
     ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
     ///   - startTime: Optional start time in epoch milliseconds
     ///   - endTime: Optional end time in epoch milliseconds
     ///   - skipBackfill: When true, the server returns only cached data without
     ///     waiting for synchronous Hyperliquid backfill. Use for fast initial renders.
     public func getCandles(
-        coin: String,
+        market: String,
         interval: CandleInterval,
         startTime: Int? = nil,
         endTime: Int? = nil,
@@ -785,7 +785,7 @@ extension Arca {
         let dur = interval.milliseconds
         let effectiveEnd = endTime ?? (nowMs / dur * dur)
         let key = buildCacheKey("candles", [
-            "coin": coin,
+            "market": market,
             "interval": interval.rawValue,
             "startTime": startTime.map(String.init),
             "endTime": String(effectiveEnd),
@@ -801,7 +801,7 @@ extension Arca {
             let end = effectiveEnd
             let candles = try await CandleCDN.fetchCandlesFromCDN(
                 baseUrl: cdnBase,
-                coin: coin,
+                market: market,
                 interval: interval,
                 startMs: start,
                 endMs: end,
@@ -811,11 +811,11 @@ extension Arca {
                     q["startTime"] = String(s)
                     q["endTime"] = String(e)
                     if skipBackfill { q["skipBackfill"] = "true" }
-                    let resp: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: q)
+                    let resp: CandlesResponse = try await client.get("/exchange/market/candles/\(market)", query: q)
                     return resp.candles
                 }
             )
-            let result = CandlesResponse(coin: coin, interval: interval.rawValue, candles: candles)
+            let result = CandlesResponse(market: market, interval: interval.rawValue, candles: candles)
             if !candles.isEmpty {
                 historyCache.set(key, value: result)
             }
@@ -826,7 +826,7 @@ extension Arca {
         if let startTime = startTime { query["startTime"] = String(startTime) }
         if let endTime = endTime { query["endTime"] = String(endTime) }
         if skipBackfill { query["skipBackfill"] = "true" }
-        let result: CandlesResponse = try await client.get("/exchange/market/candles/\(coin)", query: query)
+        let result: CandlesResponse = try await client.get("/exchange/market/candles/\(market)", query: query)
         historyCache.set(key, value: result)
         return result
     }
@@ -938,7 +938,7 @@ extension Arca {
 
         var resolvedFeeScale = opts.feeScale ?? 1.0
         if opts.feeScale == nil {
-            if let meta = try? await asset(opts.coin),
+            if let meta = try? await asset(opts.market),
                let scale = meta.feeScale, scale > 0 {
                 resolvedFeeScale = scale
             }
@@ -964,7 +964,7 @@ extension Arca {
         let bidRatioBox = SendableBox<Double>(1)
         if let data = try? await getActiveAssetData(
             objectId: opts.objectId,
-            coin: opts.coin,
+            market: opts.market,
             applicationFeeTenthsBps: opts.builderFeeBps,
             leverage: opts.leverage
         ) {
@@ -991,11 +991,11 @@ extension Arca {
 
         func recompute() -> ActiveAssetData? {
             guard let exState = exchangeStateBox.value else { return nil }
-            let markStr = priceStream.prices.value[opts.coin]
+            let markStr = priceStream.prices.value[opts.market]
             let markPx = markStr.flatMap(Double.init) ?? 0
             return deriveActiveAssetData(
                 from: exState,
-                coin: opts.coin,
+                market: opts.market,
                 markPx: markPx,
                 leverage: opts.leverage,
                 side: opts.side,
@@ -1018,7 +1018,7 @@ extension Arca {
             guard let self else { return nil }
             return try? await self.getActiveAssetData(
                 objectId: opts.objectId,
-                coin: opts.coin,
+                market: opts.market,
                 applicationFeeTenthsBps: opts.builderFeeBps,
                 leverage: opts.leverage
             )
@@ -1112,7 +1112,7 @@ extension Arca {
 
 // MARK: - Position TP/SL Result
 
-/// Handles for the legs placed by ``Arca/setPositionTpsl(path:objectId:coin:stopLossPx:takeProfitPx:isMarket:replace:applicationFeeTenthsBps:feeTargets:)``.
+/// Handles for the legs placed by ``Arca/setPositionTpsl(path:objectId:market:stopLossPx:takeProfitPx:isMarket:replace:applicationFeeTenthsBps:feeTargets:)``.
 /// A leg is `nil` when its trigger price was not provided.
 public struct SetPositionTpslResult: Sendable {
     public let stopLoss: OrderHandle?
@@ -1185,24 +1185,24 @@ private struct CreateExchangeRequest: Encodable {
 }
 
 private struct UpdateLeverageRequest: Encodable {
-    let coin: String
+    let market: String
     let leverage: Int
 }
 
 private struct UpdateIsolatedMarginRequest: Encodable {
-    let coin: String
+    let market: String
     let amount: String
 }
 
 private struct SetMarginModeRequest: Encodable {
-    let coin: String
+    let market: String
     let marginMode: MarginMode
 }
 
 private struct PlaceOrderRequest: Encodable {
     let realmId: String
     let path: String
-    let coin: String
+    let market: String
     let side: String
     let orderType: String
     let size: String

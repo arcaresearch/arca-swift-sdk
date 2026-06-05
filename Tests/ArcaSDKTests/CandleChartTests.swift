@@ -725,7 +725,7 @@ final class CandleChartTests: XCTestCase {
         }
 
         let stream = try await arca.watchCandleChart(
-            coin: "hl:BTC",
+            market: "hl:BTC",
             interval: .oneMinute,
             count: 3
         )
@@ -793,7 +793,7 @@ final class CandleChartTests: XCTestCase {
         }
 
         let stream = try await arca.watchCandleChart(
-            coin: "hl:BTC",
+            market: "hl:BTC",
             interval: .oneMinute,
             count: 2
         )
@@ -857,7 +857,7 @@ final class CandleChartTests: XCTestCase {
             }
         }
 
-        let stream = try await arca.watchCandleChart(coin: "hl:BTC", interval: .oneMinute, count: 2)
+        let stream = try await arca.watchCandleChart(market: "hl:BTC", interval: .oneMinute, count: 2)
 
         let gapStart = initialStart - intervalMs * 2
         let gapEnd = initialStart + intervalMs * 10
@@ -905,7 +905,7 @@ final class CandleChartTests: XCTestCase {
             }
         }
 
-        let stream = try await arca.watchCandleChart(coin: "hl:BTC", interval: .oneMinute, count: 2)
+        let stream = try await arca.watchCandleChart(market: "hl:BTC", interval: .oneMinute, count: 2)
 
         var updateCounts: [Int] = []
         let unsub = stream.onUpdate { update in
@@ -941,7 +941,7 @@ final class CandleChartTests: XCTestCase {
         let task = Task {
             try await CandleCDN.fetchCandlesFromCDN(
                 baseUrl: "https://cdn.example.com",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 interval: .oneHour,
                 startMs: 0,
                 endMs: 30 * 24 * 3_600_000,
@@ -978,7 +978,7 @@ final class CandleChartTests: XCTestCase {
         let task = Task {
             try await CandleCDN.fetchCandlesFromCDN(
                 baseUrl: "http://10.255.255.1:1",
-                coin: "hl:BTC",
+                market: "hl:BTC",
                 interval: .oneHour,
                 startMs: 0,
                 endMs: 14 * 24 * 3_600_000,
@@ -1150,7 +1150,7 @@ final class CandleChartTests: XCTestCase {
             {"t":\(candle.t),"o":"\(candle.o)","h":"\(candle.h)","l":"\(candle.l)","c":"\(candle.c)","v":"\(candle.v)","n":\(candle.n)}
             """
         }.joined(separator: ",")
-        return "{\"success\":true,\"data\":{\"coin\":\"hl:BTC\",\"interval\":\"1m\",\"candles\":[\(candleJSON)]}}"
+        return "{\"success\":true,\"data\":{\"market\":\"hl:BTC\",\"interval\":\"1m\",\"candles\":[\(candleJSON)]}}"
     }
 
     private static func queryValue(_ name: String, in request: URLRequest) -> Int? {

@@ -17,7 +17,7 @@ public struct RealmEvent: Codable, Sendable {
     public let path: String?
     public let watchId: String?
     public let aggregation: PathAggregation?
-    public let coin: String?
+    public let market: String?
     public let interval: String?
     public let candle: Candle?
     public let fill: SimFill?
@@ -60,7 +60,7 @@ public struct RealmEvent: Codable, Sendable {
         path = try container.decodeIfPresent(String.self, forKey: .path)
         watchId = try container.decodeIfPresent(String.self, forKey: .watchId)
         aggregation = try container.decodeIfPresent(PathAggregation.self, forKey: .aggregation)
-        coin = try container.decodeIfPresent(String.self, forKey: .coin)
+        market = try container.decodeIfPresent(String.self, forKey: .market)
         interval = try container.decodeIfPresent(String.self, forKey: .interval)
         candle = try container.decodeIfPresent(Candle.self, forKey: .candle)
         funding = try container.decodeIfPresent(FundingPayment.self, forKey: .funding)
@@ -86,7 +86,7 @@ public struct RealmEvent: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case realmId, type, entityId, entityPath, summary, operation, event, object
         case mids, exchangeState, valuation, path, watchId, aggregation
-        case coin, interval, candle, fill, funding, trade, realm, twap, driftCorrected
+        case market, interval, candle, fill, funding, trade, realm, twap, driftCorrected
         case eventId, correlationId, sequence, timestamp, deliverySeq
     }
 
@@ -95,7 +95,7 @@ public struct RealmEvent: Codable, Sendable {
         summary: ExplorerSummary? = nil, operation: Operation? = nil, event: ArcaEvent? = nil,
         object: ArcaObject? = nil, mids: [String: String]? = nil, exchangeState: ExchangeState? = nil,
         valuation: ObjectValuation? = nil, path: String? = nil, watchId: String? = nil,
-        aggregation: PathAggregation? = nil, coin: String? = nil, interval: String? = nil,
+        aggregation: PathAggregation? = nil, market: String? = nil, interval: String? = nil,
         candle: Candle? = nil, fill: SimFill? = nil, recordedFill: Fill? = nil,
         funding: FundingPayment? = nil, trade: MarketTrade? = nil,
         realm: Realm? = nil, twap: Twap? = nil, driftCorrected: Bool? = nil,
@@ -106,7 +106,7 @@ public struct RealmEvent: Codable, Sendable {
         self.summary = summary; self.operation = operation; self.event = event; self.object = object
         self.mids = mids; self.exchangeState = exchangeState; self.valuation = valuation
         self.path = path; self.watchId = watchId; self.aggregation = aggregation
-        self.coin = coin; self.interval = interval; self.candle = candle
+        self.market = market; self.interval = interval; self.candle = candle
         self.fill = fill; self.recordedFill = recordedFill; self.funding = funding
         self.trade = trade; self.realm = realm; self.twap = twap; self.driftCorrected = driftCorrected
         self.eventId = eventId; self.correlationId = correlationId; self.sequence = sequence

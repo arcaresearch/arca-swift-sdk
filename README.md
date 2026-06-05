@@ -192,7 +192,7 @@ Each `CandleChartUpdate.candles` contains the **complete** merged array — it n
 
 ```swift
 let chart = try await arca.watchCandleChart(
-    coin: "hl:1:BRENTOIL",
+    market: "hl:1:BRENTOIL",
     interval: .oneMinute,
     count: 300  // historical candles to load
 )
@@ -209,9 +209,9 @@ await chart.stop()
 **Important**: Only one `for await` loop should consume a given stream's `updates` at a time. When switching coins or intervals, cancel the previous task and call `stop()` before creating a new stream. In SwiftUI, use `.task(id:)` to get automatic cancellation:
 
 ```swift
-.task(id: "\(coin):\(interval.rawValue)") {
+.task(id: "\(market):\(interval.rawValue)") {
     guard let chart = try? await arca.watchCandleChart(
-        coin: coin, interval: interval
+        market: market, interval: interval
     ) else { return }
     defer { Task { await chart.stop() } }
     for await update in chart.updates {

@@ -210,23 +210,23 @@ public enum TypedEvent: Sendable {
             return .fundingPayment(funding, envelope: envelope)
 
         case EventType.candleClosed.rawValue:
-            guard let coin = event.coin,
+            guard let market = event.market,
                   let ivStr = event.interval,
                   let interval = CandleInterval(rawValue: ivStr),
                   let candle = event.candle else { return .unknown(event) }
-            return .candleClosed(CandleEvent(coin: coin, interval: interval, candle: candle), envelope: envelope)
+            return .candleClosed(CandleEvent(market: market, interval: interval, candle: candle), envelope: envelope)
 
         case EventType.candleUpdated.rawValue:
-            guard let coin = event.coin,
+            guard let market = event.market,
                   let ivStr = event.interval,
                   let interval = CandleInterval(rawValue: ivStr),
                   let candle = event.candle else { return .unknown(event) }
-            return .candleUpdated(CandleEvent(coin: coin, interval: interval, candle: candle), envelope: envelope)
+            return .candleUpdated(CandleEvent(market: market, interval: interval, candle: candle), envelope: envelope)
 
         case EventType.tradeExecuted.rawValue:
-            guard let coin = event.coin,
+            guard let market = event.market,
                   let trade = event.trade else { return .unknown(event) }
-            return .tradeExecuted(TradeEvent(coin: coin, trade: trade), envelope: envelope)
+            return .tradeExecuted(TradeEvent(market: market, trade: trade), envelope: envelope)
 
         case EventType.midsUpdated.rawValue:
             guard let mids = event.mids else { return .unknown(event) }

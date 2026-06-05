@@ -24,7 +24,7 @@ public struct SimPosition: Codable, Sendable {
     public let id: SimPositionID
     public let accountId: SimAccountID?
     public let realmId: RealmID?
-    public let coin: String
+    public let market: String
     public let side: PositionSide
     public let size: String
     public let entryPrice: String
@@ -76,7 +76,7 @@ extension SimPosition {
         self.id = try c.decode(SimPositionID.self, forKey: .id)
         self.accountId = try c.decodeIfPresent(SimAccountID.self, forKey: .accountId)
         self.realmId = try c.decodeIfPresent(RealmID.self, forKey: .realmId)
-        self.coin = try c.decode(String.self, forKey: .coin)
+        self.market = try c.decode(String.self, forKey: .market)
         self.side = try c.decode(PositionSide.self, forKey: .side)
         self.size = try c.decode(String.self, forKey: .size)
         self.entryPrice = try c.decode(String.self, forKey: .entryPrice)
@@ -113,7 +113,7 @@ public struct SimOrder: Codable, Sendable {
     public let id: SimOrderID
     public let accountId: SimAccountID?
     public let realmId: RealmID?
-    public let coin: String
+    public let market: String
     public let side: OrderSide
     public let orderType: OrderType
     public let price: String?
@@ -165,7 +165,7 @@ public struct SimFill: Codable, Sendable {
     public let orderId: SimOrderID
     public let accountId: SimAccountID?
     public let realmId: RealmID?
-    public let coin: String
+    public let market: String
     public let side: OrderSide
     public let price: String
     public let size: String
@@ -179,7 +179,7 @@ public struct SimFill: Codable, Sendable {
 
 public struct FundingPayment: Codable, Sendable {
     public let accountId: String
-    public let coin: String
+    public let market: String
     public let side: String
     public let size: String
     public let price: String
@@ -211,7 +211,7 @@ public struct SimFeeRates: Codable, Sendable {
 public struct ExchangeIntent: Codable, Sendable {
     public let operationId: String
     public let operationPath: String
-    public let coin: String
+    public let market: String
     public let side: String
     public let size: String
     public let orderType: String
@@ -281,7 +281,7 @@ public struct LeverageInfo: Codable, Sendable {
 }
 
 public struct ActiveAssetData: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let leverage: LeverageInfo
     /// Max buy size in tokens (positive).
     public let maxBuySize: String
@@ -316,7 +316,7 @@ public struct ActiveAssetData: Codable, Sendable {
 /// Per-asset fee rate entry returned by `getAssetFees`.
 public struct AssetFeeEntry: Codable, Sendable {
     /// Coin in canonical format (e.g. "hl:BTC", "hl:1:TSLA").
-    public let coin: String
+    public let market: String
     /// Effective taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps).
     public let takerFeeRate: String
     /// Effective maker fee rate as a decimal string (e.g. "0.00015" = 1.5 bps).
@@ -359,7 +359,7 @@ public struct OrderBreakdownAccountContext: Sendable {
     /// Total maintenance margin requirement (USD) from all positions in the
     /// account EXCEPT any position in the same coin as this order. Compute by
     /// summing `mmr * size * entryPrice` across
-    /// `exchangeState.positions.filter { $0.coin != coin }`.
+    /// `exchangeState.positions.filter { $0.market != market }`.
     public let otherMaintenanceMargin: String
     /// Existing open position in the same coin as this order, if any. Omit
     /// when the account has no position in this coin.
@@ -478,13 +478,13 @@ public struct OrderBreakdown: Sendable {
 
 public struct UpdateLeverageResponse: Codable, Sendable {
     public let accountId: String
-    public let coin: String
+    public let market: String
     public let leverage: Int
     public let previousLeverage: Int
 }
 
 public struct LeverageSetting: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let leverage: Int
     /// Asset's configured margin mode.
     public let marginMode: MarginMode
@@ -492,7 +492,7 @@ public struct LeverageSetting: Codable, Sendable {
 
 public struct UpdateIsolatedMarginResponse: Codable, Sendable {
     public let accountId: String
-    public let coin: String
+    public let market: String
     /// Resulting locked isolated collateral.
     public let isolatedMargin: String
     /// Recomputed liquidation price.
@@ -501,7 +501,7 @@ public struct UpdateIsolatedMarginResponse: Codable, Sendable {
 
 public struct SetMarginModeResponse: Codable, Sendable {
     public let accountId: String
-    public let coin: String
+    public let market: String
     public let marginMode: MarginMode
 }
 
@@ -607,7 +607,7 @@ public struct SimMidsResponse: Codable, Sendable {
 }
 
 public struct MarketTicker: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let dex: String?
     public let symbol: String
     public let exchange: String
@@ -636,7 +636,7 @@ public struct SimBookLevel: Codable, Sendable {
 }
 
 public struct SimBookResponse: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let bids: [SimBookLevel]
     public let asks: [SimBookLevel]
     public let time: Int
@@ -680,20 +680,20 @@ public struct Candle: Codable, Sendable {
 }
 
 public struct CandlesResponse: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let interval: String
     public let candles: [Candle]
 }
 
 public struct CandleEvent: Sendable {
-    public let coin: String
+    public let market: String
     public let interval: CandleInterval
     public let candle: Candle
 }
 
 /// A single trade from the market-wide trade tape.
 public struct MarketTrade: Codable, Sendable {
-    public let coin: String
+    public let market: String
     public let px: String
     public let sz: String
     public let side: String
@@ -703,7 +703,7 @@ public struct MarketTrade: Codable, Sendable {
 
 /// Callback-friendly trade event.
 public struct TradeEvent: Sendable {
-    public let coin: String
+    public let market: String
     public let trade: MarketTrade
 }
 
@@ -801,7 +801,7 @@ extension SimPosition {
     /// Returns a copy with `unrealizedPnl`, `positionValue`, and `returnOnEquity`
     /// recomputed from the mid price for this position's coin.
     public func revalued(with mids: [String: String]) -> SimPosition {
-        guard let mid = mids[coin], let markDec = Decimal(string: mid) else { return self }
+        guard let mid = mids[market], let markDec = Decimal(string: mid) else { return self }
         let sizeDec = Decimal(string: size) ?? 0
         let entryDec = Decimal(string: entryPrice) ?? 0
         let signedSize: Decimal = (side == .short) ? -sizeDec : sizeDec
@@ -810,7 +810,7 @@ extension SimPosition {
         let marginDec = Decimal(string: marginUsed) ?? 0
         let roe: Decimal = marginDec > 0 ? pnl / marginDec : 0
         return SimPosition(
-            id: id, accountId: accountId, realmId: realmId, coin: coin,
+            id: id, accountId: accountId, realmId: realmId, market: market,
             side: side, size: size, entryPrice: entryPrice, leverage: leverage,
             marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin,
             liquidationPrice: liquidationPrice,
