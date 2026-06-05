@@ -232,10 +232,7 @@ public enum RealmBacking: String, Codable, Sendable {
 
 public struct RealmSettings: Codable, Sendable {
     /// Realm's default application fee in tenths of a basis point.
-    public let defaultApplicationFeeBps: Int?
-    /// Deprecated alias for `defaultApplicationFeeBps`. Responses echo both for
-    /// one release.
-    public let defaultBuilderFeeBps: Int?
+    public let defaultApplicationFeeTenthsBps: Int?
 }
 
 public struct Realm: Codable, Sendable {

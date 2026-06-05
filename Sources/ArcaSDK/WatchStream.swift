@@ -455,7 +455,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
     /// Used to populate ``ActiveAssetData/maintenanceMarginRate``, which
     /// feeds ``Arca/orderBreakdown(options:)``'s liquidation estimate. When
     /// nil, ``Arca/watchMaxOrderSize(options:)`` auto-fetches it via
-    /// ``Arca/getActiveAssetData(_:_:applicationFeeBps:builderFeeBps:leverage:)``.
+    /// ``Arca/getActiveAssetData(_:_:applicationFeeTenthsBps:leverage:)``.
     public let maintenanceMarginRate: String?
 
     public init(
@@ -463,8 +463,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         coin: String,
         side: OrderSide,
         leverage: Int,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int = 0,
+        applicationFeeTenthsBps: Int? = nil,
         szDecimals: Int = 5,
         feeScale: Double? = nil,
         maintenanceMarginRate: String? = nil
@@ -473,7 +472,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         self.coin = coin
         self.side = side
         self.leverage = leverage
-        self.builderFeeBps = applicationFeeBps ?? builderFeeBps
+        self.builderFeeBps = applicationFeeTenthsBps ?? 0
         self.szDecimals = szDecimals
         self.feeScale = feeScale
         self.maintenanceMarginRate = maintenanceMarginRate

@@ -48,8 +48,7 @@ extension Arca {
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
     ///   - coin: Coin/asset in canonical format (e.g. `"hl:BTC"`, `"hl:1:SILVER"`)
-    ///   - applicationFeeBps: Optional application fee in tenths of a basis point
-    ///   - builderFeeBps: Deprecated alias for `applicationFeeBps`.
+    ///   - applicationFeeTenthsBps: Optional application fee in tenths of a basis point
     ///   - leverage: Optional leverage override. When provided, the server uses
     ///     this value instead of the stored leverage setting. When `nil`, the
     ///     server reads the leverage from the account's per-coin setting
@@ -57,13 +56,12 @@ extension Arca {
     public func getActiveAssetData(
         objectId: String,
         coin: String,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         leverage: Int? = nil
     ) async throws -> ActiveAssetData {
         var query: [String: String] = ["coin": coin]
-        if let bps = applicationFeeBps ?? builderFeeBps, bps > 0 {
-            query["applicationFeeBps"] = String(bps)
+        if let bps = applicationFeeTenthsBps, bps > 0 {
+            query["applicationFeeTenthsBps"] = String(bps)
         }
         if let lev = leverage, lev > 0 {
             query["leverage"] = String(lev)
@@ -74,10 +72,10 @@ extension Arca {
     /// Get per-asset fee rates for an exchange object.
     /// Returns fully-composed taker/maker rates accounting for volume tier, HIP-3 fee scale,
     /// platform fee, and application fee.
-    public func getAssetFees(objectId: String, applicationFeeBps: Int? = nil, builderFeeBps: Int? = nil) async throws -> [AssetFeeEntry] {
+    public func getAssetFees(objectId: String, applicationFeeTenthsBps: Int? = nil) async throws -> [AssetFeeEntry] {
         var query: [String: String] = [:]
-        if let bps = applicationFeeBps ?? builderFeeBps, bps > 0 {
-            query["applicationFeeBps"] = String(bps)
+        if let bps = applicationFeeTenthsBps, bps > 0 {
+            query["applicationFeeTenthsBps"] = String(bps)
         }
         return try await client.get("/objects/\(objectId)/exchange/asset-fees", query: query)
     }
@@ -163,8 +161,7 @@ extension Arca {
     ///   - leverage: Optional leverage override. If omitted, uses the account's current per-coin leverage setting.
     ///   - reduceOnly: If true, only reduces an existing position
     ///   - timeInForce: Time in force (default: `.gtc`)
-    ///   - applicationFeeBps: Application fee in tenths of a basis point
-    ///   - builderFeeBps: Deprecated alias for `applicationFeeBps`.
+    ///   - applicationFeeTenthsBps: Application fee in tenths of a basis point
     ///   - feeTargets: Fee routing targets
     ///   - isTrigger: If true, this is a trigger (TP/SL) order
     ///   - triggerPx: Trigger price — mark price threshold to activate the order
@@ -185,8 +182,7 @@ extension Arca {
         leverage: Int? = nil,
         reduceOnly: Bool = false,
         timeInForce: TimeInForce = .gtc,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil,
         isTrigger: Bool? = nil,
         triggerPx: String? = nil,
@@ -211,7 +207,7 @@ extension Arca {
                 leverage: leverage,
                 reduceOnly: reduceOnly,
                 timeInForce: timeInForce.rawValue,
-                applicationFeeBps: applicationFeeBps ?? builderFeeBps,
+                applicationFeeTenthsBps: applicationFeeTenthsBps,
                 feeTargets: feeTargets,
                 isTrigger: isTrigger,
                 triggerPx: triggerPx,
@@ -305,8 +301,7 @@ extension Arca {
     ///   - coin: Coin in canonical format (e.g. "hl:BTC")
     ///   - size: Partial close size. If nil, closes the full position.
     ///   - timeInForce: Time in force (default: .ioc)
-    ///   - applicationFeeBps: Application fee in tenths of a basis point
-    ///   - builderFeeBps: Deprecated alias for `applicationFeeBps`.
+    ///   - applicationFeeTenthsBps: Application fee in tenths of a basis point
     ///   - feeTargets: Fee routing targets
     ///   - isolated: Override `isolated` inference. Defaults to `onlyIsolated`
     ///     from market meta.
@@ -317,8 +312,7 @@ extension Arca {
         coin: String,
         size: String? = nil,
         timeInForce: TimeInForce = .ioc,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil,
         isolated: Bool? = nil,
         leverage: Int? = nil
@@ -363,7 +357,7 @@ extension Arca {
                 leverage: effectiveLeverage,
                 reduceOnly: true,
                 timeInForce: timeInForce.rawValue,
-                applicationFeeBps: applicationFeeBps ?? builderFeeBps,
+                applicationFeeTenthsBps: applicationFeeTenthsBps,
                 feeTargets: feeTargets,
                 isTrigger: nil,
                 triggerPx: nil,
@@ -410,7 +404,7 @@ extension Arca {
     /// and `size: "0"` so the venue fills it from — and resizes it with — the
     /// live position. The closing side is inferred from the position
     /// (LONG → SELL, SHORT → BUY), and `leverage` / `isolated` are auto-filled
-    /// from the position and market meta exactly like ``closePosition(path:objectId:coin:size:timeInForce:builderFeeBps:feeTargets:isolated:leverage:)``.
+    /// from the position and market meta exactly like ``closePosition(path:objectId:coin:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
     ///
     /// By default any existing stop-loss for the position is replaced; pass
     /// `replace: false` to stack multiple triggers.
@@ -426,8 +420,7 @@ extension Arca {
     ///   - leverage: Override the position's leverage
     ///   - isolated: Override the isolated-margin inference
     ///   - timeInForce: Time in force (default `.gtc`)
-    ///   - applicationFeeBps: Application fee in tenths of a basis point
-    ///   - builderFeeBps: Deprecated alias for `applicationFeeBps`.
+    ///   - applicationFeeTenthsBps: Application fee in tenths of a basis point
     ///   - feeTargets: Fee routing targets
     public func setStopLoss(
         path: String,
@@ -440,20 +433,19 @@ extension Arca {
         leverage: Int? = nil,
         isolated: Bool? = nil,
         timeInForce: TimeInForce = .gtc,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .stopLoss, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
-            applicationFeeBps: applicationFeeBps ?? builderFeeBps, feeTargets: feeTargets
+            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
         )
     }
 
     /// Attach a take-profit to the open position for `coin`. The
-    /// position-attached counterpart of ``setStopLoss(path:objectId:coin:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:builderFeeBps:feeTargets:)``.
+    /// position-attached counterpart of ``setStopLoss(path:objectId:coin:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:applicationFeeTenthsBps:feeTargets:)``.
     public func setTakeProfit(
         path: String,
         objectId: String,
@@ -465,15 +457,14 @@ extension Arca {
         leverage: Int? = nil,
         isolated: Bool? = nil,
         timeInForce: TimeInForce = .gtc,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .takeProfit, path: path, objectId: objectId, coin: coin, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
-            applicationFeeBps: applicationFeeBps ?? builderFeeBps, feeTargets: feeTargets
+            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
         )
     }
 
@@ -489,7 +480,7 @@ extension Arca {
         leverage: Int?,
         isolated: Bool?,
         timeInForce: TimeInForce,
-        applicationFeeBps: Int?,
+        applicationFeeTenthsBps: Int?,
         feeTargets: [FeeTarget]?
     ) -> OrderHandle {
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
@@ -522,7 +513,7 @@ extension Arca {
                 leverage: effLeverage,
                 reduceOnly: true,
                 timeInForce: timeInForce.rawValue,
-                applicationFeeBps: applicationFeeBps,
+                applicationFeeTenthsBps: applicationFeeTenthsBps,
                 feeTargets: feeTargets,
                 isTrigger: true,
                 triggerPx: triggerPx,
@@ -556,8 +547,7 @@ extension Arca {
         takeProfitPx: String? = nil,
         isMarket: Bool? = nil,
         replace: Bool = true,
-        applicationFeeBps: Int? = nil,
-        builderFeeBps: Int? = nil,
+        applicationFeeTenthsBps: Int? = nil,
         feeTargets: [FeeTarget]? = nil
     ) async throws -> SetPositionTpslResult {
         if (stopLossPx ?? "").isEmpty, (takeProfitPx ?? "").isEmpty {
@@ -566,13 +556,13 @@ extension Arca {
                 errorId: nil
             )
         }
-        let effectiveFeeBps = applicationFeeBps ?? builderFeeBps
+        let effectiveFeeBps = applicationFeeTenthsBps
         var slHandle: OrderHandle?
         var tpHandle: OrderHandle?
         if let sl = stopLossPx, !sl.isEmpty {
             let handle = setStopLoss(
                 path: path + "/sl", objectId: objectId, coin: coin, triggerPx: sl,
-                isMarket: isMarket, replace: replace, applicationFeeBps: effectiveFeeBps, feeTargets: feeTargets
+                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
             )
             _ = try await handle.submitted
             slHandle = handle
@@ -580,7 +570,7 @@ extension Arca {
         if let tp = takeProfitPx, !tp.isEmpty {
             let handle = setTakeProfit(
                 path: path + "/tp", objectId: objectId, coin: coin, triggerPx: tp,
-                isMarket: isMarket, replace: replace, applicationFeeBps: effectiveFeeBps, feeTargets: feeTargets
+                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
             )
             _ = try await handle.submitted
             tpHandle = handle
@@ -975,7 +965,7 @@ extension Arca {
         if let data = try? await getActiveAssetData(
             objectId: opts.objectId,
             coin: opts.coin,
-            builderFeeBps: opts.builderFeeBps,
+            applicationFeeTenthsBps: opts.builderFeeBps,
             leverage: opts.leverage
         ) {
             if opts.maintenanceMarginRate == nil {
@@ -1029,7 +1019,7 @@ extension Arca {
             return try? await self.getActiveAssetData(
                 objectId: opts.objectId,
                 coin: opts.coin,
-                builderFeeBps: opts.builderFeeBps,
+                applicationFeeTenthsBps: opts.builderFeeBps,
                 leverage: opts.leverage
             )
         }
@@ -1122,7 +1112,7 @@ extension Arca {
 
 // MARK: - Position TP/SL Result
 
-/// Handles for the legs placed by ``Arca/setPositionTpsl(path:objectId:coin:stopLossPx:takeProfitPx:isMarket:replace:builderFeeBps:feeTargets:)``.
+/// Handles for the legs placed by ``Arca/setPositionTpsl(path:objectId:coin:stopLossPx:takeProfitPx:isMarket:replace:applicationFeeTenthsBps:feeTargets:)``.
 /// A leg is `nil` when its trigger price was not provided.
 public struct SetPositionTpslResult: Sendable {
     public let stopLoss: OrderHandle?
@@ -1220,7 +1210,7 @@ private struct PlaceOrderRequest: Encodable {
     let leverage: Int?
     let reduceOnly: Bool
     let timeInForce: String
-    let applicationFeeBps: Int?
+    let applicationFeeTenthsBps: Int?
     let feeTargets: [FeeTarget]?
     let isTrigger: Bool?
     let triggerPx: String?
