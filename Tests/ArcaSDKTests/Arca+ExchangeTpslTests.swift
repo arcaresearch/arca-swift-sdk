@@ -29,7 +29,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/1", objectId: "obj_1", market: "hl:BTC",
+            path: "/op/sl/1", objectId: "obj_1", market: "hl:0:BTC",
             triggerPx: "55000", isolated: false
         )
         _ = try await handle.submitted
@@ -37,7 +37,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let posts = TpslMockProtocol.capturedPosts
         XCTAssertEqual(posts.count, 1)
         let b = posts[0]
-        XCTAssertEqual(b["side"] as? String, "SELL", "LONG closes with SELL")
+        XCTAssertEqual(b["side"] as? String, "sell", "long closes with sell")
         XCTAssertEqual(b["tpsl"] as? String, "sl")
         XCTAssertEqual(b["grouping"] as? String, "positionTpsl")
         XCTAssertEqual(b["reduceOnly"] as? Bool, true)
@@ -55,13 +55,13 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setTakeProfit(
-            path: "/op/tp/1", objectId: "obj_1", market: "hl:ETH",
+            path: "/op/tp/1", objectId: "obj_1", market: "hl:0:ETH",
             triggerPx: "2000", isolated: false
         )
         _ = try await handle.submitted
 
         let b = TpslMockProtocol.capturedPosts[0]
-        XCTAssertEqual(b["side"] as? String, "BUY", "SHORT closes with BUY")
+        XCTAssertEqual(b["side"] as? String, "buy", "short closes with buy")
         XCTAssertEqual(b["tpsl"] as? String, "tp")
     }
 
@@ -70,7 +70,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/2", objectId: "obj_1", market: "hl:BTC", triggerPx: "55000", isolated: false
+            path: "/op/sl/2", objectId: "obj_1", market: "hl:0:BTC", triggerPx: "55000", isolated: false
         )
         do {
             _ = try await handle.submitted
@@ -87,7 +87,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/3", objectId: "obj_1", market: "hl:BTC", triggerPx: "54000", isolated: false
+            path: "/op/sl/3", objectId: "obj_1", market: "hl:0:BTC", triggerPx: "54000", isolated: false
         )
         _ = try await handle.submitted
 
@@ -101,7 +101,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/4", objectId: "obj_1", market: "hl:BTC", triggerPx: "54000",
+            path: "/op/sl/4", objectId: "obj_1", market: "hl:0:BTC", triggerPx: "54000",
             replace: false, isolated: false
         )
         _ = try await handle.submitted
@@ -115,7 +115,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/5", objectId: "obj_1", market: "hl:BTC", triggerPx: "54000",
+            path: "/op/sl/5", objectId: "obj_1", market: "hl:0:BTC", triggerPx: "54000",
             isMarket: false // limit trigger but no limitPrice
         )
         do {
@@ -132,7 +132,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let handle = arca.setStopLoss(
-            path: "/op/sl/6", objectId: "obj_1", market: "hl:BTC", triggerPx: "54000",
+            path: "/op/sl/6", objectId: "obj_1", market: "hl:0:BTC", triggerPx: "54000",
             isMarket: false, limitPrice: "53900", isolated: false
         )
         _ = try await handle.submitted
@@ -160,11 +160,11 @@ final class ArcaExchangeTpslTests: XCTestCase {
 
     func testSetPositionTpslPlacesBothLegs() async throws {
         TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
-        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
+        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:0:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
         let arca = makeArca()
 
         let result = try await arca.setPositionTpsl(
-            path: "/op/tpsl/1", objectId: "obj_1", market: "hl:BTC",
+            path: "/op/tpsl/1", objectId: "obj_1", market: "hl:0:BTC",
             stopLossPx: "54000", takeProfitPx: "70000"
         )
         XCTAssertNotNil(result.stopLoss)
@@ -181,7 +181,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
     func testSetPositionTpslRequiresOnePrice() async throws {
         let arca = makeArca()
         do {
-            _ = try await arca.setPositionTpsl(path: "/op/tpsl/2", objectId: "obj_1", market: "hl:BTC")
+            _ = try await arca.setPositionTpsl(path: "/op/tpsl/2", objectId: "obj_1", market: "hl:0:BTC")
             XCTFail("expected validation error")
         } catch let error as ArcaError {
             guard case .validation = error else { return XCTFail("wrong error: \(error)") }
@@ -192,12 +192,12 @@ final class ArcaExchangeTpslTests: XCTestCase {
 
     func testClearPositionTpslCancelsBothLegs() async throws {
         TpslMockProtocol.ordersBody = envelope("""
-        {"orders":[\(restingSL("ord_sl")),\(restingTP("ord_tp")),\(normalTpslSL("ord_other")),\(restingSLForCoin("ord_eth", "hl:ETH"))],"total":4}
+        {"orders":[\(restingSL("ord_sl")),\(restingTP("ord_tp")),\(normalTpslSL("ord_other")),\(restingSLForCoin("ord_eth", "hl:0:ETH"))],"total":4}
         """)
         let arca = makeArca()
 
-        let cleared = try await arca.clearPositionTpsl(path: "/op/clear/1", objectId: "obj_1", market: "hl:BTC")
-        XCTAssertEqual(cleared.count, 2, "only positionTpsl orders for hl:BTC")
+        let cleared = try await arca.clearPositionTpsl(path: "/op/clear/1", objectId: "obj_1", market: "hl:0:BTC")
+        XCTAssertEqual(cleared.count, 2, "only positionTpsl orders for hl:0:BTC")
         XCTAssertEqual(Set(TpslMockProtocol.capturedDeletes), Set(["ord_sl", "ord_tp"]))
     }
 
@@ -208,7 +208,7 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let arca = makeArca()
 
         let cleared = try await arca.clearPositionTpsl(
-            path: "/op/clear/2", objectId: "obj_1", market: "hl:BTC", tpsl: .stopLoss
+            path: "/op/clear/2", objectId: "obj_1", market: "hl:0:BTC", tpsl: .stopLoss
         )
         XCTAssertEqual(cleared.count, 1)
         XCTAssertEqual(cleared.first?.id.rawValue, "ord_sl")
@@ -217,19 +217,19 @@ final class ArcaExchangeTpslTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private let longBTC = #"{"id":"pos_1","market":"hl:BTC","side":"LONG","size":"0.5","entryPrice":"60000","leverage":5,"marginUsed":"6000"}"#
-    private let shortETH = #"{"id":"pos_2","market":"hl:ETH","side":"SHORT","size":"2","entryPrice":"2500","leverage":3,"marginUsed":"1666"}"#
-    private let longCL = #"{"id":"pos_cl","market":"hl:1:CL","side":"LONG","size":"1","entryPrice":"60","leverage":2,"marginUsed":"30"}"#
+    private let longBTC = #"{"id":"pos_1","market":"hl:0:BTC","side":"long","size":"0.5","entryPrice":"60000","leverage":5,"marginUsed":"6000"}"#
+    private let shortETH = #"{"id":"pos_2","market":"hl:0:ETH","side":"short","size":"2","entryPrice":"2500","leverage":3,"marginUsed":"1666"}"#
+    private let longCL = #"{"id":"pos_cl","market":"hl:1:CL","side":"long","size":"1","entryPrice":"60","leverage":2,"marginUsed":"30"}"#
 
-    private func restingSL(_ id: String) -> String { restingSLForCoin(id, "hl:BTC") }
+    private func restingSL(_ id: String) -> String { restingSLForCoin(id, "hl:0:BTC") }
     private func restingSLForCoin(_ id: String, _ market: String) -> String {
-        #"{"id":"\#(id)","market":"\#(market)","side":"SELL","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"positionTpsl"}"#
+        #"{"id":"\#(id)","market":"\#(market)","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"positionTpsl"}"#
     }
     private func restingTP(_ id: String) -> String {
-        #"{"id":"\#(id)","market":"hl:BTC","side":"SELL","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"tp","grouping":"positionTpsl"}"#
+        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"tp","grouping":"positionTpsl"}"#
     }
     private func normalTpslSL(_ id: String) -> String {
-        #"{"id":"\#(id)","market":"hl:BTC","side":"SELL","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"normalTpsl"}"#
+        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"normalTpsl"}"#
     }
 
     private func envelope(_ data: String) -> String { #"{"success":true,"data":\#(data)}"# }

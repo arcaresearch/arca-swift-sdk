@@ -75,7 +75,7 @@ final class OperationDisplayTests: XCTestCase {
     func testTransferContextAccessorsNilForFill() {
         let ctx = OperationContext(
             type: "fill",
-            fill: FillContext(side: "buy", size: "1", price: "50000", market: "BTC", dir: nil, orderId: nil, orderOperationId: nil, realizedPnl: "0", fee: "5", feeBreakdown: nil, netBalanceChange: "-50005", startPosition: nil, resultingPosition: nil, isLiquidation: false),
+            fill: FillContext(side: "buy", size: "1", price: "50000", market: "BTC", direction: nil, orderId: nil, orderOperationId: nil, realizedPnl: "0", fee: "5", feeBreakdown: nil, netBalanceChange: "-50005", startPosition: nil, resultingPosition: nil, isLiquidation: false),
             transfer: nil,
             deposit: nil,
             withdrawal: nil,

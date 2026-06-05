@@ -180,7 +180,7 @@ public final class OrderHandle: @unchecked Sendable {
     /// ```swift
     /// let summary = try await order.fillSummary()
     /// print("Realized P&L: \(summary?.realizedPnl ?? "N/A")")
-    /// print("Direction: \(summary?.dir ?? "N/A")")
+    /// print("Direction: \(summary?.direction ?? "N/A")")
     /// ```
     public func fillSummary(timeoutSeconds: TimeInterval = 30) async throws -> Fill? {
         let result = try await filled(timeoutSeconds: timeoutSeconds)

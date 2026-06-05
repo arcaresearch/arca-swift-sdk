@@ -58,7 +58,7 @@ final class MemoryLeakTests: XCTestCase {
             let handle = arca.placeOrder(
                 path: "/op/test",
                 objectId: "obj_test",
-                market: "hl:BTC",
+                market: "hl:0:BTC",
                 side: .buy,
                 orderType: .limit,
                 size: "1",
@@ -84,13 +84,13 @@ final class MemoryLeakTests: XCTestCase {
         // Inject the initial snapshot from a concurrent task so the call can resolve.
         let initialInject = Task {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50000","hl:ETH":"3000"},"deliverySeq":1}"#)
+            await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"50000","hl:0:ETH":"3000"},"deliverySeq":1}"#)
         }
         let stream = try await arca.watchPrices()
         await initialInject.value
 
         // Confirm the initial snapshot reached the prices box.
-        XCTAssertEqual(stream.prices.value["hl:BTC"], "50000")
+        XCTAssertEqual(stream.prices.value["hl:0:BTC"], "50000")
 
         // Subscribe to updates; iterator starts AFTER the initial yield, so any
         // value we observe came from a subsequent inject.
@@ -108,12 +108,12 @@ final class MemoryLeakTests: XCTestCase {
 
         // Inject a duplicate snapshot: same keys, same values, no change.
         // The dedup logic should skip continuation.yield entirely.
-        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50000","hl:ETH":"3000"},"deliverySeq":2}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"50000","hl:0:ETH":"3000"},"deliverySeq":2}"#)
         try? await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(yields.value, baseline, "Duplicate mids snapshot should not produce a yield")
 
         // Inject a real change: BTC moves. This should yield.
-        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"50100"},"deliverySeq":3}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"50100"},"deliverySeq":3}"#)
         try? await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertGreaterThan(yields.value, baseline, "Real mid change should produce a yield")
 

@@ -70,8 +70,8 @@ final class ArcaTests: XCTestCase {
     // MARK: - Exchange Enums
 
     func testOrderSideRawValues() {
-        XCTAssertEqual(OrderSide.buy.rawValue, "BUY")
-        XCTAssertEqual(OrderSide.sell.rawValue, "SELL")
+        XCTAssertEqual(OrderSide.buy.rawValue, "buy")
+        XCTAssertEqual(OrderSide.sell.rawValue, "sell")
     }
 
     func testOrderTypeRawValues() {

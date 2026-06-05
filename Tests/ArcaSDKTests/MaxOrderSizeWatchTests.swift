@@ -51,7 +51,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                market: "hl:BTC",
+                market: "hl:0:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -59,7 +59,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 100_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:BTC":"80000"}}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
 
         let stream = try await watchTask.value
         await stream.ready()
@@ -88,7 +88,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                market: "hl:BTC",
+                market: "hl:0:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0,
@@ -97,7 +97,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 100_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:BTC":"80000"}}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
 
         let stream = try await watchTask.value
         await stream.ready()
@@ -123,7 +123,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                market: "hl:BTC",
+                market: "hl:0:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -131,7 +131,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 100_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:BTC":"80000"}}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
 
         let stream = try await watchTask.value
         await stream.ready()
@@ -149,7 +149,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"80100"},"deliverySeq":1}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"80100"},"deliverySeq":1}"#)
 
         await fulfillment(of: [received], timeout: 1.0)
         XCTAssertEqual(stream.activeAssetData.value?.maintenanceMarginRate, "0.012",
@@ -173,7 +173,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         let watchTask = Task { () -> MaxOrderSizeWatchStream in
             try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
                 objectId: "obj_1",
-                market: "hl:BTC",
+                market: "hl:0:BTC",
                 side: .buy,
                 leverage: 5,
                 feeScale: 1.0
@@ -181,7 +181,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 100_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:BTC":"80000"}}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
 
         let stream = try await watchTask.value
         await stream.ready()
@@ -203,7 +203,7 @@ final class MaxOrderSizeWatchTests: XCTestCase {
             }
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"81000"},"deliverySeq":1}"#)
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"81000"},"deliverySeq":1}"#)
         await fulfillment(of: [noEmit], timeout: 0.4)
 
         consumer.cancel()
@@ -355,7 +355,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
             {
               "success": true,
               "data": {
-                "market": "hl:BTC",
+                "market": "hl:0:BTC",
                 "leverage": { "type": "cross", "value": 5 },
                 "maxBuySize": "0",
                 "maxSellSize": "0",

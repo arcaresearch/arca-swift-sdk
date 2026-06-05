@@ -905,7 +905,7 @@ extension Arca {
                         side: simFill.side,
                         size: simFill.size,
                         price: simFill.price,
-                        dir: nil,
+                        direction: nil,
                         startPosition: nil,
                         fee: simFill.fee,
                         exchangeFee: nil,
@@ -1007,7 +1007,7 @@ extension Arca {
     /// Call `stop()` when done.
     ///
     /// - Parameters:
-    ///   - coins: Canonical coin IDs to watch (e.g. `["hl:BTC", "hl:ETH"]`)
+    ///   - coins: Canonical coin IDs to watch (e.g. `["hl:0:BTC", "hl:0:ETH"]`)
     ///   - intervals: Candle intervals (e.g. `[.oneMinute, .fiveMinutes]`)
     public func watchCandles(coins: [String], intervals: [CandleInterval]) async throws -> CandleWatchStream {
         await ws.ensureConnected()

@@ -47,7 +47,7 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
-    ///   - market: Coin/asset in canonical format (e.g. `"hl:BTC"`, `"hl:1:SILVER"`)
+    ///   - market: Coin/asset in canonical format (e.g. `"hl:0:BTC"`, `"hl:1:SILVER"`)
     ///   - applicationFeeTenthsBps: Optional application fee in tenths of a basis point
     ///   - leverage: Optional leverage override. When provided, the server uses
     ///     this value instead of the stored leverage setting. When `nil`, the
@@ -298,7 +298,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
-    ///   - market: Coin in canonical format (e.g. "hl:BTC")
+    ///   - market: Coin in canonical format (e.g. "hl:0:BTC")
     ///   - size: Partial close size. If nil, closes the full position.
     ///   - timeInForce: Time in force (default: .ioc)
     ///   - applicationFeeTenthsBps: Application fee in tenths of a basis point
@@ -403,7 +403,7 @@ extension Arca {
     /// The trigger is placed with `grouping: .positionTpsl`, `reduceOnly: true`,
     /// and `size: "0"` so the venue fills it from — and resizes it with — the
     /// live position. The closing side is inferred from the position
-    /// (LONG → SELL, SHORT → BUY), and `leverage` / `isolated` are auto-filled
+    /// (long → sell, short → buy), and `leverage` / `isolated` are auto-filled
     /// from the position and market meta exactly like ``closePosition(path:objectId:market:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
     ///
     /// By default any existing stop-loss for the position is replaced; pass
@@ -412,7 +412,7 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key)
     ///   - objectId: Exchange Arca object ID
-    ///   - market: Coin in canonical format (e.g. `"hl:BTC"`)
+    ///   - market: Coin in canonical format (e.g. `"hl:0:BTC"`)
     ///   - triggerPx: Mark-price threshold that activates the order
     ///   - isMarket: Execute as market (default) or limit when triggered
     ///   - limitPrice: Resting limit price when `isMarket == false` (required then)
@@ -667,7 +667,7 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
-    ///   - market: Filter by market coin (e.g. `"hl:BTC"`)
+    ///   - market: Filter by market coin (e.g. `"hl:0:BTC"`)
     ///   - startTime: Filter fills on or after this timestamp (RFC 3339)
     ///   - endTime: Filter fills on or before this timestamp (RFC 3339)
     ///   - limit: Max fills to return (default 100, max 500)
@@ -871,7 +871,7 @@ extension Arca {
     /// fetches from CDN chunks for historical data with REST API fallback.
     ///
     /// - Parameters:
-    ///   - market: Canonical coin ID (e.g. `hl:BTC`, `hl:ETH`)
+    ///   - market: Canonical coin ID (e.g. `hl:0:BTC`, `hl:0:ETH`)
     ///   - interval: Candle interval (e.g. `.oneMinute`, `.oneHour`)
     ///   - startTime: Optional start time in epoch milliseconds
     ///   - endTime: Optional end time in epoch milliseconds
@@ -1225,13 +1225,13 @@ public struct SetPositionTpslResult: Sendable {
 // MARK: - Exchange Enums
 
 public enum OrderSide: String, Codable, Sendable {
-    case buy = "BUY"
-    case sell = "SELL"
+    case buy = "buy"
+    case sell = "sell"
 }
 
 public enum PositionSide: String, Codable, Sendable {
-    case long = "LONG"
-    case short = "SHORT"
+    case long = "long"
+    case short = "short"
 }
 
 public enum OrderType: String, Codable, Sendable {

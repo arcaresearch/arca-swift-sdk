@@ -10,8 +10,8 @@ extension Arca {
     /// - Parameters:
     ///   - path: Operation path (idempotency key).
     ///   - exchangeId: Exchange Arca object ID.
-    ///   - market: Canonical market identifier (e.g. `"hl:BTC"`).
-    ///   - side: `"BUY"` or `"SELL"`.
+    ///   - market: Canonical market identifier (e.g. `"hl:0:BTC"`).
+    ///   - side: `"buy"` or `"sell"`.
     ///   - totalSize: Total size to execute over the duration.
     ///   - durationMinutes: Duration in minutes (1 to 43200).
     ///   - intervalSeconds: Interval between slices in seconds (10 to 3600, default 30).

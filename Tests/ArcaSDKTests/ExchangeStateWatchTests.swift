@@ -57,8 +57,8 @@ final class ExchangeStateWatchTests: XCTestCase {
               {
                 "operationId": "op_1",
                 "operationPath": "/ops/1",
-                "market": "hl:BTC",
-                "side": "BUY",
+                "market": "hl:0:BTC",
+                "side": "buy",
                 "size": "0.1",
                 "orderType": "MARKET",
                 "reduceOnly": false,

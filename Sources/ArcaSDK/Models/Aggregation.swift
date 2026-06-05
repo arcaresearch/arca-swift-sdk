@@ -158,7 +158,7 @@ extension PositionValue {
         guard let mid = mids[market], let markDec = Decimal(string: mid) else { return self }
         let sizeDec = Decimal(string: size) ?? 0
         let entryDec = Decimal(string: entryPrice) ?? 0
-        let signedSize: Decimal = (side == "SHORT") ? -sizeDec : sizeDec
+        let signedSize: Decimal = (side == "short") ? -sizeDec : sizeDec
         let pnl = signedSize * (markDec - entryDec)
         return PositionValue(market: market, side: side, size: size, entryPrice: entryPrice,
                              markPrice: mid, unrealizedPnl: "\(pnl)", valueUsd: "\(pnl)")

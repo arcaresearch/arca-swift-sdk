@@ -200,7 +200,7 @@ public struct FillContext: Codable, Sendable {
     public let size: String
     public let price: String
     public let market: String
-    public let dir: String?
+    public let direction: String?
     public let orderId: String?
     public let orderOperationId: String?
     public let realizedPnl: String

@@ -155,7 +155,7 @@ final class WebSocketManagerTests: XCTestCase {
 
         let midsStream = await manager.midsEvents()
 
-        let snapshotJSON = #"{"type":"mids.snapshot","mids":{"hl:BTC":"97000.5","hl:ETH":"3500.25"}}"#
+        let snapshotJSON = #"{"type":"mids.snapshot","mids":{"hl:0:BTC":"97000.5","hl:0:ETH":"3500.25"}}"#
         await manager.injectMessage(snapshotJSON)
 
         var received: [String: String]?
@@ -170,8 +170,8 @@ final class WebSocketManagerTests: XCTestCase {
         consumer.cancel()
 
         XCTAssertNotNil(received, "mids.snapshot should flow through midsEvents()")
-        XCTAssertEqual(received?["hl:BTC"], "97000.5")
-        XCTAssertEqual(received?["hl:ETH"], "3500.25")
+        XCTAssertEqual(received?["hl:0:BTC"], "97000.5")
+        XCTAssertEqual(received?["hl:0:ETH"], "3500.25")
     }
 
     func testMidsSnapshotEmptyMapStillDelivered() async throws {
@@ -212,7 +212,7 @@ final class WebSocketManagerTests: XCTestCase {
 
         let midsStream = await manager.midsEvents()
 
-        let updateJSON = #"{"type":"mids.updated","mids":{"hl:BTC":"97100"},"deliverySeq":1}"#
+        let updateJSON = #"{"type":"mids.updated","mids":{"hl:0:BTC":"97100"},"deliverySeq":1}"#
         await manager.injectMessage(updateJSON)
 
         var received: [String: String]?
@@ -227,7 +227,7 @@ final class WebSocketManagerTests: XCTestCase {
         consumer.cancel()
 
         XCTAssertNotNil(received, "mids.updated should still pass through midsEvents()")
-        XCTAssertEqual(received?["hl:BTC"], "97100")
+        XCTAssertEqual(received?["hl:0:BTC"], "97100")
     }
 
     func testExchangeNotificationsDeliverBareExchangeUpdated() async throws {
@@ -425,8 +425,8 @@ final class WebSocketManagerTests: XCTestCase {
             logger: logger
         )
 
-        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"1"},"deliverySeq":1}"#)
-        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:BTC":"2"},"deliverySeq":5}"#)
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"1"},"deliverySeq":1}"#)
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"2"},"deliverySeq":5}"#)
 
         let deadline = Date().addingTimeInterval(0.5)
         while !handler.records.contains(where: { $0.message.contains("delivery gap") }),

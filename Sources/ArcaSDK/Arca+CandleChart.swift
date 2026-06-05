@@ -99,7 +99,7 @@ extension Arca {
     /// ``CandleChartStream/candles`` so dropped intermediates are recoverable.
     ///
     /// - Parameters:
-    ///   - market: Canonical market ID (e.g. `"hl:BTC"`, `"hl:1:BRENTOIL"`)
+    ///   - market: Canonical market ID (e.g. `"hl:0:BTC"`, `"hl:1:BRENTOIL"`)
     ///   - interval: Candle interval (e.g. `.oneMinute`)
     ///   - count: Number of historical candles to load (default 300)
     public func watchCandleChart(

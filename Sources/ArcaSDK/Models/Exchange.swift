@@ -315,7 +315,7 @@ public struct ActiveAssetData: Codable, Sendable {
 
 /// Per-asset fee rate entry returned by `getAssetFees`.
 public struct AssetFeeEntry: Codable, Sendable {
-    /// Coin in canonical format (e.g. "hl:BTC", "hl:1:TSLA").
+    /// Coin in canonical format (e.g. "hl:0:BTC", "hl:1:TSLA").
     public let market: String
     /// Effective taker fee rate as a decimal string (e.g. "0.00045" = 4.5 bps).
     public let takerFeeRate: String
@@ -551,7 +551,7 @@ public struct MarginTable: Codable, Sendable {
 
 public struct Market: Codable, Sendable {
     /// Case-sensitive canonical market ID to pass back to trading and market-data APIs
-    /// (for example, "hl:BTC", "hl:kSHIB", or "hl:1:TSLA").
+    /// (for example, "hl:0:BTC", "hl:0:kSHIB", or "hl:1:TSLA").
     public let name: String
     public let dex: String?
     /// Display symbol only. Do not reconstruct API coin IDs from this field.
@@ -756,7 +756,7 @@ public struct Fill: Codable, Sendable {
     public let side: OrderSide?
     public let size: String?
     public let price: String?
-    public let dir: String?
+    public let direction: String?
     public let startPosition: String?
     public let fee: String?
     public let exchangeFee: String?
