@@ -18,12 +18,12 @@ final class MarketMetaCacheTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - Tests
+    // MARK: - market(_:) exact-id lookup
 
-    func testAssetReturnsCachedMetadata() async throws {
+    func testMarketReturnsCachedMetadata() async throws {
         let arca = makeArca()
 
-        let btc = try await arca.asset("hl:BTC")
+        let btc = try await arca.market("hl:0:BTC")
         XCTAssertNotNil(btc)
         XCTAssertEqual(btc?.symbol, "BTC")
         XCTAssertEqual(btc?.venueSymbol, "BTC")
@@ -40,10 +40,10 @@ final class MarketMetaCacheTests: XCTestCase {
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
     }
 
-    func testAssetReturnsNilForUnknownCoin() async throws {
+    func testMarketReturnsNilForUnknownCoin() async throws {
         let arca = makeArca()
 
-        let unknown = try await arca.asset("hl:DOESNOTEXIST")
+        let unknown = try await arca.market("hl:0:DOESNOTEXIST")
         XCTAssertNil(unknown)
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
     }
@@ -51,10 +51,10 @@ final class MarketMetaCacheTests: XCTestCase {
     func testSubsequentCallsUseCacheWithoutRefetch() async throws {
         let arca = makeArca()
 
-        _ = try await arca.asset("hl:BTC")
+        _ = try await arca.market("hl:0:BTC")
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
 
-        let eth = try await arca.asset("hl:ETH")
+        let eth = try await arca.market("hl:0:ETH")
         XCTAssertNotNil(eth)
         XCTAssertEqual(eth?.symbol, "ETH")
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1, "Should not re-fetch")
@@ -66,7 +66,7 @@ final class MarketMetaCacheTests: XCTestCase {
         try await arca.preloadMarketMeta()
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
 
-        let btc = try await arca.asset("hl:BTC")
+        let btc = try await arca.market("hl:0:BTC")
         XCTAssertNotNil(btc)
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1, "Should use cached data")
     }
@@ -74,22 +74,22 @@ final class MarketMetaCacheTests: XCTestCase {
     func testRefreshReplacesCache() async throws {
         let arca = makeArca()
 
-        let btc1 = try await arca.asset("hl:BTC")
+        let btc1 = try await arca.market("hl:0:BTC")
         XCTAssertNotNil(btc1)
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
 
         try await arca.refreshMarketMeta()
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 2, "Should re-fetch on refresh")
 
-        let btc2 = try await arca.asset("hl:BTC")
+        let btc2 = try await arca.market("hl:0:BTC")
         XCTAssertNotNil(btc2)
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 2, "Should use refreshed cache")
     }
 
-    func testHip3AssetLookup() async throws {
+    func testHip3MarketLookup() async throws {
         let arca = makeArca()
 
-        let tsla = try await arca.asset("hl:1:TSLA")
+        let tsla = try await arca.market("hl:1:TSLA")
         XCTAssertNotNil(tsla)
         XCTAssertEqual(tsla?.symbol, "TSLA")
         XCTAssertEqual(tsla?.venueSymbol, "xyz:TSLA")
@@ -107,17 +107,106 @@ final class MarketMetaCacheTests: XCTestCase {
         let arca = makeArca()
 
         do {
-            _ = try await arca.asset("hl:BTC")
+            _ = try await arca.market("hl:0:BTC")
             XCTFail("Expected error on first call")
         } catch {
             // expected
         }
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 1)
 
-        let btc = try await arca.asset("hl:BTC")
+        let btc = try await arca.market("hl:0:BTC")
         XCTAssertNotNil(btc)
         XCTAssertEqual(btc?.symbol, "BTC")
         XCTAssertEqual(MetaCacheMockProtocol.metaRequestCount, 2, "Should retry after failure")
+    }
+
+    // MARK: - resolveMarkets(_:exchange:dex:)
+
+    func testResolveMarketsReturnsAllForSymbol() async throws {
+        let arca = makeArca()
+
+        let markets = try await arca.resolveMarkets("BTC")
+        XCTAssertEqual(markets.count, 2)
+        let names = Set(markets.map { $0.name })
+        XCTAssertEqual(names, ["hl:0:BTC", "hl:1:BTC"])
+    }
+
+    func testResolveMarketsSingleMatch() async throws {
+        let arca = makeArca()
+
+        let markets = try await arca.resolveMarkets("ETH")
+        XCTAssertEqual(markets.count, 1)
+        XCTAssertEqual(markets.first?.name, "hl:0:ETH")
+    }
+
+    func testResolveMarketsNoMatchReturnsEmpty() async throws {
+        let arca = makeArca()
+
+        let markets = try await arca.resolveMarkets("NOPE")
+        XCTAssertEqual(markets.count, 0)
+    }
+
+    func testResolveMarketsFilterByDex() async throws {
+        let arca = makeArca()
+
+        let markets = try await arca.resolveMarkets("BTC", dex: "xyz")
+        XCTAssertEqual(markets.count, 1)
+        XCTAssertEqual(markets.first?.name, "hl:1:BTC")
+    }
+
+    func testResolveMarketsFilterByExchange() async throws {
+        let arca = makeArca()
+
+        let hlMarkets = try await arca.resolveMarkets("BTC", exchange: "hl")
+        XCTAssertEqual(hlMarkets.count, 2)
+
+        let pmMarkets = try await arca.resolveMarkets("BTC", exchange: "pm")
+        XCTAssertEqual(pmMarkets.count, 0)
+    }
+
+    func testResolveMarketsCaseSensitive() async throws {
+        let arca = makeArca()
+
+        let markets = try await arca.resolveMarkets("btc")
+        XCTAssertEqual(markets.count, 0, "symbol match is case-sensitive")
+    }
+
+    // MARK: - resolveMarketOrThrow(_:exchange:dex:)
+
+    func testResolveMarketOrThrowSingle() async throws {
+        let arca = makeArca()
+
+        let eth = try await arca.resolveMarketOrThrow("ETH")
+        XCTAssertEqual(eth.name, "hl:0:ETH")
+    }
+
+    func testResolveMarketOrThrowZeroThrows() async throws {
+        let arca = makeArca()
+
+        do {
+            _ = try await arca.resolveMarketOrThrow("NOPE")
+            XCTFail("Expected throw for unknown symbol")
+        } catch let ArcaError.validation(message, _) {
+            XCTAssertTrue(message.contains("No market found"))
+        }
+    }
+
+    func testResolveMarketOrThrowAmbiguousThrows() async throws {
+        let arca = makeArca()
+
+        do {
+            _ = try await arca.resolveMarketOrThrow("BTC")
+            XCTFail("Expected throw for ambiguous symbol")
+        } catch let ArcaError.validation(message, _) {
+            XCTAssertTrue(message.contains("ambiguous"))
+        }
+    }
+
+    func testResolveMarketOrThrowNarrowedByDex() async throws {
+        let arca = makeArca()
+
+        let btc = try await arca.resolveMarketOrThrow("BTC", dex: "xyz")
+        XCTAssertEqual(btc.name, "hl:1:BTC")
     }
 
     // MARK: - Helpers
@@ -201,7 +290,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
           "data": {
             "universe": [
               {
-                "name": "hl:BTC",
+                "name": "hl:0:BTC",
                 "dex": null,
                 "symbol": "BTC",
                 "venueSymbol": "BTC",
@@ -224,7 +313,7 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "feeScale": 1.0
               },
               {
-                "name": "hl:ETH",
+                "name": "hl:0:ETH",
                 "dex": null,
                 "symbol": "ETH",
                 "venueSymbol": "ETH",
@@ -266,6 +355,28 @@ private final class MetaCacheMockProtocol: URLProtocol {
                 "maxLeverage": 5,
                 "onlyIsolated": false,
                 "feeScale": 3.0
+              },
+              {
+                "name": "hl:1:BTC",
+                "dex": "xyz",
+                "symbol": "BTC",
+                "venueSymbol": "xyz:BTC",
+                "displayName": null,
+                "logoUrl": "https://example.com/btc.png",
+                "exchange": "hl",
+                "assetType": "crypto",
+                "categoryLabel": "Crypto",
+                "mapped": true,
+                "hasDisplayName": false,
+                "hasLogo": true,
+                "descriptionStatus": "curated",
+                "isHip3": true,
+                "deployerDisplayName": "xyz",
+                "index": 3,
+                "szDecimals": 5,
+                "maxLeverage": 20,
+                "onlyIsolated": false,
+                "feeScale": 2.0
               }
             ]
           }

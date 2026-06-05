@@ -549,7 +549,7 @@ public struct MarginTable: Codable, Sendable {
     public let marginTiers: [MarginTier]
 }
 
-public struct SimMetaAsset: Codable, Sendable {
+public struct Market: Codable, Sendable {
     /// Case-sensitive canonical market ID to pass back to trading and market-data APIs
     /// (for example, "hl:BTC", "hl:kSHIB", or "hl:1:TSLA").
     public let name: String
@@ -598,7 +598,7 @@ public struct SimMetaAsset: Codable, Sendable {
 }
 
 public struct SimMetaResponse: Codable, Sendable {
-    public let universe: [SimMetaAsset]
+    public let universe: [Market]
     public let marginTables: [String: MarginTable]?
 }
 

@@ -342,7 +342,7 @@ extension Arca {
             if let override = isolated {
                 effectiveIsolated = override
             } else {
-                let meta = try? await self.asset(market)
+                let meta = try? await self.market(market)
                 effectiveIsolated = meta?.onlyIsolated == true
             }
 
@@ -615,7 +615,7 @@ extension Arca {
         let isolated: Bool
         if let override = isolatedOverride {
             isolated = override
-        } else if let meta = try? await asset(market) {
+        } else if let meta = try? await self.market(market) {
             if let modes = meta.marginModes, !modes.isEmpty {
                 isolated = modes.count == 1 && modes.first == "isolated"
             } else {
@@ -712,29 +712,132 @@ extension Arca {
         try await client.get("/exchange/market/meta")
     }
 
-    /// Look up a single asset by canonical coin ID (e.g. `"hl:BTC"`, `"hl:1:TSLA"`).
+    /// Look up a single market by its **exact canonical market ID**
+    /// (e.g. `"hl:0:BTC"`, `"hl:1:TSLA"`).
+    ///
+    /// This is an exact-id lookup — pass the `name` field of a ``Market``, not a
+    /// bare symbol like `"BTC"`. To go from a human symbol to its market(s), use
+    /// ``resolveMarkets(_:exchange:dex:)`` / ``resolveMarketOrThrow(_:exchange:dex:)``.
+    /// The market id is the readable `{exchange}:{dexIndex}:{symbol}` form
+    /// (for example `"hl:0:BTC"`).
     ///
     /// Lazily fetches and caches market metadata on first call. Subsequent
     /// calls return from cache without a network request.
     ///
     /// ```swift
-    /// let btc = try await arca.asset("hl:BTC")
+    /// let btc = try await arca.market("hl:0:BTC")
     /// print(btc?.symbol)       // "BTC"
     /// print(btc?.displayName)  // nil or "Bitcoin"
     /// print(btc?.logoUrl)      // "https://...-128.webp" (default 128px)
     /// print(btc?.logoSources?.first?.width) // 256
     /// ```
     ///
-    /// - Parameter market: Canonical market ID (the `name` field on `SimMetaAsset`).
-    /// - Returns: The matching `SimMetaAsset`, or `nil` if not found.
-    public func asset(_ market: String) async throws -> SimMetaAsset? {
+    /// - Parameter id: Canonical market ID (the `name` field on ``Market``).
+    /// - Returns: The matching ``Market``, or `nil` if not found.
+    public func market(_ id: String) async throws -> Market? {
         let map = try await ensureMetaLoaded()
-        return map[market]
+        return map[id]
+    }
+
+    /// Resolve a human **symbol** (e.g. `"BTC"`, `"TSLA"`) to the market(s) that
+    /// carry it, returning an **array** because one symbol can legitimately map
+    /// to many markets across exchanges and HIP-3 dexes (e.g. a native `BTC` and
+    /// a builder-deployed `BTC` on a different dex).
+    ///
+    /// This never fails silently: an empty array is an explicit "no market has
+    /// this symbol", not a guess. Match is **exact and case-sensitive** on the
+    /// ``Market/symbol`` field (`"kSHIB"` ≠ `"KSHIB"`). Narrow ambiguous symbols
+    /// with the optional `exchange` / `dex` filters.
+    ///
+    /// For the "I expect exactly one" case, use ``resolveMarketOrThrow(_:exchange:dex:)``.
+    /// If you already hold a canonical id, use ``market(_:)`` instead. The market
+    /// id is the readable `{exchange}:{dexIndex}:{symbol}` form (e.g. `"hl:0:BTC"`).
+    ///
+    /// ```swift
+    /// let all = try await arca.resolveMarkets("BTC")                 // every BTC market
+    /// let hlOnly = try await arca.resolveMarkets("BTC", exchange: "hl")
+    /// let tsla = try await arca.resolveMarkets("TSLA", dex: "xyz")
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - symbol: Display symbol to resolve (the `symbol` field on ``Market``).
+    ///   - exchange: When non-nil, only markets whose `exchange` equals this value match.
+    ///   - dex: When non-nil, only markets whose `dex` equals this value match.
+    /// - Returns: All matching markets; an empty array when none match.
+    public func resolveMarkets(
+        _ symbol: String,
+        exchange: String? = nil,
+        dex: String? = nil
+    ) async throws -> [Market] {
+        let map = try await ensureMetaLoaded()
+        var out: [Market] = []
+        for m in map.values {
+            if m.symbol != symbol { continue }
+            if let exchange = exchange, m.exchange != exchange { continue }
+            if let dex = dex, m.dex != dex { continue }
+            out.append(m)
+        }
+        return out
+    }
+
+    /// Resolve a human **symbol** to the single market that carries it, throwing
+    /// when the result is not exactly one.
+    ///
+    /// Use this when your code assumes a symbol is unambiguous (often after
+    /// narrowing with `exchange` / `dex`). Throws an ``ArcaError/validation(message:errorId:)``
+    /// when zero markets match (so a typo never silently no-ops) and when more
+    /// than one matches (so an ambiguous symbol never silently picks the wrong
+    /// one). The market id is the readable `{exchange}:{dexIndex}:{symbol}` form
+    /// (e.g. `"hl:0:BTC"`).
+    ///
+    /// ```swift
+    /// let btc = try await arca.resolveMarketOrThrow("BTC", exchange: "hl")
+    /// _ = arca.placeOrder(path: path, objectId: objectId, market: btc.name, ...)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - symbol: Display symbol to resolve (the `symbol` field on ``Market``).
+    ///   - exchange: Optional exchange filter, forwarded to ``resolveMarkets(_:exchange:dex:)``.
+    ///   - dex: Optional dex filter, forwarded to ``resolveMarkets(_:exchange:dex:)``.
+    /// - Returns: The single matching ``Market``.
+    /// - Throws: ``ArcaError/validation(message:errorId:)`` when zero or more than one market matches.
+    public func resolveMarketOrThrow(
+        _ symbol: String,
+        exchange: String? = nil,
+        dex: String? = nil
+    ) async throws -> Market {
+        let matches = try await resolveMarkets(symbol, exchange: exchange, dex: dex)
+        let filters: String
+        if exchange != nil || dex != nil {
+            var parts: [String] = []
+            if let exchange = exchange { parts.append("exchange: \(exchange)") }
+            if let dex = dex { parts.append("dex: \(dex)") }
+            filters = " (filters: \(parts.joined(separator: ", ")))"
+        } else {
+            filters = ""
+        }
+        if matches.isEmpty {
+            throw ArcaError.validation(
+                message: "No market found for symbol \"\(symbol)\"\(filters). Pass a canonical id "
+                    + "to market(_:), or list candidates with resolveMarkets(\"\(symbol)\").",
+                errorId: nil
+            )
+        }
+        if matches.count > 1 {
+            let names = matches.map { $0.name }.joined(separator: ", ")
+            throw ArcaError.validation(
+                message: "Symbol \"\(symbol)\"\(filters) is ambiguous — \(matches.count) markets "
+                    + "match: \(names). Narrow with exchange / dex, or call market(_:) with the "
+                    + "exact canonical id.",
+                errorId: nil
+            )
+        }
+        return matches[0]
     }
 
     /// Eagerly fetch and cache market metadata.
     ///
-    /// Call at app startup to avoid latency on the first ``asset(_:)`` call.
+    /// Call at app startup to avoid latency on the first ``market(_:)`` call.
     /// Safe to call multiple times — skips the fetch if already cached.
     public func preloadMarketMeta() async throws {
         _ = try await ensureMetaLoaded()
@@ -938,7 +1041,7 @@ extension Arca {
 
         var resolvedFeeScale = opts.feeScale ?? 1.0
         if opts.feeScale == nil {
-            if let meta = try? await asset(opts.market),
+            if let meta = try? await self.market(opts.market),
                let scale = meta.feeScale, scale > 0 {
                 resolvedFeeScale = scale
             }

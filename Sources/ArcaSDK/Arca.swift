@@ -34,8 +34,8 @@ struct AutoTrackingState: Sendable {
 
 /// Thread-safe cache for market metadata, keyed by canonical coin ID.
 struct MetaCacheState: Sendable {
-    var assets: [String: SimMetaAsset]?
-    var inflight: Task<[String: SimMetaAsset], Error>?
+    var assets: [String: Market]?
+    var inflight: Task<[String: Market], Error>?
 }
 
 public final class Arca: Sendable {
@@ -325,8 +325,8 @@ public final class Arca: Sendable {
     // MARK: - Market Meta Cache
 
     /// Ensures market metadata is loaded, coalescing concurrent requests.
-    /// Returns the cached dictionary keyed by canonical coin ID (`SimMetaAsset.name`).
-    func ensureMetaLoaded(forceRefresh: Bool = false) async throws -> [String: SimMetaAsset] {
+    /// Returns the cached dictionary keyed by canonical coin ID (`Market.name`).
+    func ensureMetaLoaded(forceRefresh: Bool = false) async throws -> [String: Market] {
         if !forceRefresh, let cached = metaCache.value.assets {
             return cached
         }
@@ -338,7 +338,7 @@ public final class Arca: Sendable {
                 state.inflight = nil
             }
             guard state.inflight == nil else { return }
-            state.inflight = Task<[String: SimMetaAsset], Error> { [self] in
+            state.inflight = Task<[String: Market], Error> { [self] in
                 let response: SimMetaResponse
                 do {
                     response = try await getMarketMeta()
@@ -349,7 +349,7 @@ public final class Arca: Sendable {
                     throw error
                 }
                 try Task.checkCancellation()
-                var map: [String: SimMetaAsset] = [:]
+                var map: [String: Market] = [:]
                 map.reserveCapacity(response.universe.count)
                 for asset in response.universe {
                     map[asset.name] = asset
