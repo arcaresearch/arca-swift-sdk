@@ -24,7 +24,10 @@ public enum EventType: String, Sendable {
     case agentDone = "agent.done"
     case agentStepUpdated = "agent.step_updated"
     case agentExecutionDone = "agent.execution_done"
-    case exchangeFill = "exchange.fill"
+    /// Phase 1 of two-phase fill delivery: instant, incomplete venue-level fill
+    /// echo. `fillRecorded` (Phase 2) follows with the authoritative record;
+    /// merge the pair by `correlationId`. Renamed from "exchange.fill" pre-launch.
+    case fillPreviewed = "fill.previewed"
     case fillRecorded = "fill.recorded"
     case exchangeFunding = "exchange.funding"
     case objectValuation = "object.valuation"

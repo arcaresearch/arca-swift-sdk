@@ -776,7 +776,7 @@ extension Arca {
     /// Watch fills (trade history) for an exchange Arca object.
     ///
     /// Two-phase fill delivery with envelope-based correlation:
-    /// 1. `exchange.fill` — instant preview with venue data (matched by `correlationId`)
+    /// 1. `fill.previewed` — instant preview with venue data (matched by `correlationId`)
     /// 2. `fill.recorded` — authoritative fill replaces preview (matched by `correlationId`)
     ///
     /// A convergence timeout fires if a preview doesn't receive its authoritative

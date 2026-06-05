@@ -202,12 +202,39 @@ public struct ArcaObjectVersionsResponse: Codable, Sendable {
 
 // MARK: - Realm
 
+/// Legacy single-axis realm type, retained as a derived alias of ``RealmAsset``
+/// (live↔production, paper↔development). Prefer `asset` + `lifecycle`.
 public enum RealmType: String, Codable, Sendable {
     case development
     case production
 }
 
+/// Value tier — the real-money risk axis. `paper` realms transact simulated
+/// funds; `live` realms transact real money.
+public enum RealmAsset: String, Codable, Sendable {
+    case paper
+    case live
+}
+
+/// Durability tier, orthogonal to ``RealmAsset``. `permanent` realms are never
+/// auto-reaped; `temporary` realms are disposable.
+public enum RealmLifecycle: String, Codable, Sendable {
+    case permanent
+    case temporary
+}
+
+/// Custody backing tier. `chain` realms are backed by an on-chain custody pool
+/// (every realm today); `ledgerOnly` is a future tier.
+public enum RealmBacking: String, Codable, Sendable {
+    case chain
+    case ledgerOnly = "ledger-only"
+}
+
 public struct RealmSettings: Codable, Sendable {
+    /// Realm's default application fee in tenths of a basis point.
+    public let defaultApplicationFeeBps: Int?
+    /// Deprecated alias for `defaultApplicationFeeBps`. Responses echo both for
+    /// one release.
     public let defaultBuilderFeeBps: Int?
 }
 
@@ -216,7 +243,12 @@ public struct Realm: Codable, Sendable {
     public let orgId: OrgID
     public let name: String
     public let slug: String
+    /// Legacy alias of ``asset`` (live→production, paper→development).
     public let type: RealmType
+    /// Optional during the migration window; REST responses always populate it.
+    public let asset: RealmAsset?
+    public let lifecycle: RealmLifecycle?
+    public let backing: RealmBacking?
     public let description: String?
     public let settings: RealmSettings?
     public let archivedAt: String?

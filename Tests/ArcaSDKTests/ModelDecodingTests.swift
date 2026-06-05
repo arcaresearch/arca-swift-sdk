@@ -1360,7 +1360,7 @@ final class ModelDecodingTests: XCTestCase {
     func testTypedEventFromFillPreview() throws {
         let json = """
         {
-            "type": "exchange.fill",
+            "type": "fill.previewed",
             "realmId": "rlm_01abc",
             "entityId": "obj_01def",
             "correlationId": "ord_01xyz",
@@ -1810,7 +1810,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(book.asks[0].orderCount, 5)
     }
 
-    // MARK: - SimFill Preview (exchange.fill WS event)
+    // MARK: - SimFill Preview (fill.previewed WS event)
 
     func testSimFillDecoding_PreviewWithoutAccountRealmCreatedAt() throws {
         let json = """
@@ -1882,10 +1882,10 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(fill.platformFee)
     }
 
-    func testRealmEventDecoding_ExchangeFillPreview() throws {
+    func testRealmEventDecoding_FillPreviewed() throws {
         let json = """
         {
-            "type": "exchange.fill",
+            "type": "fill.previewed",
             "realmId": "rlm_01abc",
             "entityId": "obj_01def",
             "deliverySeq": 5,
@@ -1904,7 +1904,7 @@ final class ModelDecodingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let event = try decoder.decode(RealmEvent.self, from: json)
-        XCTAssertEqual(event.type, "exchange.fill")
+        XCTAssertEqual(event.type, "fill.previewed")
         XCTAssertNotNil(event.fill)
         XCTAssertEqual(event.fill?.coin, "hl:BTC")
         XCTAssertNil(event.fill?.accountId)

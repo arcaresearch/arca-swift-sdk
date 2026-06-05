@@ -505,7 +505,7 @@ public actor WebSocketManager {
     /// Stream of exchange fill events (fill data + originating event).
     public func fillEvents() -> AsyncStream<(SimFill, RealmEvent)> {
         filteredStream { event in
-            guard event.type == EventType.exchangeFill.rawValue,
+            guard event.type == EventType.fillPreviewed.rawValue,
                   let fill = event.fill else { return nil }
             return (fill, event)
         }

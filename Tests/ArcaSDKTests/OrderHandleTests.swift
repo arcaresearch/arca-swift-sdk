@@ -170,7 +170,7 @@ final class OrderHandleTests: XCTestCase {
                 AsyncStream { continuation in
                     let event = RealmEvent(
                         realmId: "rlm_test",
-                        type: "exchange.fill",
+                        type: "fill.previewed",
                         entityId: "fill_1",
                         entityPath: nil,
                         summary: nil,

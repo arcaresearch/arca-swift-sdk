@@ -455,7 +455,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
     /// Used to populate ``ActiveAssetData/maintenanceMarginRate``, which
     /// feeds ``Arca/orderBreakdown(options:)``'s liquidation estimate. When
     /// nil, ``Arca/watchMaxOrderSize(options:)`` auto-fetches it via
-    /// ``Arca/getActiveAssetData(_:_:builderFeeBps:leverage:)``.
+    /// ``Arca/getActiveAssetData(_:_:applicationFeeBps:builderFeeBps:leverage:)``.
     public let maintenanceMarginRate: String?
 
     public init(
@@ -463,6 +463,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         coin: String,
         side: OrderSide,
         leverage: Int,
+        applicationFeeBps: Int? = nil,
         builderFeeBps: Int = 0,
         szDecimals: Int = 5,
         feeScale: Double? = nil,
@@ -472,7 +473,7 @@ public struct MaxOrderSizeWatchOptions: Sendable {
         self.coin = coin
         self.side = side
         self.leverage = leverage
-        self.builderFeeBps = builderFeeBps
+        self.builderFeeBps = applicationFeeBps ?? builderFeeBps
         self.szDecimals = szDecimals
         self.feeScale = feeScale
         self.maintenanceMarginRate = maintenanceMarginRate
@@ -545,7 +546,7 @@ public struct FundingWatchStream: Sendable {
 /// A stream of platform-level trade history for an exchange Arca object.
 ///
 /// Two-phase fill delivery with envelope-based correlation:
-/// 1. `exchange.fill` — instant preview with venue data (matched by `correlationId`)
+/// 1. `fill.previewed` — instant preview with venue data (matched by `correlationId`)
 /// 2. `fill.recorded` — authoritative fill replaces preview (matched by `correlationId`)
 ///
 /// A convergence timeout fires if a preview doesn't receive its authoritative
@@ -569,12 +570,12 @@ public struct FillWatchStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
     /// Running list of fills, populated on initial fetch and updated live.
-    /// **This is the merged view** — preview rows from `exchange.fill` are
+    /// **This is the merged view** — preview rows from `fill.previewed` are
     /// replaced in place by their authoritative `fill.recorded` counterparts
     /// using `correlationId`. Use this for activity-feed UIs.
     public let fills: SendableBox<[Fill]>
     /// Async stream of every fill transition.
-    /// **Yields both phases**: the preview from `exchange.fill` and then the
+    /// **Yields both phases**: the preview from `fill.previewed` and then the
     /// authoritative replacement from `fill.recorded`. Consuming this directly
     /// without your own merge by `correlationId` will produce duplicate rows.
     /// For an activity feed, prefer ``fills``.
@@ -585,7 +586,7 @@ public struct FillWatchStream: Sendable {
     internal let convergenceCallbacks: SendableBox<[UUID: @Sendable (String) -> Void]>
 
     /// Register a callback for convergence timeouts. Fires when a preview
-    /// (`exchange.fill`) doesn't receive its authoritative update (`fill.recorded`)
+    /// (`fill.previewed`) doesn't receive its authoritative update (`fill.recorded`)
     /// within the timeout window. Returns a UUID to remove the handler later.
     @discardableResult
     public func onConvergenceTimeout(_ handler: @escaping @Sendable (String) -> Void) -> UUID {

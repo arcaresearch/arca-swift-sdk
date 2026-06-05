@@ -197,7 +197,7 @@ public enum TypedEvent: Sendable {
             guard let state = event.exchangeState else { return .unknown(event) }
             return .exchangeUpdated(state, envelope: envelope)
 
-        case EventType.exchangeFill.rawValue:
+        case EventType.fillPreviewed.rawValue:
             guard let fill = event.fill else { return .unknown(event) }
             return .fillPreview(fill, envelope: envelope)
 
