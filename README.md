@@ -16,9 +16,9 @@ Add the package dependency in `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/arcaresearch/arca-swift-sdk.git", from: "0.1.0"),
+    .package(url: "https://github.com/arca-network/arca-swift-sdk.git", from: "0.1.0"),
     // Or use branch-based if version tags aren't published yet:
-    // .package(url: "https://github.com/arcaresearch/arca-swift-sdk.git", branch: "main"),
+    // .package(url: "https://github.com/arca-network/arca-swift-sdk.git", branch: "main"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: ["ArcaSDK"]),
