@@ -1,7 +1,10 @@
 import Foundation
 
 private let safetyMarginFactor: Double = 1.001 // 10 bps multiplicative buffer on total cost
-private let defaultPlatformFeeRate: Double = 0.0001   // 1 bps
+// The Arca network takes no platform fee. When the server omits a platformFee
+// rate we assume 0; the server reports the live rate in feeRates.platformFee
+// if a network fee is ever re-enabled.
+private let defaultPlatformFeeRate: Double = 0   // Arca network fee disabled
 
 private func parsePositiveDouble(_ value: String?) -> Double {
     guard let value, let n = Double(value), n.isFinite, n > 0 else { return 0 }
