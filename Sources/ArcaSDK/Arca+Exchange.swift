@@ -13,15 +13,11 @@ extension Arca {
     ///   - ref: Full Arca path (e.g. `/exchanges/hl1`)
     ///   - venue: Venue the exchange object trades against — `"hl-sim"`
     ///     (default) provisions a simulated Hyperliquid account; `"hl"`
-    ///     provisions a live one. The legacy long forms `"sim-exchange"` /
-    ///     `"hyperliquid"` are still accepted.
-    ///   - exchangeType: Deprecated. Carried no venue information and is ignored;
-    ///     use `venue`. Removed in a future release.
+    ///     provisions a live one.
     ///   - operationPath: Optional idempotency key
     public func ensurePerpsExchange(
         ref: String,
         venue: String = "hl-sim",
-        exchangeType: String? = nil,
         operationPath: String? = nil
     ) -> OperationHandle<CreateArcaObjectResponse> {
         operationHandle { [self] in
