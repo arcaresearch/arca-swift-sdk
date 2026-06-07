@@ -167,6 +167,7 @@ extension Arca {
     ///   - useMax: When true, the server resolves max order size at execution time. `size` serves as the reference.
     ///   - sizeTolerance: Max allowed downward size adjustment as a fraction (0.01 = 1%). Server may reduce `size` by up to this percentage to fit available margin. Never increases size. Recommended: 0.01 for interactive, 0.02 for retail. Server max: 0.25.
     ///   - maxSizeTolerance: Deprecated — use `sizeTolerance` instead.
+    ///   - ocoGroupId: Links this order to the other legs of a TP/SL bracket so a fill on one leg cancels its siblings (one-cancels-the-other). Advisory/unsigned. Usually left nil; `setPositionTpsl` sets it automatically.
     public func placeOrder(
         path: String,
         objectId: String,
@@ -188,7 +189,8 @@ extension Arca {
         useMax: Bool? = nil,
         sizeTolerance: Double? = nil,
         maxSizeTolerance: Double? = nil,
-        isolated: Bool? = nil
+        isolated: Bool? = nil,
+        ocoGroupId: String? = nil
     ) -> OrderHandle {
         let effectiveTolerance = sizeTolerance ?? maxSizeTolerance
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
@@ -212,7 +214,8 @@ extension Arca {
                 sizeToMax: sizeToMax,
                 useMax: useMax,
                 sizeTolerance: effectiveTolerance,
-                isolated: isolated == true ? true : nil
+                isolated: isolated == true ? true : nil,
+                ocoGroupId: ocoGroupId
             ))
         }
 
@@ -467,13 +470,15 @@ extension Arca {
         isolated: Bool? = nil,
         timeInForce: TimeInForce = .gtc,
         applicationFeeTenthsBps: Int? = nil,
-        feeTargets: [FeeTarget]? = nil
+        feeTargets: [FeeTarget]? = nil,
+        ocoGroupId: String? = nil
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .stopLoss, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
-            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
+            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets,
+            ocoGroupId: ocoGroupId
         )
     }
 
@@ -491,13 +496,15 @@ extension Arca {
         isolated: Bool? = nil,
         timeInForce: TimeInForce = .gtc,
         applicationFeeTenthsBps: Int? = nil,
-        feeTargets: [FeeTarget]? = nil
+        feeTargets: [FeeTarget]? = nil,
+        ocoGroupId: String? = nil
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .takeProfit, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
             isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
-            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets
+            applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets,
+            ocoGroupId: ocoGroupId
         )
     }
 
@@ -514,7 +521,8 @@ extension Arca {
         isolated: Bool?,
         timeInForce: TimeInForce,
         applicationFeeTenthsBps: Int?,
-        feeTargets: [FeeTarget]?
+        feeTargets: [FeeTarget]?,
+        ocoGroupId: String?
     ) -> OrderHandle {
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
             let isMarketOrder = isMarket ?? true
@@ -555,7 +563,8 @@ extension Arca {
                 sizeToMax: true,
                 useMax: nil,
                 sizeTolerance: nil,
-                isolated: effIsolated ? true : nil
+                isolated: effIsolated ? true : nil,
+                ocoGroupId: ocoGroupId
             ))
         }
 
@@ -581,7 +590,8 @@ extension Arca {
         isMarket: Bool? = nil,
         replace: Bool = true,
         applicationFeeTenthsBps: Int? = nil,
-        feeTargets: [FeeTarget]? = nil
+        feeTargets: [FeeTarget]? = nil,
+        ocoGroupId: String? = nil
     ) async throws -> SetPositionTpslResult {
         if (stopLossPx ?? "").isEmpty, (takeProfitPx ?? "").isEmpty {
             throw ArcaError.validation(
@@ -590,12 +600,18 @@ extension Arca {
             )
         }
         let effectiveFeeBps = applicationFeeTenthsBps
+        // One opaque group id links both legs as a true one-cancels-the-other
+        // bracket: when either leg fills (even partially) the venue cancels the
+        // sibling with cancelReason=sibling_filled. An explicit ocoGroupId
+        // reuses a known group; otherwise mint a fresh one.
+        let groupId = ocoGroupId ?? Self.generateOcoGroupId()
         var slHandle: OrderHandle?
         var tpHandle: OrderHandle?
         if let sl = stopLossPx, !sl.isEmpty {
             let handle = setStopLoss(
                 path: path + "/sl", objectId: objectId, market: market, triggerPx: sl,
-                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
+                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets,
+                ocoGroupId: groupId
             )
             _ = try await handle.submitted
             slHandle = handle
@@ -603,12 +619,21 @@ extension Arca {
         if let tp = takeProfitPx, !tp.isEmpty {
             let handle = setTakeProfit(
                 path: path + "/tp", objectId: objectId, market: market, triggerPx: tp,
-                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets
+                isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets,
+                ocoGroupId: groupId
             )
             _ = try await handle.submitted
             tpHandle = handle
         }
         return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
+    }
+
+    /// Mint a fresh opaque id that links the legs of a TP/SL bracket as
+    /// one-cancels-the-other. The id is advisory and only needs to be unique
+    /// within a single account's live order set, so a random UUID is
+    /// sufficient.
+    static func generateOcoGroupId() -> String {
+        "oco_\(UUID().uuidString)"
     }
 
     /// Cancel resting unsized (sizeToMax) trigger orders for `market`. `tpsl`
@@ -1357,6 +1382,13 @@ private struct PlaceOrderRequest: Encodable {
     /// markets such as HIP-3 (`hl:1:*`). Encoded as `nil` (omitted)
     /// by default so existing call sites don't change shape.
     let isolated: Bool?
+    /// Links this order to the other legs of a TP/SL bracket so a fill on one
+    /// leg cancels its siblings (one-cancels-the-other). Advisory and unsigned:
+    /// forwarded to the venue but never part of the EIP-712 order digest.
+    /// Defaulted (and `var`) so the synthesized memberwise initializer keeps it
+    /// optional — call sites that don't bracket (e.g. closePosition) omit the
+    /// key, while placeOrder/setPositionTrigger set it.
+    var ocoGroupId: String? = nil
 }
 
 private struct ModifyOrderBody: Encodable {

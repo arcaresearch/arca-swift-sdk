@@ -132,6 +132,16 @@ public struct SimOrder: Codable, Sendable {
     /// `true` for an unsized ("size to max") TP/SL that closes the entire
     /// position when fired.
     public let sizeToMax: Bool?
+    /// Links the legs of a TP/SL bracket so that when one leg fills (even
+    /// partially) the venue cancels the sibling legs sharing this id
+    /// (one-cancels-the-other). `nil` for a standalone order. `setPositionTpsl`
+    /// assigns one id to both legs; it is advisory and never part of the signed
+    /// order digest.
+    public let ocoGroupId: String?
+    /// Why a `.cancelled` order was cancelled — one of `user_requested`,
+    /// `sibling_filled`, `position_closed`, `position_flipped`, `liquidated`,
+    /// `position_gone`. `nil` unless `status == .cancelled`.
+    public let cancelReason: String?
     public let createdAt: String?
     public let updatedAt: String?
 }

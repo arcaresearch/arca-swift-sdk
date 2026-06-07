@@ -188,6 +188,77 @@ final class ArcaExchangeTpslTests: XCTestCase {
         }
     }
 
+    /// Pins the true one-cancels-the-other linkage: `setPositionTpsl` must stamp
+    /// BOTH legs with the same non-empty `ocoGroupId` so a fill (even partial)
+    /// on one leg cancels the sibling. Without a shared id the bracket only
+    /// falls back to position-state reconcile.
+    func testSetPositionTpslSharesOcoGroupId() async throws {
+        TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
+        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:0:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
+        let arca = makeArca()
+
+        _ = try await arca.setPositionTpsl(
+            path: "/op/tpsl/oco", objectId: "obj_1", market: "hl:0:BTC",
+            stopLossPx: "54000", takeProfitPx: "70000"
+        )
+
+        let posts = TpslMockProtocol.capturedPosts
+        XCTAssertEqual(posts.count, 2)
+        let slGroup = posts[0]["ocoGroupId"] as? String
+        let tpGroup = posts[1]["ocoGroupId"] as? String
+        XCTAssertNotNil(slGroup, "SL leg must carry an ocoGroupId")
+        XCTAssertFalse(slGroup?.isEmpty ?? true, "ocoGroupId must be non-empty")
+        XCTAssertEqual(slGroup, tpGroup, "both legs must share one ocoGroupId")
+    }
+
+    /// Pins that an explicit `ocoGroupId` overrides the auto-minted one and is
+    /// applied verbatim to both legs.
+    func testSetPositionTpslExplicitOcoGroupId() async throws {
+        TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
+        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:0:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
+        let arca = makeArca()
+
+        _ = try await arca.setPositionTpsl(
+            path: "/op/tpsl/oco2", objectId: "obj_1", market: "hl:0:BTC",
+            stopLossPx: "54000", takeProfitPx: "70000", ocoGroupId: "oco_explicit"
+        )
+
+        let posts = TpslMockProtocol.capturedPosts
+        XCTAssertEqual(posts[0]["ocoGroupId"] as? String, "oco_explicit")
+        XCTAssertEqual(posts[1]["ocoGroupId"] as? String, "oco_explicit")
+    }
+
+    /// Pins the advisory passthrough on the general order path: an `ocoGroupId`
+    /// on `placeOrder` reaches the request body (forwarded to the venue, never
+    /// part of the signed digest).
+    func testPlaceOrderForwardsOcoGroupId() async throws {
+        let arca = makeArca()
+
+        let handle = arca.placeOrder(
+            path: "/op/place/oco", objectId: "obj_1", market: "hl:0:BTC",
+            side: .sell, orderType: .market, size: "0", ocoGroupId: "oco_grp_99"
+        )
+        _ = try await handle.submitted
+
+        let posts = TpslMockProtocol.capturedPosts
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts[0]["ocoGroupId"] as? String, "oco_grp_99")
+    }
+
+    /// Pins the read-on-demand surface: a CANCELLED order decodes its
+    /// `ocoGroupId` and `cancelReason`, which `getOrder`/`listOrders` expose.
+    func testSimOrderDecodesOcoAndCancelReason() throws {
+        let json = #"""
+        {"id":"ord_1","market":"hl:0:BTC","side":"sell","orderType":"MARKET",
+         "size":"0","filledSize":"0","status":"CANCELLED","reduceOnly":true,
+         "timeInForce":"GTC","leverage":5,
+         "ocoGroupId":"oco_abc","cancelReason":"sibling_filled"}
+        """#
+        let order = try JSONDecoder().decode(SimOrder.self, from: Data(json.utf8))
+        XCTAssertEqual(order.ocoGroupId, "oco_abc")
+        XCTAssertEqual(order.cancelReason, "sibling_filled")
+    }
+
     // MARK: - clearPositionTpsl
 
     func testClearPositionTpslCancelsBothLegs() async throws {

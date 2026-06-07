@@ -83,6 +83,8 @@ private func makeSimOrder(
         isMarket: nil,
         tpsl: nil,
         sizeToMax: nil,
+        ocoGroupId: nil,
+        cancelReason: nil,
         createdAt: "2026-03-08T00:00:00.000000Z",
         updatedAt: "2026-03-08T00:00:00.000000Z"
     )
