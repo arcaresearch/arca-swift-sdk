@@ -65,6 +65,25 @@ final class ArcaExchangeTpslTests: XCTestCase {
         XCTAssertEqual(b["tpsl"] as? String, "tp")
     }
 
+    /// Pins the sized position-trigger path: a non-empty `size` makes the leg a
+    /// sized reduce-only close (carries `size`, NO `sizeToMax`) so a builder can
+    /// scale out a fixed quantity of an open position.
+    func testSetTakeProfitSizedPartial() async throws {
+        TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
+        let arca = makeArca()
+
+        let handle = arca.setTakeProfit(
+            path: "/op/tp/sized", objectId: "obj_1", market: "hl:0:BTC",
+            triggerPx: "70000", size: "0.25", isolated: false
+        )
+        _ = try await handle.submitted
+
+        let b = TpslMockProtocol.capturedPosts[0]
+        XCTAssertEqual(b["size"] as? String, "0.25", "sized partial close")
+        XCTAssertNil(b["sizeToMax"], "sized trigger must NOT carry sizeToMax")
+        XCTAssertEqual(b["reduceOnly"] as? Bool, true)
+    }
+
     func testSetStopLossNoPositionThrowsNotFound() async throws {
         TpslMockProtocol.positionsBody = envelope(#"{"positions":[],"total":0}"#)
         let arca = makeArca()
@@ -226,6 +245,51 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let posts = TpslMockProtocol.capturedPosts
         XCTAssertEqual(posts[0]["ocoGroupId"] as? String, "oco_explicit")
         XCTAssertEqual(posts[1]["ocoGroupId"] as? String, "oco_explicit")
+    }
+
+    /// Pins the OCO footgun guard: when either leg is sized, `setPositionTpsl`
+    /// must NOT auto-link the legs with a shared `ocoGroupId` — otherwise a
+    /// partial fill of the sized TP would cancel the SL protecting the
+    /// remainder ("scale out half, keep the stop"). Sizes still thread through.
+    func testSetPositionTpslSizedSkipsAutoOco() async throws {
+        TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
+        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:0:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
+        let arca = makeArca()
+
+        _ = try await arca.setPositionTpsl(
+            path: "/op/tpsl/sized", objectId: "obj_1", market: "hl:0:BTC",
+            stopLossPx: "54000", takeProfitPx: "70000",
+            takeProfitSz: "0.25" // scale out a quarter; SL stays whole-position
+        )
+
+        let posts = TpslMockProtocol.capturedPosts
+        XCTAssertEqual(posts.count, 2)
+        XCTAssertNil(posts[0]["ocoGroupId"], "sized legs must NOT be auto-OCO-linked")
+        XCTAssertNil(posts[1]["ocoGroupId"], "sized legs must NOT be auto-OCO-linked")
+        // SL stays unsized (whole position); TP carries the partial size.
+        XCTAssertEqual(posts[0]["tpsl"] as? String, "sl")
+        XCTAssertEqual(posts[0]["sizeToMax"] as? Bool, true)
+        XCTAssertEqual(posts[1]["tpsl"] as? String, "tp")
+        XCTAssertEqual(posts[1]["size"] as? String, "0.25")
+        XCTAssertNil(posts[1]["sizeToMax"], "sized TP must NOT carry sizeToMax")
+    }
+
+    /// Pins that an explicit `ocoGroupId` still force-links sized legs (the
+    /// caller deliberately opts in), overriding the auto-skip above.
+    func testSetPositionTpslSizedRespectsExplicitOco() async throws {
+        TpslMockProtocol.positionsBody = envelope(#"{"positions":[\#(longBTC)],"total":1}"#)
+        TpslMockProtocol.metaBody = envelope(#"{"universe":[{"name":"hl:0:BTC","symbol":"BTC","exchange":"hl","index":0,"szDecimals":5,"maxLeverage":50,"onlyIsolated":false}]}"#)
+        let arca = makeArca()
+
+        _ = try await arca.setPositionTpsl(
+            path: "/op/tpsl/sizedoco", objectId: "obj_1", market: "hl:0:BTC",
+            stopLossPx: "54000", takeProfitPx: "70000",
+            stopLossSz: "0.25", takeProfitSz: "0.25", ocoGroupId: "oco_forced"
+        )
+
+        let posts = TpslMockProtocol.capturedPosts
+        XCTAssertEqual(posts[0]["ocoGroupId"] as? String, "oco_forced")
+        XCTAssertEqual(posts[1]["ocoGroupId"] as? String, "oco_forced")
     }
 
     /// Pins the advisory passthrough on the general order path: an `ocoGroupId`

@@ -435,11 +435,13 @@ extension Arca {
 
     /// Attach a stop-loss to the open position for `market`.
     ///
-    /// The trigger is placed *unsized* (`sizeToMax: true`, `reduceOnly: true`) —
-    /// when it fires it closes the **entire** live position regardless of size,
-    /// and it is cancelled when the position closes. The closing side is inferred
-    /// from the position (long → sell, short → buy), and `leverage` / `isolated`
-    /// are auto-filled
+    /// By default the trigger is placed *unsized* (`sizeToMax: true`,
+    /// `reduceOnly: true`) — when it fires it closes the **entire** live position
+    /// regardless of size, and it is cancelled when the position closes. Pass a
+    /// positive base-unit `size` for a **sized** partial close (e.g. stop out
+    /// half); reduce-only caps it at the live position. The closing side is
+    /// inferred from the position (long → sell, short → buy), and `leverage` /
+    /// `isolated` are auto-filled
     /// from the position and market meta exactly like ``closePosition(path:objectId:market:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
     ///
     /// By default any existing stop-loss for the position is replaced; pass
@@ -450,9 +452,10 @@ extension Arca {
     ///   - objectId: Exchange Arca object ID
     ///   - market: Coin in canonical format (e.g. `"hl:0:BTC"`)
     ///   - triggerPx: Mark-price threshold that activates the order
+    ///   - size: Sized partial close (base units). Omit for a whole-position (sizeToMax) close.
     ///   - isMarket: Execute as market (default) or limit when triggered
     ///   - limitPrice: Resting limit price when `isMarket == false` (required then)
-    ///   - replace: Cancel any existing same-type unsized (sizeToMax) trigger first (default true)
+    ///   - replace: Cancel any existing same-type trigger first (default true)
     ///   - leverage: Override the position's leverage
     ///   - isolated: Override the isolated-margin inference
     ///   - timeInForce: Time in force (default `.gtc`)
@@ -463,6 +466,7 @@ extension Arca {
         objectId: String,
         market: String,
         triggerPx: String,
+        size: String? = nil,
         isMarket: Bool? = nil,
         limitPrice: String? = nil,
         replace: Bool = true,
@@ -475,7 +479,7 @@ extension Arca {
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .stopLoss, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
-            isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
+            size: size, isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
             applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets,
             ocoGroupId: ocoGroupId
@@ -483,12 +487,13 @@ extension Arca {
     }
 
     /// Attach a take-profit to the open position for `market`. The
-    /// position-attached counterpart of ``setStopLoss(path:objectId:market:triggerPx:isMarket:limitPrice:replace:leverage:isolated:timeInForce:applicationFeeTenthsBps:feeTargets:)``.
+    /// position-attached counterpart of ``setStopLoss(path:objectId:market:triggerPx:size:isMarket:limitPrice:replace:leverage:isolated:timeInForce:applicationFeeTenthsBps:feeTargets:ocoGroupId:)``.
     public func setTakeProfit(
         path: String,
         objectId: String,
         market: String,
         triggerPx: String,
+        size: String? = nil,
         isMarket: Bool? = nil,
         limitPrice: String? = nil,
         replace: Bool = true,
@@ -501,7 +506,7 @@ extension Arca {
     ) -> OrderHandle {
         setPositionTrigger(
             tpsl: .takeProfit, path: path, objectId: objectId, market: market, triggerPx: triggerPx,
-            isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
+            size: size, isMarket: isMarket, limitPrice: limitPrice, replace: replace, leverage: leverage,
             isolated: isolated, timeInForce: timeInForce,
             applicationFeeTenthsBps: applicationFeeTenthsBps, feeTargets: feeTargets,
             ocoGroupId: ocoGroupId
@@ -514,6 +519,7 @@ extension Arca {
         objectId: String,
         market: String,
         triggerPx: String,
+        size: String?,
         isMarket: Bool?,
         limitPrice: String?,
         replace: Bool,
@@ -543,13 +549,18 @@ extension Arca {
                     ).submitted
                 }
             }
+            // A non-empty `size` makes this a sized partial reduce-only trigger
+            // (closes that quantity, reduce-only caps it at the live position);
+            // an empty size keeps the unsized sizeToMax close of the whole
+            // position. `sizeToMax` is omitted (nil) for the sized leg.
+            let sized = !(size ?? "").isEmpty
             return try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
                 market: market,
                 side: side.rawValue,
                 orderType: isMarketOrder ? OrderType.market.rawValue : OrderType.limit.rawValue,
-                size: "0",
+                size: sized ? size! : "0",
                 price: isMarketOrder ? nil : limitPrice,
                 leverage: effLeverage,
                 reduceOnly: true,
@@ -560,7 +571,7 @@ extension Arca {
                 triggerPx: triggerPx,
                 isMarket: isMarketOrder,
                 tpsl: tpsl.rawValue,
-                sizeToMax: true,
+                sizeToMax: sized ? nil : true,
                 useMax: nil,
                 sizeTolerance: nil,
                 isolated: effIsolated ? true : nil,
@@ -587,6 +598,8 @@ extension Arca {
         market: String,
         stopLossPx: String? = nil,
         takeProfitPx: String? = nil,
+        stopLossSz: String? = nil,
+        takeProfitSz: String? = nil,
         isMarket: Bool? = nil,
         replace: Bool = true,
         applicationFeeTenthsBps: Int? = nil,
@@ -602,14 +615,20 @@ extension Arca {
         let effectiveFeeBps = applicationFeeTenthsBps
         // One opaque group id links both legs as a true one-cancels-the-other
         // bracket: when either leg fills (even partially) the venue cancels the
-        // sibling with cancelReason=sibling_filled. An explicit ocoGroupId
-        // reuses a known group; otherwise mint a fresh one.
-        let groupId = ocoGroupId ?? Self.generateOcoGroupId()
+        // sibling with cancelReason=sibling_filled. That is the right default
+        // for two unsized whole-position legs. But when EITHER leg is sized,
+        // auto-OCO is a footgun — a partial fill of the sized leg (e.g. scaling
+        // out half via the TP) would cancel the sibling stop protecting the
+        // remainder. So we only auto-link when both legs are unsized; a caller
+        // who wants sized legs linked passes an explicit ocoGroupId.
+        let anySized = !(stopLossSz ?? "").isEmpty || !(takeProfitSz ?? "").isEmpty
+        let groupId = ocoGroupId ?? (anySized ? nil : Self.generateOcoGroupId())
         var slHandle: OrderHandle?
         var tpHandle: OrderHandle?
         if let sl = stopLossPx, !sl.isEmpty {
             let handle = setStopLoss(
                 path: path + "/sl", objectId: objectId, market: market, triggerPx: sl,
+                size: stopLossSz,
                 isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets,
                 ocoGroupId: groupId
             )
@@ -619,6 +638,7 @@ extension Arca {
         if let tp = takeProfitPx, !tp.isEmpty {
             let handle = setTakeProfit(
                 path: path + "/tp", objectId: objectId, market: market, triggerPx: tp,
+                size: takeProfitSz,
                 isMarket: isMarket, replace: replace, applicationFeeTenthsBps: effectiveFeeBps, feeTargets: feeTargets,
                 ocoGroupId: groupId
             )
@@ -638,8 +658,17 @@ extension Arca {
     ///
     /// Returns one ``OrderHandle`` per leg (`entry`, `takeProfit?`,
     /// `stopLoss?`), all backed by the single bracket operation. At least one
-    /// of `takeProfitPx` / `stopLossPx` is required. The TP/SL legs are unsized
-    /// (`sizeToMax`) reduce-only triggers that close the entire position.
+    /// of `takeProfitPx` / `stopLossPx` is required. By default the TP/SL legs
+    /// are unsized (`sizeToMax`) reduce-only triggers that close the entire
+    /// position; pass `takeProfitSz` / `stopLossSz` (positive base units) to
+    /// make a leg a **sized** partial close instead.
+    ///
+    /// - Note: the venue links a bracket's TP and SL legs as
+    ///   one-cancels-the-other, and a fill on either — including a **partial**
+    ///   fill of a sized leg — cancels the sibling. So a partial TP combined
+    ///   with an SL in the same bracket will cancel that SL when the TP fills.
+    ///   To scale out and keep a stop on the remainder, place the partial TP
+    ///   separately (``setTakeProfit`` with a `size`) and keep the stop unlinked.
     ///
     /// ```swift
     /// let bracket = try arca.openWithBracket(
@@ -663,6 +692,8 @@ extension Arca {
         applicationFeeTenthsBps: Int? = nil,
         takeProfitPx: String? = nil,
         stopLossPx: String? = nil,
+        takeProfitSz: String? = nil,
+        stopLossSz: String? = nil,
         triggersAreMarket: Bool = true,
         grouping: String = "normalTpsl"
     ) throws -> OpenBracketResult {
@@ -690,19 +721,21 @@ extension Arca {
                 timeInForce: tif, applicationFeeTenthsBps: feeBps, isolated: isolatedFlag
             )
         ]
-        func trigger(_ tpsl: String, _ triggerPx: String) -> BatchLegBody {
-            // Unsized: carries no quantity and closes the whole live position
-            // when it fires. size is ignored by the venue.
-            BatchLegBody(
+        func trigger(_ tpsl: String, _ triggerPx: String, _ sz: String?) -> BatchLegBody {
+            // Sized: a partial reduce-only close of exactly `sz` (reduce-only
+            // caps it at the live position). Unsized: carries no quantity and
+            // closes the whole live position when it fires (size ignored).
+            let sized = !(sz ?? "").isEmpty
+            return BatchLegBody(
                 market: market, side: closingSide.rawValue,
                 orderType: triggersAreMarket ? OrderType.market.rawValue : OrderType.limit.rawValue,
-                size: "0", reduceOnly: true, timeInForce: tif, applicationFeeTenthsBps: feeBps,
+                size: sized ? sz! : "0", reduceOnly: true, timeInForce: tif, applicationFeeTenthsBps: feeBps,
                 isTrigger: true, triggerPx: triggerPx, isMarket: triggersAreMarket,
-                tpsl: tpsl, sizeToMax: true, isolated: isolatedFlag
+                tpsl: tpsl, sizeToMax: sized ? nil : true, isolated: isolatedFlag
             )
         }
-        if let tp = takeProfitPx, !tp.isEmpty { orders.append(trigger("tp", tp)) }
-        if let sl = stopLossPx, !sl.isEmpty { orders.append(trigger("sl", sl)) }
+        if let tp = takeProfitPx, !tp.isEmpty { orders.append(trigger("tp", tp, takeProfitSz)) }
+        if let sl = stopLossPx, !sl.isEmpty { orders.append(trigger("sl", sl, stopLossSz)) }
 
         let body = PlaceOrderBatchBody(realmId: realm, path: path, grouping: grouping, orders: orders)
 

@@ -83,6 +83,28 @@ final class ArcaExchangeBracketTests: XCTestCase {
         XCTAssertEqual(try orderId(of: slResp), "ord_sl")
     }
 
+    func testOpenWithBracketSizedTakeProfitIsPartial() async throws {
+        let arca = makeArca()
+
+        let result = try arca.openWithBracket(
+            path: "/op/bracket/sized", objectId: "obj_1", market: "hl:0:BTC",
+            side: .buy, size: "0.02",
+            takeProfitPx: "72000", stopLossPx: "58000",
+            takeProfitSz: "0.01" // scale out half; SL stays whole-position
+        )
+        _ = try await result.entry.submitted
+
+        let orders = BracketMockProtocol.capturedBatchPosts[0]["orders"] as? [[String: Any]] ?? []
+        let tp = orders.first { ($0["tpsl"] as? String) == "tp" }
+        XCTAssertEqual(tp?["size"] as? String, "0.01")
+        XCTAssertNil(tp?["sizeToMax"], "sized TP must NOT carry sizeToMax")
+        XCTAssertEqual(tp?["reduceOnly"] as? Bool, true)
+
+        let sl = orders.first { ($0["tpsl"] as? String) == "sl" }
+        XCTAssertEqual(sl?["size"] as? String, "0")
+        XCTAssertEqual(sl?["sizeToMax"] as? Bool, true)
+    }
+
     func testOpenWithBracketOnlyStopLossOmitsTpLeg() async throws {
         let arca = makeArca()
 
