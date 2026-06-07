@@ -163,7 +163,7 @@ extension Arca {
     ///   - triggerPx: Trigger price — mark price threshold to activate the order
     ///   - isMarket: If true, execute as market order when triggered; if false, use price as limit
     ///   - tpsl: Take profit (`.takeProfit`) or stop loss (`.stopLoss`)
-    ///   - grouping: Lifecycle grouping (`.standalone`, `.normalTpsl`, `.positionTpsl`)
+    ///   - sizeToMax: Marks an *unsized* ("size to max") TP/SL — it carries no fixed quantity and closes the **entire** position when triggered. Leave nil/false for a *sized* TP/SL that closes its fixed `size`. Either way, no TP/SL outlives the position.
     ///   - useMax: When true, the server resolves max order size at execution time. `size` serves as the reference.
     ///   - sizeTolerance: Max allowed downward size adjustment as a fraction (0.01 = 1%). Server may reduce `size` by up to this percentage to fit available margin. Never increases size. Recommended: 0.01 for interactive, 0.02 for retail. Server max: 0.25.
     ///   - maxSizeTolerance: Deprecated — use `sizeTolerance` instead.
@@ -184,7 +184,7 @@ extension Arca {
         triggerPx: String? = nil,
         isMarket: Bool? = nil,
         tpsl: TpslType? = nil,
-        grouping: TpslGrouping? = nil,
+        sizeToMax: Bool? = nil,
         useMax: Bool? = nil,
         sizeTolerance: Double? = nil,
         maxSizeTolerance: Double? = nil,
@@ -209,7 +209,7 @@ extension Arca {
                 triggerPx: triggerPx,
                 isMarket: isMarket,
                 tpsl: tpsl?.rawValue,
-                grouping: grouping?.rawValue,
+                sizeToMax: sizeToMax,
                 useMax: useMax,
                 sizeTolerance: effectiveTolerance,
                 isolated: isolated == true ? true : nil
@@ -359,7 +359,7 @@ extension Arca {
                 triggerPx: nil,
                 isMarket: nil,
                 tpsl: nil,
-                grouping: nil,
+                sizeToMax: nil,
                 useMax: nil,
                 sizeTolerance: nil,
                 isolated: effectiveIsolated ? true : nil
@@ -396,10 +396,11 @@ extension Arca {
 
     /// Attach a stop-loss to the open position for `market`.
     ///
-    /// The trigger is placed with `grouping: .positionTpsl`, `reduceOnly: true`,
-    /// and `size: "0"` so the venue fills it from — and resizes it with — the
-    /// live position. The closing side is inferred from the position
-    /// (long → sell, short → buy), and `leverage` / `isolated` are auto-filled
+    /// The trigger is placed *unsized* (`sizeToMax: true`, `reduceOnly: true`) —
+    /// when it fires it closes the **entire** live position regardless of size,
+    /// and it is cancelled when the position closes. The closing side is inferred
+    /// from the position (long → sell, short → buy), and `leverage` / `isolated`
+    /// are auto-filled
     /// from the position and market meta exactly like ``closePosition(path:objectId:market:size:timeInForce:applicationFeeTenthsBps:feeTargets:isolated:leverage:)``.
     ///
     /// By default any existing stop-loss for the position is replaced; pass
@@ -412,7 +413,7 @@ extension Arca {
     ///   - triggerPx: Mark-price threshold that activates the order
     ///   - isMarket: Execute as market (default) or limit when triggered
     ///   - limitPrice: Resting limit price when `isMarket == false` (required then)
-    ///   - replace: Cancel any existing same-type positionTpsl trigger first (default true)
+    ///   - replace: Cancel any existing same-type unsized (sizeToMax) trigger first (default true)
     ///   - leverage: Override the position's leverage
     ///   - isolated: Override the isolated-margin inference
     ///   - timeInForce: Time in force (default `.gtc`)
@@ -515,7 +516,7 @@ extension Arca {
                 triggerPx: triggerPx,
                 isMarket: isMarketOrder,
                 tpsl: tpsl.rawValue,
-                grouping: TpslGrouping.positionTpsl.rawValue,
+                sizeToMax: true,
                 useMax: nil,
                 sizeTolerance: nil,
                 isolated: effIsolated ? true : nil
@@ -574,9 +575,9 @@ extension Arca {
         return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
     }
 
-    /// Cancel resting positionTpsl trigger orders for `market`. `tpsl` narrows the
-    /// clear to a single leg; `nil` clears both. Returns the orders that were
-    /// targeted for cancellation.
+    /// Cancel resting unsized (sizeToMax) trigger orders for `market`. `tpsl`
+    /// narrows the clear to a single leg; `nil` clears both. Returns the orders
+    /// that were targeted for cancellation.
     @discardableResult
     public func clearPositionTpsl(
         path: String,
@@ -623,8 +624,8 @@ extension Arca {
         return (side, leverage, isolated)
     }
 
-    /// Return resting positionTpsl trigger orders for `market`, optionally narrowed
-    /// to a single tp/sl leg.
+    /// Return resting unsized (sizeToMax) trigger orders for `market`, optionally
+    /// narrowed to a single tp/sl leg.
     private func findPositionTpslOrders(
         objectId: String,
         market: String,
@@ -633,7 +634,7 @@ extension Arca {
         let orders = try await listOrders(objectId: objectId, status: OrderStatus.waitingForTrigger.rawValue)
         return orders.filter {
             $0.market == market
-                && $0.grouping == TpslGrouping.positionTpsl.rawValue
+                && $0.sizeToMax == true
                 && (tpsl == nil || $0.tpsl == tpsl)
         }
     }
@@ -1251,12 +1252,6 @@ public enum TpslType: String, Codable, Sendable {
     case stopLoss = "sl"
 }
 
-public enum TpslGrouping: String, Codable, Sendable {
-    case standalone = "na"
-    case normalTpsl = "normalTpsl"
-    case positionTpsl = "positionTpsl"
-}
-
 public enum LeverageType: String, Codable, Sendable {
     case cross
     case isolated
@@ -1315,7 +1310,7 @@ private struct PlaceOrderRequest: Encodable {
     let triggerPx: String?
     let isMarket: Bool?
     let tpsl: String?
-    let grouping: String?
+    let sizeToMax: Bool?
     let useMax: Bool?
     let sizeTolerance: Double?
     /// Whether the order targets the asset's isolated-margin bucket.

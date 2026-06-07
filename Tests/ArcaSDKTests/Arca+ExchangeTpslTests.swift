@@ -39,9 +39,9 @@ final class ArcaExchangeTpslTests: XCTestCase {
         let b = posts[0]
         XCTAssertEqual(b["side"] as? String, "sell", "long closes with sell")
         XCTAssertEqual(b["tpsl"] as? String, "sl")
-        XCTAssertEqual(b["grouping"] as? String, "positionTpsl")
+        XCTAssertEqual(b["sizeToMax"] as? Bool, true)
         XCTAssertEqual(b["reduceOnly"] as? Bool, true)
-        XCTAssertEqual(b["size"] as? String, "0", "size 0 → venue fills from position")
+        XCTAssertEqual(b["size"] as? String, "0", "unsized: closes whole position")
         XCTAssertEqual(b["isTrigger"] as? Bool, true)
         XCTAssertEqual(b["isMarket"] as? Bool, true)
         XCTAssertEqual(b["orderType"] as? String, "MARKET")
@@ -192,12 +192,12 @@ final class ArcaExchangeTpslTests: XCTestCase {
 
     func testClearPositionTpslCancelsBothLegs() async throws {
         TpslMockProtocol.ordersBody = envelope("""
-        {"orders":[\(restingSL("ord_sl")),\(restingTP("ord_tp")),\(normalTpslSL("ord_other")),\(restingSLForCoin("ord_eth", "hl:0:ETH"))],"total":4}
+        {"orders":[\(restingSL("ord_sl")),\(restingTP("ord_tp")),\(sizedSL("ord_other")),\(restingSLForCoin("ord_eth", "hl:0:ETH"))],"total":4}
         """)
         let arca = makeArca()
 
         let cleared = try await arca.clearPositionTpsl(path: "/op/clear/1", objectId: "obj_1", market: "hl:0:BTC")
-        XCTAssertEqual(cleared.count, 2, "only positionTpsl orders for hl:0:BTC")
+        XCTAssertEqual(cleared.count, 2, "only unsized orders for hl:0:BTC")
         XCTAssertEqual(Set(TpslMockProtocol.capturedDeletes), Set(["ord_sl", "ord_tp"]))
     }
 
@@ -223,13 +223,13 @@ final class ArcaExchangeTpslTests: XCTestCase {
 
     private func restingSL(_ id: String) -> String { restingSLForCoin(id, "hl:0:BTC") }
     private func restingSLForCoin(_ id: String, _ market: String) -> String {
-        #"{"id":"\#(id)","market":"\#(market)","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"positionTpsl"}"#
+        #"{"id":"\#(id)","market":"\#(market)","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","sizeToMax":true}"#
     }
     private func restingTP(_ id: String) -> String {
-        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"tp","grouping":"positionTpsl"}"#
+        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"tp","sizeToMax":true}"#
     }
-    private func normalTpslSL(_ id: String) -> String {
-        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","grouping":"normalTpsl"}"#
+    private func sizedSL(_ id: String) -> String {
+        #"{"id":"\#(id)","market":"hl:0:BTC","side":"sell","orderType":"MARKET","size":"0.5","filledSize":"0","status":"WAITING_FOR_TRIGGER","reduceOnly":true,"timeInForce":"GTC","leverage":5,"tpsl":"sl","sizeToMax":false}"#
     }
 
     private func envelope(_ data: String) -> String { #"{"success":true,"data":\#(data)}"# }

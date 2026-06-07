@@ -129,8 +129,9 @@ public struct SimOrder: Codable, Sendable {
     public let triggerPx: String?
     public let isMarket: Bool?
     public let tpsl: String?
-    public let grouping: String?
-    public let parentOrderId: String?
+    /// `true` for an unsized ("size to max") TP/SL that closes the entire
+    /// position when fired.
+    public let sizeToMax: Bool?
     public let createdAt: String?
     public let updatedAt: String?
 }

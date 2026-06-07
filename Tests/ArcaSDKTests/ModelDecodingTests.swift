@@ -885,7 +885,7 @@ final class ModelDecodingTests: XCTestCase {
                     "isTrigger": true,
                     "triggerPx": "66300",
                     "tpsl": "tp",
-                    "grouping": "positionTpsl",
+                    "sizeToMax": true,
                     "createdAt": "2026-03-28T03:50:00.000000Z",
                     "updatedAt": "2026-03-28T03:50:00.000000Z"
                 }
@@ -904,7 +904,7 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(order.isTrigger, true)
         XCTAssertEqual(order.triggerPx, "66300")
         XCTAssertEqual(order.tpsl, "tp")
-        XCTAssertEqual(order.grouping, "positionTpsl")
+        XCTAssertEqual(order.sizeToMax, true)
     }
 
     func testOrderListResponseDecodingViaAPIEnvelope() throws {
