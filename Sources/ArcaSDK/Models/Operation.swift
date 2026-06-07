@@ -167,6 +167,22 @@ public struct Operation: Codable, Sendable {
     public let context: OperationContext?
 }
 
+extension Operation {
+    /// Returns a copy of this operation with `outcome` replaced. Used to derive
+    /// per-leg views of a single shared batch operation (see
+    /// ``Arca/openWithBracket``) so each order handle resolves its own
+    /// `orderId` from the rewritten outcome while still sharing one operation.
+    func withOutcome(_ newOutcome: String?) -> Operation {
+        Operation(
+            id: id, realmId: realmId, path: path, type: type, state: state,
+            sourceArcaPath: sourceArcaPath, targetArcaPath: targetArcaPath,
+            input: input, outcome: newOutcome, parsedOutcome: parsedOutcome,
+            failureMessage: failureMessage, actorType: actorType, actorId: actorId,
+            tokenJti: tokenJti, createdAt: createdAt, updatedAt: updatedAt, context: context
+        )
+    }
+}
+
 public struct OperationListResponse: Codable, Sendable {
     public let operations: [Operation]
     public let total: Int

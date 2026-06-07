@@ -628,6 +628,143 @@ extension Arca {
         return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
     }
 
+    /// Open a position and attach reduce-only TP/SL triggers in **one atomic
+    /// batch** — Hyperliquid `normalTpsl` parity. The entry and its triggers
+    /// are submitted as a single signed batch to one operation: the whole
+    /// bracket validates and commits at the venue, or none of it does. The
+    /// trigger legs **arm only when the entry fills**, and the venue links them
+    /// with a shared one-cancels-the-other group so a fill on one cancels its
+    /// sibling.
+    ///
+    /// Returns one ``OrderHandle`` per leg (`entry`, `takeProfit?`,
+    /// `stopLoss?`), all backed by the single bracket operation. At least one
+    /// of `takeProfitPx` / `stopLossPx` is required. The TP/SL legs are unsized
+    /// (`sizeToMax`) reduce-only triggers that close the entire position.
+    ///
+    /// ```swift
+    /// let bracket = try arca.openWithBracket(
+    ///     path: "/wallets/main/bracket/btc-1", objectId: id, market: "hl:0:BTC",
+    ///     side: .buy, size: "0.01", takeProfitPx: "72000", stopLossPx: "58000"
+    /// )
+    /// try await bracket.entry.settle()     // bracket placed
+    /// _ = try await bracket.entry.filled() // wait for the entry to fill
+    /// ```
+    public func openWithBracket(
+        path: String,
+        objectId: String,
+        market: String,
+        side: OrderSide,
+        size: String,
+        orderType: OrderType = .market,
+        price: String? = nil,
+        leverage: Int? = nil,
+        isolated: Bool = false,
+        timeInForce: TimeInForce = .gtc,
+        applicationFeeTenthsBps: Int? = nil,
+        takeProfitPx: String? = nil,
+        stopLossPx: String? = nil,
+        triggersAreMarket: Bool = true,
+        grouping: String = "normalTpsl"
+    ) throws -> OpenBracketResult {
+        if (takeProfitPx ?? "").isEmpty, (stopLossPx ?? "").isEmpty {
+            throw ArcaError.validation(
+                message: "openWithBracket requires at least one of takeProfitPx or stopLossPx",
+                errorId: nil
+            )
+        }
+        if orderType == .limit, (price ?? "").isEmpty {
+            throw ArcaError.validation(message: "a LIMIT entry requires a price", errorId: nil)
+        }
+
+        let tif = timeInForce.rawValue
+        // The TP/SL legs close the position the entry opens — opposite side.
+        let closingSide: OrderSide = side == .buy ? .sell : .buy
+        let feeBps = applicationFeeTenthsBps
+        let isolatedFlag: Bool? = isolated ? true : nil
+
+        // Build orders[] in request order: entry first, then the trigger legs.
+        var orders: [BatchLegBody] = [
+            BatchLegBody(
+                market: market, side: side.rawValue, orderType: orderType.rawValue, size: size,
+                price: (price ?? "").isEmpty ? nil : price, leverage: leverage,
+                timeInForce: tif, applicationFeeTenthsBps: feeBps, isolated: isolatedFlag
+            )
+        ]
+        func trigger(_ tpsl: String, _ triggerPx: String) -> BatchLegBody {
+            // Unsized: carries no quantity and closes the whole live position
+            // when it fires. size is ignored by the venue.
+            BatchLegBody(
+                market: market, side: closingSide.rawValue,
+                orderType: triggersAreMarket ? OrderType.market.rawValue : OrderType.limit.rawValue,
+                size: "0", reduceOnly: true, timeInForce: tif, applicationFeeTenthsBps: feeBps,
+                isTrigger: true, triggerPx: triggerPx, isMarket: triggersAreMarket,
+                tpsl: tpsl, sizeToMax: true, isolated: isolatedFlag
+            )
+        }
+        if let tp = takeProfitPx, !tp.isEmpty { orders.append(trigger("tp", tp)) }
+        if let sl = stopLossPx, !sl.isEmpty { orders.append(trigger("sl", sl)) }
+
+        let body = PlaceOrderBatchBody(realmId: realm, path: path, grouping: grouping, orders: orders)
+
+        // One shared batch call: all three handles derive from this single Task,
+        // so the HTTP request fires exactly once.
+        let batchCall = Task<OrderOperationResponse, Error> { [self] in
+            let resp: OrderOperationResponse = try await client.post(
+                "/objects/\(objectId)/exchange/orders/batch", body: body
+            )
+            try throwIfOperationFailed(resp.operation)
+            return resp
+        }
+
+        let deps = makeOrderHandleDeps()
+        // Each leg gets its own OrderHandle backed by the SAME batch operation.
+        // We rewrite the operation's outcome to the leg's own order summary
+        // (which carries `orderId`) so the handle's orderId resolves to that leg
+        // — letting `.filled()` / `.cancel()` target the right order even though
+        // all legs share one operation. `tpsl == nil` selects the entry (orders[0]).
+        func legHandle(_ tpsl: String?) -> OrderHandle {
+            let inner = OperationHandle<OrderOperationResponse>(
+                submit: {
+                    let resp = try await batchCall.value
+                    let outcome = Self.selectLegOutcome(resp.operation.outcome, tpsl: tpsl)
+                    return resp.withOperation(resp.operation.withOutcome(outcome))
+                },
+                waitForSettlement: { [self] operationId in
+                    try await self.waitForSettlement(operationId)
+                }
+            )
+            return OrderHandle(inner: inner, objectId: objectId, placementPath: path, deps: deps)
+        }
+
+        return OpenBracketResult(
+            entry: legHandle(nil),
+            takeProfit: (takeProfitPx ?? "").isEmpty ? nil : legHandle("tp"),
+            stopLoss: (stopLossPx ?? "").isEmpty ? nil : legHandle("sl")
+        )
+    }
+
+    /// Pick one leg's order summary out of a bracket operation's outcome and
+    /// return it as a JSON string (carrying that leg's `orderId`). `tpsl == nil`
+    /// selects the entry (`orders[0]`). Falls back to the whole outcome when the
+    /// shape is unexpected so handle resolution still has something to read.
+    private static func selectLegOutcome(_ outcome: String?, tpsl: String?) -> String? {
+        guard let raw = outcome, let data = raw.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let legs = dict["orders"] as? [[String: Any]], !legs.isEmpty
+        else { return outcome }
+        let leg: [String: Any]?
+        if let tpsl = tpsl {
+            leg = legs.first { ($0["tpsl"] as? String) == tpsl }
+        } else {
+            leg = legs.first
+        }
+        guard let chosen = leg,
+              let legData = try? JSONSerialization.data(withJSONObject: chosen),
+              let legStr = String(data: legData, encoding: .utf8)
+        else { return outcome }
+        return legStr
+    }
+
     /// Mint a fresh opaque id that links the legs of a TP/SL bracket as
     /// one-cancels-the-other. The id is advisory and only needs to be unique
     /// within a single account's live order set, so a random UUID is
@@ -1283,6 +1420,15 @@ public struct SetPositionTpslResult: Sendable {
     public let takeProfit: OrderHandle?
 }
 
+/// Handles for the legs placed by ``Arca/openWithBracket(path:objectId:market:side:size:orderType:price:leverage:isolated:timeInForce:applicationFeeTenthsBps:takeProfitPx:stopLossPx:triggersAreMarket:grouping:)``.
+/// All three handles are backed by the **single** bracket operation; `takeProfit`
+/// / `stopLoss` are `nil` when their trigger price was not provided.
+public struct OpenBracketResult: Sendable {
+    public let entry: OrderHandle
+    public let takeProfit: OrderHandle?
+    public let stopLoss: OrderHandle?
+}
+
 // MARK: - Exchange Enums
 
 public enum OrderSide: String, Codable, Sendable {
@@ -1395,4 +1541,36 @@ private struct ModifyOrderBody: Encodable {
     let realmId: String
     let path: String
     let newSize: String
+}
+
+/// One leg of a ``PlaceOrderBatchBody``. Optional fields are omitted from the
+/// JSON when `nil` (Swift's default `Encodable` behavior), so the entry leg and
+/// the unsized trigger legs share one shape. Mirrors the platform's
+/// `dto.PlaceOrderBatchLeg`. `oco_group_id` is deliberately absent — the venue
+/// server-stamps the shared group id on the trigger legs.
+private struct BatchLegBody: Encodable {
+    let market: String
+    let side: String
+    var orderType: String? = nil
+    let size: String
+    var price: String? = nil
+    var leverage: Int? = nil
+    var reduceOnly: Bool? = nil
+    var timeInForce: String? = nil
+    var applicationFeeTenthsBps: Int? = nil
+    var isTrigger: Bool? = nil
+    var triggerPx: String? = nil
+    var isMarket: Bool? = nil
+    var tpsl: String? = nil
+    var sizeToMax: Bool? = nil
+    var isolated: Bool? = nil
+}
+
+/// Request body for the atomic batch endpoint. One signed
+/// `eip712.OrderBatchAction` is built server-side over `orders[] + grouping`.
+private struct PlaceOrderBatchBody: Encodable {
+    let realmId: String
+    let path: String
+    let grouping: String
+    let orders: [BatchLegBody]
 }
