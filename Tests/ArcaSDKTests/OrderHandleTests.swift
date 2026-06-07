@@ -356,7 +356,7 @@ final class OrderHandleTests: XCTestCase {
         let resizeHandle = handle.resize("0.75")
         let result = try await resizeHandle.settled
 
-        XCTAssertEqual(capturedPath, "/op/order/btc-buy-1/modify/0.75")
+        XCTAssertEqual(capturedPath, "/op/modify/btc-buy-1-0.75")
         XCTAssertEqual(capturedObjectId, "obj_exchange")
         XCTAssertEqual(capturedOrderId, "ord_abc")
         XCTAssertEqual(capturedNewSize, "0.75")

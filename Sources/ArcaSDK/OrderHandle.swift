@@ -255,11 +255,13 @@ public final class OrderHandle: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - newSize: The new total order size.
-    ///   - path: Optional operation path for idempotency. Defaults to
-    ///     `<placementPath>/modify/<newSize>`. Distinct resizes need distinct paths.
+    ///   - path: Optional operation path for idempotency. Defaults to the
+    ///     placement path with `/op/order/` replaced by `/op/modify/`, then
+    ///     `-<newSize>` appended. Distinct resizes need distinct paths.
     /// - Returns: An ``OperationHandle`` for the resize operation.
     public func resize(_ newSize: String, path: String? = nil) -> OperationHandle<OrderOperationResponse> {
-        let modifyPath = path ?? "\(placementPath)/modify/\(newSize)"
+        let modifyPath = path
+            ?? placementPath.replacingOccurrences(of: "/op/order/", with: "/op/modify/") + "-\(newSize)"
         let objectId = self.objectId
         let inner = self.inner
         let deps = self.deps
