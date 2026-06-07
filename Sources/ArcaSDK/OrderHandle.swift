@@ -5,6 +5,7 @@ public struct OrderHandleDeps: Sendable {
     let getOrder: @Sendable (String, String) async throws -> SimOrderWithFills
     let fillEvents: @Sendable () async -> AsyncStream<(SimFill, RealmEvent)>
     let cancelOrder: @Sendable (String, String, String) -> OperationHandle<OrderOperationResponse>
+    let modifyOrder: @Sendable (String, String, String, String) -> OperationHandle<OrderOperationResponse>
     let waitForSettlement: @Sendable (String) async throws -> Operation
     let listFills: @Sendable (String) async throws -> FillListResponse
 }
@@ -240,6 +241,35 @@ public final class OrderHandle: @unchecked Sendable {
                 let orderId = try Self.extractOrderId(from: response.operation.outcome)
                 let cancelHandle = deps.cancelOrder(cancelPath, objectId, orderId)
                 return try await cancelHandle.submitted
+            },
+            waitForSettlement: deps.waitForSettlement
+        )
+    }
+
+    /// Resize the order to a new total size.
+    ///
+    /// Only **sized** orders can be resized: resting limit orders and sized
+    /// TP/SL triggers. Unsized ("size to max") TP/SL triggers are rejected by
+    /// the venue — they always close the whole position and have no size to
+    /// amend. `newSize` must exceed the order's already-filled quantity.
+    ///
+    /// - Parameters:
+    ///   - newSize: The new total order size.
+    ///   - path: Optional operation path for idempotency. Defaults to
+    ///     `<placementPath>/modify/<newSize>`. Distinct resizes need distinct paths.
+    /// - Returns: An ``OperationHandle`` for the resize operation.
+    public func resize(_ newSize: String, path: String? = nil) -> OperationHandle<OrderOperationResponse> {
+        let modifyPath = path ?? "\(placementPath)/modify/\(newSize)"
+        let objectId = self.objectId
+        let inner = self.inner
+        let deps = self.deps
+
+        return OperationHandle(
+            submit: {
+                let response = try await inner.submitted
+                let orderId = try Self.extractOrderId(from: response.operation.outcome)
+                let modifyHandle = deps.modifyOrder(modifyPath, objectId, orderId, newSize)
+                return try await modifyHandle.submitted
             },
             waitForSettlement: deps.waitForSettlement
         )

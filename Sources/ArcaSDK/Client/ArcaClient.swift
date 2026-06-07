@@ -70,6 +70,10 @@ public final class ArcaClient: @unchecked Sendable {
         try await executeWithAuthRetry(method: "POST", path: path, body: body)
     }
 
+    public func patch<T: Decodable>(_ path: String, query: [String: String]? = nil, body: (any Encodable)? = nil) async throws -> T {
+        try await executeWithAuthRetry(method: "PATCH", path: path, query: query, body: body)
+    }
+
     public func delete<T: Decodable>(_ path: String, query: [String: String]? = nil) async throws -> T {
         try await executeWithAuthRetry(method: "DELETE", path: path, query: query)
     }

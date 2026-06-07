@@ -72,6 +72,7 @@ public enum OperationType: Codable, Sendable, Hashable {
     case order
     case fill
     case cancel
+    case modify
     case feeDistribution
     case adjustment
     case funding
@@ -90,6 +91,7 @@ public enum OperationType: Codable, Sendable, Hashable {
         case .order: return "order"
         case .fill: return "fill"
         case .cancel: return "cancel"
+        case .modify: return "modify"
         case .feeDistribution: return "fee_distribution"
         case .adjustment: return "adjustment"
         case .funding: return "funding"
@@ -110,6 +112,7 @@ public enum OperationType: Codable, Sendable, Hashable {
         case "order": self = .order
         case "fill": self = .fill
         case "cancel": self = .cancel
+        case "modify": self = .modify
         case "fee_distribution": self = .feeDistribution
         case "adjustment": self = .adjustment
         case "funding": self = .funding

@@ -226,6 +226,9 @@ extension Arca {
             cancelOrder: { [self] cancelPath, objId, orderId in
                 self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
             },
+            modifyOrder: { [self] modifyPath, objId, orderId, newSize in
+                self.modifyOrder(path: modifyPath, objectId: objId, orderId: orderId, newSize: newSize)
+            },
             waitForSettlement: { [self] operationId in
                 try await self.waitForSettlement(operationId)
             },
@@ -268,6 +271,36 @@ extension Arca {
             try await client.delete(
                 "/objects/\(objectId)/exchange/orders/\(orderId)",
                 query: ["realmId": realm, "path": path]
+            )
+        }
+    }
+
+    /// Resize a resting order to a new total size.
+    ///
+    /// Only **sized** orders can be resized: resting limit orders and sized
+    /// TP/SL triggers. Unsized ("size to max") TP/SL triggers are rejected by
+    /// the venue — they have no size to amend and always close the whole
+    /// position. `newSize` is the new total size and must exceed the order's
+    /// already-filled quantity. `path` is the per-resize idempotency key.
+    ///
+    /// Returns an ``OperationHandle`` — use `try await handle.settle()` to wait
+    /// for full settlement.
+    ///
+    /// - Parameters:
+    ///   - path: Operation path (idempotency key); distinct resizes need distinct paths
+    ///   - objectId: Exchange Arca object ID
+    ///   - orderId: ID of the order to resize
+    ///   - newSize: New total order size
+    public func modifyOrder(
+        path: String,
+        objectId: String,
+        orderId: String,
+        newSize: String
+    ) -> OperationHandle<OrderOperationResponse> {
+        operationHandle { [self] in
+            try await client.patch(
+                "/objects/\(objectId)/exchange/orders/\(orderId)",
+                body: ModifyOrderBody(realmId: realm, path: path, newSize: newSize)
             )
         }
     }
@@ -375,6 +408,9 @@ extension Arca {
             },
             cancelOrder: { [self] cancelPath, objId, orderId in
                 self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
+            },
+            modifyOrder: { [self] modifyPath, objId, orderId, newSize in
+                self.modifyOrder(path: modifyPath, objectId: objId, orderId: orderId, newSize: newSize)
             },
             waitForSettlement: { [self] operationId in
                 try await self.waitForSettlement(operationId)
@@ -649,6 +685,9 @@ extension Arca {
             },
             cancelOrder: { [self] cancelPath, objId, orderId in
                 self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
+            },
+            modifyOrder: { [self] modifyPath, objId, orderId, newSize in
+                self.modifyOrder(path: modifyPath, objectId: objId, orderId: orderId, newSize: newSize)
             },
             waitForSettlement: { [self] operationId in
                 try await self.waitForSettlement(operationId)
@@ -1318,4 +1357,10 @@ private struct PlaceOrderRequest: Encodable {
     /// markets such as HIP-3 (`hl:1:*`). Encoded as `nil` (omitted)
     /// by default so existing call sites don't change shape.
     let isolated: Bool?
+}
+
+private struct ModifyOrderBody: Encodable {
+    let realmId: String
+    let path: String
+    let newSize: String
 }

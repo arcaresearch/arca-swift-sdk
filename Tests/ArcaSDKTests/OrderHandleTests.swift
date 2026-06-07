@@ -105,6 +105,7 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in fatalError("unexpected") },
             fillEvents: { fatalError("unexpected") },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in fatalError("unexpected") },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -136,6 +137,7 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in fatalError("unexpected") },
             fillEvents: { fatalError("unexpected") },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in fatalError("unexpected") },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -193,6 +195,7 @@ final class OrderHandleTests: XCTestCase {
                 }
             },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in fatalError("unexpected") },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -244,6 +247,7 @@ final class OrderHandleTests: XCTestCase {
                     waitForSettlement: { _ in cancelOp }
                 )
             },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in cancelOp },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -287,6 +291,7 @@ final class OrderHandleTests: XCTestCase {
                     waitForSettlement: { _ in cancelOp }
                 )
             },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in cancelOp },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -302,6 +307,100 @@ final class OrderHandleTests: XCTestCase {
         _ = try await cancelHandle.settled
 
         XCTAssertEqual(capturedCancelPath, "/op/order/custom-cancel")
+    }
+
+    // MARK: - Resize Tests
+
+    func testResizeForwardsNewSizeAndAutoPath() async throws {
+        let op = makeOrderOperation(state: .completed, outcome: "ord_abc")
+        let response = OrderOperationResponse(operation: op)
+
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { _ in op }
+        )
+
+        var capturedPath: String?
+        var capturedObjectId: String?
+        var capturedOrderId: String?
+        var capturedNewSize: String?
+
+        let modifyOp = makeOrderOperation(id: "op_modify_1", state: .completed)
+        let modifyResponse = OrderOperationResponse(operation: modifyOp)
+
+        let deps = OrderHandleDeps(
+            getOrder: { _, _ in fatalError("unexpected") },
+            fillEvents: { fatalError("unexpected") },
+            cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { path, objId, ordId, newSize in
+                capturedPath = path
+                capturedObjectId = objId
+                capturedOrderId = ordId
+                capturedNewSize = newSize
+                return OperationHandle<OrderOperationResponse>(
+                    submit: { modifyResponse },
+                    waitForSettlement: { _ in modifyOp }
+                )
+            },
+            waitForSettlement: { _ in modifyOp },
+            listFills: { _ in fatalError("unexpected") }
+        )
+
+        let handle = OrderHandle(
+            inner: inner,
+            objectId: "obj_exchange",
+            placementPath: "/op/order/btc-buy-1",
+            deps: deps
+        )
+
+        let resizeHandle = handle.resize("0.75")
+        let result = try await resizeHandle.settled
+
+        XCTAssertEqual(capturedPath, "/op/order/btc-buy-1/modify/0.75")
+        XCTAssertEqual(capturedObjectId, "obj_exchange")
+        XCTAssertEqual(capturedOrderId, "ord_abc")
+        XCTAssertEqual(capturedNewSize, "0.75")
+        XCTAssertEqual(result.operation.state, .completed)
+    }
+
+    func testResizeWithCustomPath() async throws {
+        let op = makeOrderOperation(state: .completed, outcome: "ord_abc")
+        let response = OrderOperationResponse(operation: op)
+
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { _ in op }
+        )
+
+        var capturedPath: String?
+        let modifyOp = makeOrderOperation(id: "op_modify_2", state: .completed)
+        let modifyResponse = OrderOperationResponse(operation: modifyOp)
+
+        let deps = OrderHandleDeps(
+            getOrder: { _, _ in fatalError("unexpected") },
+            fillEvents: { fatalError("unexpected") },
+            cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { path, _, _, _ in
+                capturedPath = path
+                return OperationHandle<OrderOperationResponse>(
+                    submit: { modifyResponse },
+                    waitForSettlement: { _ in modifyOp }
+                )
+            },
+            waitForSettlement: { _ in modifyOp },
+            listFills: { _ in fatalError("unexpected") }
+        )
+
+        let handle = OrderHandle(
+            inner: inner,
+            objectId: "obj_exchange",
+            placementPath: "/op/order/btc-buy-1",
+            deps: deps
+        )
+
+        _ = try await handle.resize("2", path: "/op/modify/custom").settled
+
+        XCTAssertEqual(capturedPath, "/op/modify/custom")
     }
 
     // MARK: - IOC Partial Fill Tests
@@ -330,6 +429,7 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in orderWithFills },
             fillEvents: { AsyncStream { $0.finish() } },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in fatalError("unexpected") },
             listFills: { _ in fatalError("unexpected") }
         )
@@ -368,6 +468,7 @@ final class OrderHandleTests: XCTestCase {
             getOrder: { _, _ in orderWithFills },
             fillEvents: { AsyncStream { $0.finish() } },
             cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
             waitForSettlement: { _ in fatalError("unexpected") },
             listFills: { _ in fatalError("unexpected") }
         )
