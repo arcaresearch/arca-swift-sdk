@@ -26,7 +26,7 @@ extension Arca {
     ) -> OperationHandle<CreatePaymentLinkResponse> {
         let metadataStr: String? = {
             guard let metadata = metadata,
-                  let data = try? JSONSerialization.data(withJSONObject: metadata) else {
+                  let data = JSONSafe.data(from: metadata) else {
                 return nil
             }
             return String(data: data, encoding: .utf8)

@@ -544,4 +544,110 @@ final class WebSocketManagerTests: XCTestCase {
 
         XCTAssertEqual(count.value, 1)
     }
+
+    // MARK: - Malformed payload hardening (NSInvalidArgumentException)
+
+    /// A `candles.updated` frame whose `candle` field is a JSON *fragment*
+    /// (a bare number rather than an object) must be skipped, not crash the
+    /// process. Before the `JSONSafe`/`isValidJSONObject` guard,
+    /// `JSONSerialization.data(withJSONObject:)` raised an Obj-C
+    /// `NSInvalidArgumentException` that `try?` could not catch, aborting the
+    /// host app with `SIGABRT`. This test would crash the test runner without
+    /// the fix.
+    func testCandlesUpdatedFragmentCandleIsSkippedWithoutCrashing() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let events = await manager.events
+
+        let received = SendableBox<[RealmEvent]>([])
+        let consumer = Task {
+            for await event in events {
+                received.update { $0.append(event) }
+            }
+        }
+
+        // `candle` is a bare number (fragment) — the exact off-the-wire shape
+        // that triggered the production crash.
+        await manager.injectMessage(
+            #"{"type":"candles.updated","candles":[{"market":"hl:0:BTC","interval":"1m","candle":0}]}"#)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        let candleEvents = received.value.filter { $0.type == EventType.candleUpdated.rawValue }
+        XCTAssertTrue(candleEvents.isEmpty,
+                      "A fragment `candle` value must be skipped, emitting no candle event")
+    }
+
+    /// Positive control: a well-formed `candles.updated` frame still decodes and
+    /// emits a `candle.updated` event after the guard is added.
+    func testCandlesUpdatedValidCandleStillEmits() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let events = await manager.events
+
+        let received = SendableBox<[RealmEvent]>([])
+        let consumer = Task {
+            for await event in events {
+                received.update { $0.append(event) }
+            }
+        }
+
+        await manager.injectMessage(#"""
+        {"type":"candles.updated","candles":[{"market":"hl:0:BTC","interval":"1m","candle":{"t":1,"o":"100","h":"110","l":"90","c":"105","v":"12","n":3}}]}
+        """#)
+
+        let deadline = Date().addingTimeInterval(0.5)
+        while received.value.allSatisfy({ $0.type != EventType.candleUpdated.rawValue }),
+              Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        consumer.cancel()
+
+        let candleEvents = received.value.filter { $0.type == EventType.candleUpdated.rawValue }
+        XCTAssertEqual(candleEvents.count, 1, "A valid candle should emit exactly one candle event")
+        XCTAssertEqual(candleEvents.first?.market, "hl:0:BTC")
+        XCTAssertEqual(candleEvents.first?.interval, "1m")
+        XCTAssertEqual(candleEvents.first?.candle?.c, "105")
+    }
+
+    /// A `watch_snapshot` frame whose `valuation` is a fragment must be skipped
+    /// rather than aborting the process (same Obj-C exception class as the
+    /// candle path).
+    func testWatchSnapshotFragmentValuationIsSkippedWithoutCrashing() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let events = await manager.events
+
+        let received = SendableBox<[RealmEvent]>([])
+        let consumer = Task {
+            for await event in events {
+                received.update { $0.append(event) }
+            }
+        }
+
+        // Both the single `valuation` and a `valuations` map entry are fragments.
+        await manager.injectMessage(#"""
+        {"type":"watch_snapshot","watchId":"w1","path":"/a","valuation":42,"valuations":{"/b":"oops"}}
+        """#)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        let valuationEvents = received.value.filter { $0.type == EventType.objectValuation.rawValue }
+        XCTAssertTrue(valuationEvents.isEmpty,
+                      "Fragment valuation values must be skipped, emitting no valuation event")
+    }
 }

@@ -760,7 +760,7 @@ public actor WebSocketManager {
                     guard let market = item["market"] as? String,
                           let interval = item["interval"] as? String,
                           let candleRaw = item["candle"],
-                          let candleData = try? JSONSerialization.data(withJSONObject: candleRaw),
+                          let candleData = JSONSafe.data(from: candleRaw),
                           let candle = try? JSONDecoder().decode(Candle.self, from: candleData) else {
                         continue
                     }
@@ -785,7 +785,7 @@ public actor WebSocketManager {
                 // Single-object valuation
                 if let valRaw = json["valuation"],
                    let pathStr = json["path"] as? String,
-                   let valData = try? JSONSerialization.data(withJSONObject: valRaw),
+                   let valData = JSONSafe.data(from: valRaw),
                    let valuation = try? JSONDecoder().decode(ObjectValuation.self, from: valData) {
                     let syntheticEvent = RealmEvent(
                         type: EventType.objectValuation.rawValue,
@@ -800,7 +800,7 @@ public actor WebSocketManager {
                 // Multi-object valuations map
                 if let valsRaw = json["valuations"] as? [String: Any] {
                     for (objPath, valObj) in valsRaw {
-                        if let valData = try? JSONSerialization.data(withJSONObject: valObj),
+                        if let valData = JSONSafe.data(from: valObj),
                            let valuation = try? JSONDecoder().decode(ObjectValuation.self, from: valData) {
                             let syntheticEvent = RealmEvent(
                                 type: EventType.objectValuation.rawValue,

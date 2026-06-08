@@ -792,7 +792,7 @@ extension Arca {
             leg = legs.first
         }
         guard let chosen = leg,
-              let legData = try? JSONSerialization.data(withJSONObject: chosen),
+              let legData = JSONSafe.data(from: chosen),
               let legStr = String(data: legData, encoding: .utf8)
         else { return outcome }
         return legStr
