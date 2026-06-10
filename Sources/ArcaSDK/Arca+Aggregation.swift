@@ -361,7 +361,8 @@ extension Arca {
         if let agg = aggStream.aggregation.value {
             initialChart.append(EquityPoint(
                 timestamp: iso.string(from: Date()),
-                equityUsd: agg.totalEquityUsd
+                equityUsd: agg.totalEquityUsd,
+                status: .open
             ))
         }
 
@@ -458,7 +459,8 @@ extension Arca {
 
                     let livePoint = EquityPoint(
                         timestamp: iso.string(from: Date()),
-                        equityUsd: liveEquity
+                        equityUsd: liveEquity,
+                        status: .open
                     )
                     var allPoints = historicalBox.value
                     allPoints.append(livePoint)
@@ -662,7 +664,8 @@ extension Arca {
             initialChart.append(PnlPoint(
                 timestamp: iso.string(from: Date()),
                 pnlUsd: livePnlStr,
-                equityUsd: agg.totalEquityUsd
+                equityUsd: agg.totalEquityUsd,
+                status: .open
             ))
             if anchor == .equity {
                 applyEquityAnchor(to: &initialChart)
@@ -798,7 +801,8 @@ extension Arca {
                     let livePoint = PnlPoint(
                         timestamp: iso.string(from: Date()),
                         pnlUsd: livePnlStr,
-                        equityUsd: agg.totalEquityUsd
+                        equityUsd: agg.totalEquityUsd,
+                        status: .open
                     )
                     var allPoints = historicalBox.value
                     allPoints.append(livePoint)

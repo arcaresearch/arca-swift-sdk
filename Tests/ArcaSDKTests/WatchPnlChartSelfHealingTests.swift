@@ -96,4 +96,41 @@ final class WatchPnlChartSelfHealingTests: XCTestCase {
             "watchPnlChart must NOT copy the last historical point's pnl/equity onto the boundary point — that is the *previously closed* bucket and produces an off-by-one boundary value."
         )
     }
+
+    /// Gobi Kotlin-SDK v1.0.0 feedback (2026-06-09): the SDK-appended live
+    /// point derives from the live aggregation (equity including unrealized
+    /// P&L), while historical buckets come from the server projection — when
+    /// the two bases diverge, the chart draws a cliff at the tip that clients
+    /// could only detect by timestamp inference. Every synthetic live point
+    /// ("now"-stamped construction) must therefore carry `status: .open` so
+    /// consumers can identify and handle it explicitly.
+    ///
+    /// Boundary-promotion points (stamped from `boundaryDate`) are
+    /// intentionally NOT stamped — they become historical.
+    func testEverySyntheticLivePointIsStampedOpen() throws {
+        let source = try loadAggregationSource()
+        guard let equityBody = functionBody(in: source, named: "watchEquityChart", until: "public func watchPnlChart(") else {
+            XCTFail("watchEquityChart not found in source"); return
+        }
+        guard let pnlBody = functionBody(in: source, named: "watchPnlChart", until: "public static func computeChartRange") else {
+            XCTFail("watchPnlChart not found in source"); return
+        }
+
+        for (name, body) in [("watchEquityChart", equityBody), ("watchPnlChart", pnlBody)] {
+            let liveStamp = ".string(from: Date())"
+            var count = 0
+            var searchStart = body.startIndex
+            while let range = body.range(of: liveStamp, range: searchStart..<body.endIndex) {
+                count += 1
+                let windowEnd = body.index(range.lowerBound, offsetBy: 260, limitedBy: body.endIndex) ?? body.endIndex
+                let window = body[range.lowerBound..<windowEnd]
+                XCTAssertTrue(
+                    window.contains("status: .open"),
+                    "\(name): synthetic live point #\(count) is missing `status: .open` — consumers must be able to identify the SDK-appended live tip without timestamp inference. Window:\n\(window)"
+                )
+                searchStart = range.upperBound
+            }
+            XCTAssertGreaterThanOrEqual(count, 3, "\(name): expected at least 3 synthetic live point constructions, found \(count)")
+        }
+    }
 }
