@@ -77,7 +77,7 @@ public func mapAPIError(code: String, message: String, errorId: String?) -> Arca
     case "UNAUTHORIZED", "UNAUTHENTICATED":
         return .unauthorized(message: message, errorId: errorId)
 
-    case "FORBIDDEN":
+    case "FORBIDDEN", "REALM_SCOPE_MISMATCH":
         return .forbidden(message: message, errorId: errorId)
 
     case "NOT_FOUND", "USER_NOT_FOUND", "REALM_NOT_FOUND", "OBJECT_NOT_FOUND",

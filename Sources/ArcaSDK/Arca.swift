@@ -95,10 +95,29 @@ public final class Arca: Sendable {
         Task { await initialTokenManager.attachLogger(initialLogger) }
 
         let mgr = self.tokenManager
-        var onUnauthorized: (@Sendable () async throws -> String)?
+        // The ws manager is constructed after the HTTP client; the refresh
+        // callback captures this box so a 403-triggered refresh can force the
+        // live socket onto the new identity.
+        let wsBox = SendableBox<WebSocketManager?>(nil)
+        var onUnauthorized: (@Sendable (AuthRefreshTrigger) async throws -> String)?
         var wsGetToken: (@Sendable () async throws -> String)?
         if tokenProvider != nil {
-            onUnauthorized = { try await mgr.refreshToken() }
+            onUnauthorized = { trigger in
+                let fresh = try await mgr.refreshToken()
+                if trigger == .forbidden, let sock = wsBox.value {
+                    // The cached token was valid but its scope no longer
+                    // matched the request (e.g. the app switched signed-in
+                    // users). A live WebSocket session is still authenticated
+                    // under the old identity — force it to re-auth and
+                    // re-subscribe with the fresh token. A disconnected socket
+                    // needs no force: its next connect pulls a fresh token via
+                    // getToken.
+                    let live = await sock.status != .disconnected
+                    await sock.updateToken(fresh)
+                    if live { await sock.reconnect() }
+                }
+                return fresh
+            }
             wsGetToken = { try await mgr.refreshToken() }
         }
 
@@ -123,6 +142,8 @@ public final class Arca: Sendable {
             getToken: wsGetToken,
             logger: self.log
         )
+        let createdWS = self.ws
+        wsBox.update { $0 = createdWS }
 
         if tokenProvider != nil {
             let weakClient = self.client

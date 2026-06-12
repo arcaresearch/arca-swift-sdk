@@ -1,12 +1,24 @@
 import Foundation
 
+/// Why the client is asking for a fresh credential:
+/// - `unauthorized` — HTTP 401: the credential is invalid or expired.
+/// - `forbidden` — HTTP 403 `FORBIDDEN` / `REALM_SCOPE_MISMATCH`: the
+///   credential is still valid but its scope no longer covers the request
+///   (e.g. the app switched signed-in users, so the provider would now
+///   mint a token for a different identity).
+public enum AuthRefreshTrigger: Sendable {
+    case unauthorized
+    case forbidden
+}
+
 /// Low-level HTTP client for the Arca API.
 ///
 /// Uses `URLSession` for networking. Handles:
 /// - Bearer token injection on every request
 /// - Standard `{ success, data, error }` envelope unwrapping
 /// - Automatic retries for transient errors (502/503/504 and network failures)
-/// - Single 401 retry via `onUnauthorized` (token provider refresh)
+/// - Single auth-refresh retry via `onUnauthorized` (token provider refresh)
+///   on 401, and on 403 `FORBIDDEN` / `REALM_SCOPE_MISMATCH`
 ///
 /// Thread-safe via NSLock on the mutable token. HTTP methods run concurrently
 /// (no actor mailbox serialization) so parallel CDN fallback and gap fetches
@@ -22,7 +34,7 @@ public final class ArcaClient: @unchecked Sendable {
     private let session: URLSession
     private let decoder: JSONDecoder
 
-    private let onUnauthorized: (@Sendable () async throws -> String)?
+    private let onUnauthorized: (@Sendable (AuthRefreshTrigger) async throws -> String)?
     private let onAuthError: (@Sendable (Error) -> Void)?
     private let log: ArcaLogger
 
@@ -42,7 +54,7 @@ public final class ArcaClient: @unchecked Sendable {
         token: String,
         baseURL: URL,
         urlSessionConfiguration: URLSessionConfiguration = .default,
-        onUnauthorized: (@Sendable () async throws -> String)? = nil,
+        onUnauthorized: (@Sendable (AuthRefreshTrigger) async throws -> String)? = nil,
         onAuthError: (@Sendable (Error) -> Void)? = nil,
         logger: ArcaLogger = .disabled
     ) {
@@ -89,20 +101,27 @@ public final class ArcaClient: @unchecked Sendable {
         do {
             return try await requestWithRetry(method: method, path: path, query: query, body: body)
         } catch {
-            guard Self.isUnauthorized(error), let onUnauthorized else {
+            // A 403 on a provider-backed client can mean the cached token is
+            // valid but scoped to a different identity than the provider would
+            // now mint for (e.g. the app switched signed-in users). Refresh
+            // once and retry. Without a provider, a 403 is a plain permission
+            // denial: rethrow without emitting onAuthError (only 401s emit it
+            // in that configuration).
+            guard let trigger = Self.authRefreshTrigger(for: error), let onUnauthorized else {
                 if Self.isUnauthorized(error) {
                     onAuthError?(error)
                 }
                 throw error
             }
-            log.notice("auth", "401 received, refreshing token and retrying",
+            let status = trigger == .forbidden ? "403" : "401"
+            log.notice("auth", "\(status) received, refreshing token and retrying",
                        metadata: ["httpMethod": method, "path": path])
             do {
-                let newToken = try await onUnauthorized()
+                let newToken = try await onUnauthorized(trigger)
                 self.token = newToken
                 return try await requestWithRetry(method: method, path: path, query: query, body: body)
             } catch {
-                log.error("auth", "token refresh failed after 401", error: error,
+                log.error("auth", "token refresh failed after \(status)", error: error,
                           metadata: ["httpMethod": method, "path": path])
                 onAuthError?(error)
                 throw error
@@ -113,6 +132,16 @@ public final class ArcaClient: @unchecked Sendable {
     private static func isUnauthorized(_ error: Error) -> Bool {
         if case ArcaError.unauthorized = error { return true }
         return false
+    }
+
+    /// Maps an auth/authz rejection to the refresh trigger it should drive,
+    /// or nil for errors that must not trigger a token refresh.
+    private static func authRefreshTrigger(for error: Error) -> AuthRefreshTrigger? {
+        switch error {
+        case ArcaError.unauthorized: return .unauthorized
+        case ArcaError.forbidden: return .forbidden
+        default: return nil
+        }
     }
 
     // MARK: - Retry Logic
