@@ -1165,6 +1165,45 @@ extension Arca {
         return result
     }
 
+    /// Get open-interest + 24h-notional-volume history for a market.
+    ///
+    /// Each bar tracks open interest (OHLC over the bucket, base-asset units)
+    /// plus the rolling 24h notional volume (`ntlVlm`, USD) and last mark price
+    /// (`mark`) at the bucket close; USD OI ≈ `oiClose * mark`. `market` must be
+    /// a canonical coin id (e.g. `hl:0:BTC`). Deep history (~1 year) is seeded
+    /// from a one-time 0xArchive backfill (`s == "0xa"`).
+    ///
+    /// - Parameters:
+    ///   - market: Canonical coin ID (e.g. `hl:0:BTC`)
+    ///   - interval: OI interval (e.g. `.oneMinute`, `.oneHour`)
+    ///   - startTime: Optional start time in epoch milliseconds
+    ///   - endTime: Optional end time in epoch milliseconds
+    public func getOIHistory(
+        market: String,
+        interval: CandleInterval,
+        startTime: Int? = nil,
+        endTime: Int? = nil
+    ) async throws -> OIHistoryResponse {
+        let key = buildCacheKey("oiHistory", [
+            "market": market,
+            "interval": interval.rawValue,
+            "startTime": startTime.map(String.init),
+            "endTime": endTime.map(String.init),
+        ])
+        if let cached: OIHistoryResponse = historyCache.get(key) {
+            return cached
+        }
+        try Task.checkCancellation()
+        var query: [String: String] = ["interval": interval.rawValue]
+        if let startTime = startTime { query["startTime"] = String(startTime) }
+        if let endTime = endTime { query["endTime"] = String(endTime) }
+        let result: OIHistoryResponse = try await client.get("/exchange/market/oi/\(market)", query: query)
+        if !result.bars.isEmpty {
+            historyCache.set(key, value: result)
+        }
+        return result
+    }
+
     /// Get sparkline close-price arrays for all tracked coins in a single request.
     /// Returns a map of coin name to an array of recent close prices at the
     /// 24 hourly close prices. Sparkline data is pre-computed every ~5 minutes;

@@ -14,6 +14,7 @@ public enum EventType: String, Sendable {
     case midsUpdated = "mids.updated"
     case candleClosed = "candle.closed"
     case candleUpdated = "candle.updated"
+    case oiUpdated = "oi.updated"
     case tradeExecuted = "trade.executed"
     case tradesBatch = "trades.batch"
     case realmCreated = "realm.created"

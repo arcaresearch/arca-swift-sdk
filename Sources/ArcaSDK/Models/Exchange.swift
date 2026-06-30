@@ -702,6 +702,36 @@ public struct CandleEvent: Sendable {
     public let candle: Candle
 }
 
+/// A single open-interest / 24h-notional bar. The OHLC values track open
+/// interest (base-asset units) over the bucket; `ntlVlm` is the rolling 24h
+/// notional volume (USD) at bucket close; `mark` is the last mark price in the
+/// bucket (USD OI ≈ `oiClose * mark`). `s` is the data source (`nil`/`""`
+/// self-recorded, `"0xa"` 0xArchive backfill).
+public struct OIBar: Codable, Sendable {
+    public let t: Int
+    public let oiOpen: String
+    public let oiHigh: String
+    public let oiLow: String
+    public let oiClose: String
+    public let ntlVlm: String
+    public let mark: String?
+    public let s: String?
+}
+
+public struct OIHistoryResponse: Codable, Sendable {
+    public let market: String
+    public let interval: String
+    public let bars: [OIBar]
+}
+
+/// Emitted by ``OIWatchStream`` on each live open-interest bar update.
+public struct OIEvent: Sendable {
+    public let market: String
+    public let interval: CandleInterval
+    public let bar: OIBar
+    public let isClosed: Bool
+}
+
 /// A single trade from the market-wide trade tape.
 public struct MarketTrade: Codable, Sendable {
     public let market: String

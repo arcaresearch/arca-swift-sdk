@@ -366,6 +366,25 @@ public struct CandleWatchStream: Sendable {
     }
 }
 
+// MARK: - OIWatchStream
+
+/// A stream of real-time open-interest bar updates.
+public struct OIWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Async stream of OI bar events (both closed and in-progress).
+    public let updates: AsyncStream<OIEvent>
+    /// Stop listening and unsubscribe from OI updates.
+    public let stop: @Sendable () async -> Void
+
+    /// Returns when the stream is connected. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - CandleChartStream
 
 /// Merges historical candle data with real-time WebSocket candle events.

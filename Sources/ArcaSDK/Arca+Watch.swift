@@ -1051,4 +1051,57 @@ extension Arca {
             }
         )
     }
+
+    /// Watch real-time open-interest + 24h-notional bar updates for one or more
+    /// markets. Resolves once the WebSocket is connected; OI is a Tier-3 ambient
+    /// stream (slow-moving, self-correcting, no gap recovery).
+    ///
+    /// Each `OIEvent` contains a single bar. `isClosed` is true on a finalized
+    /// (rolled-over) bucket. Call `stop()` when done.
+    ///
+    /// - Parameters:
+    ///   - coins: Canonical coin IDs to watch (e.g. `["hl:0:BTC", "hl:0:ETH"]`)
+    ///   - intervals: OI intervals (defaults to `[.oneMinute, .fiveMinutes]`)
+    public func watchOI(coins: [String], intervals: [CandleInterval] = [.oneMinute, .fiveMinutes]) async throws -> OIWatchStream {
+        await ws.ensureConnected()
+
+        let state = SendableBox<WatchStreamState>(.connected)
+
+        let statusStream = await ws.statusStream
+        let statusTask = Task {
+            for await s in statusStream {
+                if s == .disconnected {
+                    state.update { $0 = .reconnecting }
+                } else if s == .connected {
+                    state.update { $0 = .connected }
+                }
+            }
+        }
+
+        await ws.acquireOI(coins: coins, intervals: intervals)
+
+        let oiStream = await ws.oiEvents()
+        let coinSet = Set(coins)
+
+        let updates = AsyncStream<OIEvent> { continuation in
+            let task = Task {
+                for await event in oiStream {
+                    if coinSet.isEmpty || coinSet.contains(event.market) {
+                        continuation.yield(event)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
+        return OIWatchStream(
+            state: state,
+            updates: updates,
+            stop: { [ws] in
+                statusTask.cancel()
+                await ws.releaseOI(coins: coins, intervals: intervals)
+            }
+        )
+    }
 }

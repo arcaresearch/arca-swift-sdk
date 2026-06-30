@@ -29,6 +29,7 @@ public actor WebSocketManager {
 
     private var subscribedMids: (exchange: String, coins: [String])?
     private var subscribedCandles: (coins: [String], intervals: [CandleInterval])?
+    private var subscribedOI: (coins: [String], intervals: [CandleInterval])?
     private var shouldReconnect = false
     private var reconnectAttempt = 0
     private let maxReconnectDelay: TimeInterval
@@ -45,6 +46,7 @@ public actor WebSocketManager {
     private var midsRefs = 0
     private var midsExchange = "sim"
     private var candleRefCoins: [String: Set<String>] = [:]
+    private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
     private var unsubTasks: [String: Task<Void, Never>] = [:]
     private var idleDisconnectTask: Task<Void, Never>?
@@ -185,6 +187,18 @@ public actor WebSocketManager {
         sendMessage(.unsubscribeCandles)
     }
 
+    /// Subscribe to real-time open-interest updates for given coins and intervals.
+    public func subscribeOI(coins: [String], intervals: [CandleInterval]) {
+        subscribedOI = (coins, intervals)
+        sendMessage(.subscribeOI(coins: coins, intervals: intervals.map(\.rawValue)))
+    }
+
+    /// Unsubscribe from open-interest updates.
+    public func unsubscribeOI() {
+        subscribedOI = nil
+        sendMessage(.unsubscribeOI)
+    }
+
     // MARK: - Path Watch Management
 
     /// Watch a path. Increments the ref count; sends a `watch` message on first interest.
@@ -318,8 +332,62 @@ public actor WebSocketManager {
         subscribeCandles(coins: allCoins, intervals: intervals)
     }
 
+    /// Acquire interest in open-interest updates.
+    public func acquireOI(coins: [String], intervals: [CandleInterval]) {
+        cancelIdleTimer()
+        for coin in coins {
+            if oiRefCoins[coin] == nil {
+                oiRefCoins[coin] = Set()
+            }
+            for iv in intervals {
+                oiRefCoins[coin]!.insert(iv.rawValue)
+            }
+        }
+        ensureConnected()
+        syncOISubscription()
+    }
+
+    /// Release interest in open-interest updates.
+    public func releaseOI(coins: [String], intervals: [CandleInterval]) {
+        for coin in coins {
+            guard var ivs = oiRefCoins[coin] else { continue }
+            for iv in intervals { ivs.remove(iv.rawValue) }
+            if ivs.isEmpty {
+                oiRefCoins.removeValue(forKey: coin)
+            } else {
+                oiRefCoins[coin] = ivs
+            }
+        }
+        let timerKey = "oi"
+        unsubTasks[timerKey] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.finishOIRelease(timerKey: timerKey)
+        }
+    }
+
+    private func finishOIRelease(timerKey: String) {
+        unsubTasks.removeValue(forKey: timerKey)
+        syncOISubscription()
+        maybeStartIdleTimer()
+    }
+
+    private func syncOISubscription() {
+        if oiRefCoins.isEmpty {
+            unsubscribeOI()
+            return
+        }
+        let allCoins = Array(oiRefCoins.keys)
+        var allIntervals = Set<String>()
+        for ivs in oiRefCoins.values {
+            allIntervals.formUnion(ivs)
+        }
+        let intervals = allIntervals.compactMap { CandleInterval(rawValue: $0) }
+        subscribeOI(coins: allCoins, intervals: intervals)
+    }
+
     private func hasAnyInterest() -> Bool {
-        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !chartHistoryWatches.isEmpty
+        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !oiRefCoins.isEmpty || !chartHistoryWatches.isEmpty
     }
 
     public func watchChartHistory(target: String, kind: String = "path", objectId: String? = nil) -> String {
@@ -488,6 +556,18 @@ public actor WebSocketManager {
                   let interval = CandleInterval(rawValue: intervalStr),
                   let candle = event.candle else { return nil }
             return CandleEvent(market: market, interval: interval, candle: candle)
+        }
+    }
+
+    /// Stream of open-interest bar events (both closed and in-progress updates).
+    public func oiEvents() -> AsyncStream<OIEvent> {
+        filteredStream { event in
+            guard event.type == EventType.oiUpdated.rawValue,
+                  let market = event.market,
+                  let intervalStr = event.interval,
+                  let interval = CandleInterval(rawValue: intervalStr),
+                  let bar = event.bar else { return nil }
+            return OIEvent(market: market, interval: interval, bar: bar, isClosed: event.isClosed ?? false)
         }
     }
 
@@ -702,11 +782,17 @@ public actor WebSocketManager {
                 if let candles = subscribedCandles {
                     sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)))
                 }
+                if let oi = subscribedOI {
+                    sendMessage(.subscribeOI(coins: oi.coins, intervals: oi.intervals.map(\.rawValue)))
+                }
                 if midsRefs > 0 && subscribedMids == nil {
                     sendMessage(.subscribeMids(exchange: midsExchange, coins: []))
                 }
                 if !candleRefCoins.isEmpty && subscribedCandles == nil {
                     syncCandleSubscription()
+                }
+                if !oiRefCoins.isEmpty && subscribedOI == nil {
+                    syncOISubscription()
                 }
                 // Re-watch all paths from ref-counted state
                 for path in pathRefs.keys {
@@ -773,6 +859,31 @@ public actor WebSocketManager {
                     for continuation in eventContinuations.values {
                         continuation.yield(syntheticEvent)
                     }
+                }
+                return
+            }
+
+            // Normalize oi.updated (wire carries the bar under the `oi` key) into a
+            // RealmEvent with the bar populated so oiEvents() can consume it.
+            if msgType == "oi.updated",
+               let market = json["market"] as? String,
+               let interval = json["interval"] as? String,
+               let barRaw = json["oi"],
+               let barData = JSONSafe.data(from: barRaw),
+               let bar = try? JSONDecoder().decode(OIBar.self, from: barData) {
+                if let seq = json["deliverySeq"] as? Int {
+                    checkDeliveryGap(seq)
+                }
+                let isClosed = json["isClosed"] as? Bool ?? false
+                let syntheticEvent = RealmEvent(
+                    type: EventType.oiUpdated.rawValue,
+                    market: market,
+                    interval: interval,
+                    bar: bar,
+                    isClosed: isClosed
+                )
+                for continuation in eventContinuations.values {
+                    continuation.yield(syntheticEvent)
                 }
                 return
             }

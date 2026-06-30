@@ -9,6 +9,8 @@ enum OutboundMessage: Encodable {
     case unsubscribeMids
     case subscribeCandles(coins: [String], intervals: [String])
     case unsubscribeCandles
+    case subscribeOI(coins: [String], intervals: [String])
+    case unsubscribeOI
     case watchChartHistory(watchId: String, target: String, kind: String, objectId: String?)
     case unwatchChartHistory(watchId: String)
     case ping
@@ -40,6 +42,12 @@ enum OutboundMessage: Encodable {
             try container.encode(true, forKey: .batch)
         case .unsubscribeCandles:
             try container.encode("unsubscribe_candles", forKey: .action)
+        case .subscribeOI(let coins, let intervals):
+            try container.encode("subscribe_oi", forKey: .action)
+            try container.encode(coins, forKey: .coins)
+            try container.encode(intervals, forKey: .intervals)
+        case .unsubscribeOI:
+            try container.encode("unsubscribe_oi", forKey: .action)
         case .watchChartHistory(let watchId, let target, let kind, let objectId):
             try container.encode("watch_chart_history", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
