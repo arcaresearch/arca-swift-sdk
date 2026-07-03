@@ -1090,6 +1090,58 @@ final class CandleChartTests: XCTestCase {
         XCTAssertEqual(chunks.last!.key, "2026-12")
     }
 
+    // MARK: - detectSeamStart (live bucket-gap detection)
+
+    func testDetectSeamStartFindsSkippedBuckets() {
+        // Last held bucket 180000, incoming 420000 skips 240000..360000.
+        XCTAssertEqual(detectSeamStart(prevLatestT: 180_000, incomingT: 420_000, intervalMs: 60_000), 180_000)
+    }
+
+    func testDetectSeamStartIgnoresAdjacentBucket() {
+        XCTAssertNil(detectSeamStart(prevLatestT: 180_000, incomingT: 240_000, intervalMs: 60_000))
+    }
+
+    func testDetectSeamStartIgnoresSameBucketUpdate() {
+        XCTAssertNil(detectSeamStart(prevLatestT: 180_000, incomingT: 180_000, intervalMs: 60_000))
+    }
+
+    func testDetectSeamStartIgnoresOutOfOrderCandle() {
+        // A candle.closed arriving after the next bucket's candle.updated.
+        XCTAssertNil(detectSeamStart(prevLatestT: 240_000, incomingT: 180_000, intervalMs: 60_000))
+    }
+
+    func testDetectSeamStartIgnoresEmptyChart() {
+        XCTAssertNil(detectSeamStart(prevLatestT: 0, incomingT: 420_000, intervalMs: 60_000))
+    }
+
+    /// End-to-end behaviour testing of the seam-heal fetch requires a mocked
+    /// WS + HTTP fixture pair driving the full factory; pin the structural
+    /// wiring instead (same approach as WatchPnlChartSelfHealingTests). The
+    /// seam-heal path is what repairs charts when candles are missed while
+    /// the socket stays nominally connected (upstream ingest stalls), so
+    /// removing any of these markers silently regresses chart healing.
+    func testWatchCandleChartContainsSeamHealingWiring() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ArcaSDKTests/
+            .deletingLastPathComponent()  // Tests/
+            .deletingLastPathComponent()  // sdk/swift/
+            .appendingPathComponent("Sources/ArcaSDK/Arca+CandleChart.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        let markers: [(label: String, marker: String)] = [
+            ("data-driven seam detection in the candle event loop", "detectSeamStart("),
+            ("seam heal fetch closure", "let healSeam"),
+            ("seam heal cooldown constant", "seamHealCooldownMs"),
+            ("deliverySeq gap handler registration", "ws.onGap"),
+            ("gap handler removal on stop", "removeGapHandler"),
+            ("gap task cancellation in onTermination", "gapTask.cancel()"),
+            ("failed heal re-arms the seam", "s.seamFrom = s.seamFrom.map { min($0, from) } ?? from"),
+        ]
+        for (label, marker) in markers {
+            XCTAssertTrue(source.contains(marker), "watchCandleChart missing marker '\(marker)' (\(label))")
+        }
+    }
+
     // MARK: - Cross-SDK chunk key verification
 
     func testChunkKeysMatchGoBackend() {

@@ -2,6 +2,31 @@ import Foundation
 
 private let gapRecoveryCandles = 50
 private let defaultLoadCount = 300
+/// Minimum spacing between data-driven seam-heal refetches (ms).
+private let seamHealCooldownMs = 10_000
+
+/// Shared state for data-driven seam healing (live bucket-gap detection
+/// and deliverySeq-gap recovery). Guarded by the enclosing `SendableBox`.
+private struct SeamHealState: Sendable {
+    /// Earliest armed seam start, or nil when disarmed.
+    var seamFrom: Int?
+    /// Single-flight flag for the in-progress heal fetch.
+    var healing = false
+    /// Wall-clock ms of the last heal/recovery trigger (cooldown anchor).
+    var lastHealAtMs = 0
+}
+
+/// Detect a bucket seam: a live candle whose bucket skips ahead of the last
+/// held bucket by more than one interval means at least one whole bucket is
+/// missing in between (either a quiet market or candles missed while the
+/// socket stayed nominally connected, e.g. an upstream ingest stall).
+/// Returns the start of the seam window (the last held bucket, so the
+/// possibly-partial bar is refetched too), or nil when there is no seam.
+func detectSeamStart(prevLatestT: Int, incomingT: Int, intervalMs: Int) -> Int? {
+    guard prevLatestT > 0 else { return nil }
+    guard incomingT - prevLatestT > intervalMs else { return nil }
+    return prevLatestT
+}
 
 private struct PendingCandleRange: Sendable {
     let from: Int
@@ -87,7 +112,11 @@ extension Arca {
     /// real-time WebSocket updates. The candle array stays sorted and deduped;
     /// new bars appear automatically as candle events arrive.
     ///
-    /// On WebSocket reconnection, recent candles are refetched to fill any gap.
+    /// On WebSocket reconnection, recent candles are refetched to fill any
+    /// gap. The stream also self-heals seams detected in the live data
+    /// itself: a delivery-sequence gap or a live candle that skips past the
+    /// last held bucket triggers a throttled refetch of the affected window,
+    /// so server-side backfill corrections reach already-open charts.
     ///
     /// Use ``CandleChartStream/ensureRange`` when the visible viewport changes
     /// (zoom, resize, jump to date). Use ``CandleChartStream/loadMore`` for
@@ -118,6 +147,8 @@ extension Arca {
         let reachedStartBox = SendableBox<Bool>(false)
         let coverage = CoverageTracker()
         let rangeLoadState = SendableBox(RangeLoadState())
+        let seamState = SendableBox(SeamHealState())
+        let gapHandlerId = SendableBox<UUID?>(nil)
 
         await ws.acquireCandles(coins: [market], intervals: [interval])
 
@@ -211,16 +242,84 @@ extension Arca {
                 yieldSnapshot(continuation, initial, last)
             }
 
+            // Heal a detected bucket seam by refetching `[seamFrom, latestT]`
+            // (bounded to the last `gapRecoveryCandles` bars). Single-flight
+            // with a cooldown; a seam skipped while cooling down stays armed
+            // in `seamFrom` and is retried on the next live event. Quiet
+            // markets legitimately skip buckets, so an empty refetch simply
+            // disarms the seam.
+            let healSeam: @Sendable (Int) async -> Void = { [weak self] latestT in
+                guard let self = self, !stoppedBox.value else { return }
+                let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+                var from: Int?
+                seamState.update { s in
+                    guard let seamFrom = s.seamFrom, !s.healing,
+                          nowMs - s.lastHealAtMs >= seamHealCooldownMs else { return }
+                    s.seamFrom = nil
+                    s.healing = true
+                    s.lastHealAtMs = nowMs
+                    from = max(seamFrom, latestT - interval.milliseconds * gapRecoveryCandles)
+                }
+                guard let from else { return }
+                do {
+                    let res = try await self.getCandles(
+                        market: market,
+                        interval: interval,
+                        startTime: from,
+                        endTime: latestT
+                    )
+                    if !res.candles.isEmpty {
+                        let snapshot = candlesBox.updateAndGet { arr in
+                            arr.append(contentsOf: res.candles)
+                            arr = dedupCandles(arr)
+                        }
+                        coverage.add(from: from, to: latestT)
+                        if let last = snapshot.last {
+                            yieldSnapshot(continuation, snapshot, last)
+                        }
+                    }
+                } catch {
+                    self.log.warning("candle",
+                                     "seam heal refetch failed",
+                                     error: error,
+                                     metadata: [
+                                         "market": market,
+                                         "interval": interval.rawValue,
+                                     ])
+                    // Re-arm so the next live event retries after the cooldown.
+                    seamState.update { s in
+                        s.seamFrom = s.seamFrom.map { min($0, from) } ?? from
+                    }
+                }
+                seamState.update { $0.healing = false }
+            }
+
             let candleTask = Task { [weak ws] in
                 for await event in candleStream {
                     guard event.market == market,
                           event.interval == interval else { continue }
 
                     let latest = event.candle
+                    let prevLatestT = candlesBox.value.last?.t ?? 0
                     let snapshot = candlesBox.updateAndGet { arr in
                         applyCandle(latest, to: &arr)
                     }
-                    
+                    // Data-driven seam detection: arm when the live candle
+                    // skips past the last held bucket, then heal off the
+                    // event loop so fetches never block event processing.
+                    if let seamStart = detectSeamStart(
+                        prevLatestT: prevLatestT,
+                        incomingT: latest.t,
+                        intervalMs: interval.milliseconds
+                    ) {
+                        seamState.update { s in
+                            s.seamFrom = s.seamFrom.map { min($0, seamStart) } ?? seamStart
+                        }
+                    }
+                    if seamState.value.seamFrom != nil {
+                        Task { await healSeam(latest.t) }
+                    }
+
                     // Gate WS-only snapshots until history succeeds
                     if case .loaded = historySnapshot.value {
                         yieldSnapshot(continuation, snapshot, latest)
@@ -291,6 +390,25 @@ extension Arca {
                     await recoverGap()
                 }
             }
+            // Recover when the server-assigned deliverySeq shows dropped
+            // frames (throttled — deliverySeq is connection-wide, so gaps
+            // can burst).
+            let gapTask = Task { [ws] in
+                let id = await ws.onGap { _ in
+                    let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+                    var shouldRecover = false
+                    seamState.update { s in
+                        guard !s.healing,
+                              nowMs - s.lastHealAtMs >= seamHealCooldownMs else { return }
+                        s.lastHealAtMs = nowMs
+                        shouldRecover = true
+                    }
+                    if shouldRecover {
+                        Task { await recoverGap() }
+                    }
+                }
+                gapHandlerId.update { $0 = id }
+            }
 
             let retryTask: Task<Void, Never>? = needsRetry ? Task { [weak self] in
                 var delay: UInt64 = 1_000_000_000
@@ -337,6 +455,7 @@ extension Arca {
                 statusTask.cancel()
                 authTask.cancel()
                 resumeTask.cancel()
+                gapTask.cancel()
                 retryTask?.cancel()
             }
         }
@@ -515,6 +634,9 @@ extension Arca {
             stop: { [ws] in
                 stoppedBox.update { $0 = true }
                 continuationBox.update { $0 = nil }
+                if let gapId = gapHandlerId.value {
+                    await ws.removeGapHandler(gapId)
+                }
                 await ws.releaseCandles(coins: [market], intervals: [interval])
             }
         )
