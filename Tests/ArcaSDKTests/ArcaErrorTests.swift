@@ -44,6 +44,8 @@ final class ArcaErrorTests: XCTestCase {
         let variants = [
             "CONFLICT", "ALREADY_EXISTS", "ALREADY_MEMBER", "ALREADY_DELETED",
             "DUPLICATE_REALM", "ALREADY_REVOKED", "IDEMPOTENCY_VIOLATION",
+            // Order-placement conflicts carry their specific code.
+            "NO_LIQUIDITY", "MARKET_DELISTED",
         ]
         for code in variants {
             let error = mapAPIError(code: code, message: "Conflict", errorId: nil)

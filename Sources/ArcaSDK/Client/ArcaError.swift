@@ -17,7 +17,10 @@ public enum ArcaError: Error, Sendable {
     /// variant (e.g. `OBJECT_NOT_FOUND`, `REALM_NOT_FOUND`).
     case notFound(code: String, message: String, errorId: String?)
 
-    /// Conflict (HTTP 409). Covers duplicates, idempotency violations, etc.
+    /// Conflict (HTTP 409). Covers duplicates, idempotency violations, and
+    /// order-placement conflicts where `code` carries the specific reason:
+    /// `NO_LIQUIDITY` (empty book side, retry) or `MARKET_DELISTED` (market
+    /// delisted, positions settled by the venue).
     case conflict(code: String, message: String, errorId: String?)
 
     /// Unexpected server error (HTTP 500).
@@ -86,7 +89,11 @@ public func mapAPIError(code: String, message: String, errorId: String?) -> Arca
         return .notFound(code: code, message: message, errorId: errorId)
 
     case "CONFLICT", "ALREADY_EXISTS", "ALREADY_MEMBER", "ALREADY_DELETED",
-         "DUPLICATE_REALM", "ALREADY_REVOKED", "IDEMPOTENCY_VIOLATION":
+         "DUPLICATE_REALM", "ALREADY_REVOKED", "IDEMPOTENCY_VIOLATION",
+         // Order-placement conflicts (409): well-formed request the venue can't
+         // fill. NO_LIQUIDITY = empty book side (retry / marketable limit);
+         // MARKET_DELISTED = market delisted, positions settled by the venue.
+         "NO_LIQUIDITY", "MARKET_DELISTED":
         return .conflict(code: code, message: message, errorId: errorId)
 
     case "INTERNAL_ERROR":
