@@ -591,6 +591,15 @@ public struct Market: Codable, Sendable {
     public let index: Int
     public let szDecimals: Int
     public let maxLeverage: Int
+    /// Minimum order notional in USD (`size * price`) for this market. Use
+    /// ``Arca/getMinOrderSize(market:price:reduceOnly:isTrigger:sizeToMax:)`` to
+    /// convert it into a minimum order size in base-asset units, or
+    /// ``Arca/validateOrderSize(market:price:size:reduceOnly:isTrigger:sizeToMax:)``
+    /// to check a size before placing an order. Reduce-only orders and unsized
+    /// (`sizeToMax`) triggers are exempt. Optional for backward compatibility
+    /// with older servers; clients fall back to the venue-wide `getOrderLimits()`
+    /// default when absent.
+    public let minOrderNotionalUsd: Double?
     /// Hyperliquid-specific. Deprecated in favor of `marginModes` — read that
     /// instead. `onlyIsolated == true` is equivalent to `marginModes` being
     /// `["isolated"]`.
@@ -611,6 +620,55 @@ public struct Market: Codable, Sendable {
 public struct SimMetaResponse: Codable, Sendable {
     public let universe: [Market]
     public let marginTables: [String: MarginTable]?
+}
+
+/// Static venue-wide order limits returned by ``Arca/getOrderLimits()``.
+/// Hyperliquid enforces a $10 minimum notional (`size * price`) on every
+/// non-reduce-only order. Reduce-only orders and unsized (`sizeToMax`)
+/// triggers are exempt so dust positions can always be closed.
+public struct OrderLimits: Codable, Sendable {
+    /// Minimum order notional in USD (size * price). Hyperliquid: 10.
+    public let minOrderNotionalUsd: Double
+
+    public init(minOrderNotionalUsd: Double) {
+        self.minOrderNotionalUsd = minOrderNotionalUsd
+    }
+}
+
+/// The smallest valid order for a market at a given price, expressed both as a
+/// base-asset size and its USD notional. Returned by
+/// ``Arca/getMinOrderSize(market:price:reduceOnly:isTrigger:sizeToMax:)``.
+public struct MinOrderSize: Codable, Sendable {
+    /// Minimum order size in base-asset units (decimal string), rounded up to
+    /// the market's `szDecimals` precision so it always clears the notional
+    /// floor. For exempt orders this is a single size tick (`10^-szDecimals`).
+    public let minSize: String
+    /// USD notional floor applied. Zero for exempt (reduce-only / unsized-trigger) orders.
+    public let minNotionalUsd: Double
+
+    public init(minSize: String, minNotionalUsd: Double) {
+        self.minSize = minSize
+        self.minNotionalUsd = minNotionalUsd
+    }
+}
+
+/// Result of ``Arca/validateOrderSize(market:price:size:reduceOnly:isTrigger:sizeToMax:)``.
+public struct OrderSizeValidation: Codable, Sendable {
+    /// True when the order clears the minimum (or is exempt).
+    public let ok: Bool
+    /// Human-readable explanation when `ok` is false; nil when valid.
+    public let reason: String?
+    /// The minimum order size in base-asset units.
+    public let minSize: String
+    /// USD notional floor applied. Zero for exempt orders.
+    public let minNotionalUsd: Double
+
+    public init(ok: Bool, reason: String?, minSize: String, minNotionalUsd: Double) {
+        self.ok = ok
+        self.reason = reason
+        self.minSize = minSize
+        self.minNotionalUsd = minNotionalUsd
+    }
 }
 
 public struct SimMidsResponse: Codable, Sendable {

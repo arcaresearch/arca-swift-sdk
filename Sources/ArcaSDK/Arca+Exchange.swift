@@ -1081,6 +1081,160 @@ extension Arca {
         _ = try await ensureMetaLoaded(forceRefresh: true)
     }
 
+    /// Venue-wide order limits (e.g. the $10 minimum notional). Static; no
+    /// network call. Reduce-only orders and unsized (`sizeToMax`) triggers are
+    /// exempt so dust positions can always be closed.
+    public func getOrderLimits() -> OrderLimits {
+        OrderLimits(minOrderNotionalUsd: 10)
+    }
+
+    /// Compute the minimum valid order size for a market at a given price.
+    ///
+    /// The venue enforces a minimum order **notional** (`size * price`), but a
+    /// UI that takes a size in base-asset units needs that expressed as a
+    /// minimum **size**. This converts the market's `minOrderNotionalUsd` into a
+    /// size, rounded **up** to the market's `szDecimals` precision so the result
+    /// always clears the floor. Reduce-only orders and unsized (`sizeToMax`)
+    /// triggers are exempt (any positive size down to one tick).
+    ///
+    /// - Parameters:
+    ///   - market: The resolved ``Market``.
+    ///   - price: Reference price (mark price for market orders, limit price for limit orders).
+    public func getMinOrderSize(
+        market: Market,
+        price: Double,
+        reduceOnly: Bool = false,
+        isTrigger: Bool = false,
+        sizeToMax: Bool = false
+    ) -> MinOrderSize {
+        computeMinOrderSize(
+            szDecimals: market.szDecimals,
+            minNotionalUsd: market.minOrderNotionalUsd ?? getOrderLimits().minOrderNotionalUsd,
+            price: price,
+            reduceOnly: reduceOnly,
+            isTrigger: isTrigger,
+            sizeToMax: sizeToMax
+        )
+    }
+
+    /// Compute the minimum valid order size for a market id at a given price.
+    /// Fetches (and caches) market metadata via ``market(_:)``; falls back to
+    /// the venue-wide ``getOrderLimits()`` default when the market is unknown or
+    /// carries no `minOrderNotionalUsd`.
+    public func getMinOrderSize(
+        marketId: String,
+        price: Double,
+        reduceOnly: Bool = false,
+        isTrigger: Bool = false,
+        sizeToMax: Bool = false
+    ) async throws -> MinOrderSize {
+        let m = try await market(marketId)
+        return computeMinOrderSize(
+            szDecimals: m?.szDecimals ?? 5,
+            minNotionalUsd: m?.minOrderNotionalUsd ?? getOrderLimits().minOrderNotionalUsd,
+            price: price,
+            reduceOnly: reduceOnly,
+            isTrigger: isTrigger,
+            sizeToMax: sizeToMax
+        )
+    }
+
+    /// Validate an order size against the market's minimum before placing an
+    /// order. Advisory only — the server (sim-exchange and Hyperliquid) remains
+    /// the authoritative enforcement point; use this to gate a UI.
+    public func validateOrderSize(
+        market: Market,
+        price: Double,
+        size: Double,
+        reduceOnly: Bool = false,
+        isTrigger: Bool = false,
+        sizeToMax: Bool = false
+    ) -> OrderSizeValidation {
+        let min = getMinOrderSize(
+            market: market, price: price,
+            reduceOnly: reduceOnly, isTrigger: isTrigger, sizeToMax: sizeToMax
+        )
+        return checkOrderSize(min: min, price: price, size: size, reduceOnly: reduceOnly, isTrigger: isTrigger, sizeToMax: sizeToMax)
+    }
+
+    /// Validate an order size for a market id. Fetches market metadata as needed.
+    public func validateOrderSize(
+        marketId: String,
+        price: Double,
+        size: Double,
+        reduceOnly: Bool = false,
+        isTrigger: Bool = false,
+        sizeToMax: Bool = false
+    ) async throws -> OrderSizeValidation {
+        let min = try await getMinOrderSize(
+            marketId: marketId, price: price,
+            reduceOnly: reduceOnly, isTrigger: isTrigger, sizeToMax: sizeToMax
+        )
+        return checkOrderSize(min: min, price: price, size: size, reduceOnly: reduceOnly, isTrigger: isTrigger, sizeToMax: sizeToMax)
+    }
+
+    private func computeMinOrderSize(
+        szDecimals: Int,
+        minNotionalUsd: Double,
+        price: Double,
+        reduceOnly: Bool,
+        isTrigger: Bool,
+        sizeToMax: Bool
+    ) -> MinOrderSize {
+        let factor = pow(10.0, Double(szDecimals))
+        let tick = 1 / factor
+
+        // Reduce-only and unsized trigger orders are exempt from the notional
+        // minimum — any positive size down to one tick is allowed.
+        if reduceOnly || (isTrigger && sizeToMax) {
+            return MinOrderSize(minSize: formatSizeToDecimals(tick, szDecimals), minNotionalUsd: 0)
+        }
+
+        guard price.isFinite, price > 0 else {
+            return MinOrderSize(minSize: formatSizeToDecimals(tick, szDecimals), minNotionalUsd: minNotionalUsd)
+        }
+
+        // Round up to szDecimals precision. Subtract a tiny epsilon on the
+        // scaled value so floating-point noise on an exact boundary (e.g.
+        // 10 / 100000) doesn't overshoot by a full tick.
+        var minSizeNum = (minNotionalUsd / price * factor - 1e-6).rounded(.up) / factor
+        if minSizeNum < tick { minSizeNum = tick }
+        return MinOrderSize(minSize: formatSizeToDecimals(minSizeNum, szDecimals), minNotionalUsd: minNotionalUsd)
+    }
+
+    private func checkOrderSize(
+        min: MinOrderSize,
+        price: Double,
+        size: Double,
+        reduceOnly: Bool,
+        isTrigger: Bool,
+        sizeToMax: Bool
+    ) -> OrderSizeValidation {
+        guard size.isFinite, size > 0 else {
+            return OrderSizeValidation(ok: false, reason: "Order size must be a positive number.", minSize: min.minSize, minNotionalUsd: min.minNotionalUsd)
+        }
+
+        // Exempt orders (reduce-only / unsized trigger) only need a positive size.
+        if reduceOnly || (isTrigger && sizeToMax) {
+            return OrderSizeValidation(ok: true, reason: nil, minSize: min.minSize, minNotionalUsd: min.minNotionalUsd)
+        }
+
+        let minSizeNum = Double(min.minSize) ?? 0
+        if size < minSizeNum {
+            let notional = price.isFinite ? size * price : 0
+            let notionalStr = String(format: "%.2f", notional)
+            let minNotionalStr = formatNotionalUsd(min.minNotionalUsd)
+            return OrderSizeValidation(
+                ok: false,
+                reason: "Order notional $\(notionalStr) is below venue minimum of $\(minNotionalStr). Minimum size is \(min.minSize).",
+                minSize: min.minSize,
+                minNotionalUsd: min.minNotionalUsd
+            )
+        }
+
+        return OrderSizeValidation(ok: true, reason: nil, minSize: min.minSize, minNotionalUsd: min.minNotionalUsd)
+    }
+
     /// Get current mid prices for all assets.
     public func getMarketMids() async throws -> SimMidsResponse {
         try await client.get("/exchange/market/mids")
@@ -1645,4 +1799,22 @@ private struct PlaceOrderBatchBody: Encodable {
     let path: String
     let grouping: String
     let orders: [BatchLegBody]
+}
+
+/// Format a size to at most `decimals` fractional digits, stripping trailing
+/// zeros, for use as a canonical decimal string (e.g. "0.0001", "3.34", "10").
+private func formatSizeToDecimals(_ value: Double, _ decimals: Int) -> String {
+    if decimals <= 0 { return String(Int(value.rounded())) }
+    var s = String(format: "%.\(decimals)f", value)
+    if s.contains(".") {
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+    }
+    return s.isEmpty ? "0" : s
+}
+
+/// Format a USD notional dropping a trailing `.0` (e.g. 10.0 -> "10", 10.5 -> "10.5").
+private func formatNotionalUsd(_ value: Double) -> String {
+    if value == value.rounded() { return String(Int(value)) }
+    return String(value)
 }
