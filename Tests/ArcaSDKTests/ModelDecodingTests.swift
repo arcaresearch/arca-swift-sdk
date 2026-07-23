@@ -212,6 +212,44 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertEqual(op.state, .completed)
     }
 
+    func testMarketFundingHistoryDecoding() throws {
+        // Market-wide SETTLED funding history (getFundingHistory), distinct from
+        // the account-scoped funding operation above. Second observation omits
+        // premium and source to exercise the optional fields.
+        let json = """
+        {
+            "market": "hl:0:BTC",
+            "funding": [
+                { "t": 1700000000000, "fundingRate": "0.0000125", "premium": "0.00008", "s": "hl" },
+                { "t": 1700003600000, "fundingRate": "0.0000130" }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let resp = try decoder.decode(FundingHistoryResponse.self, from: json)
+        XCTAssertEqual(resp.market, "hl:0:BTC")
+        XCTAssertEqual(resp.funding.count, 2)
+
+        XCTAssertEqual(resp.funding[0].t, 1700000000000)
+        XCTAssertEqual(resp.funding[0].fundingRate, "0.0000125")
+        XCTAssertEqual(resp.funding[0].premium, "0.00008")
+        XCTAssertEqual(resp.funding[0].s, "hl")
+
+        // Optional premium/source absent -> nil, not empty string.
+        XCTAssertEqual(resp.funding[1].t, 1700003600000)
+        XCTAssertEqual(resp.funding[1].fundingRate, "0.0000130")
+        XCTAssertNil(resp.funding[1].premium)
+        XCTAssertNil(resp.funding[1].s)
+    }
+
+    func testMarketFundingHistoryEmptyDecoding() throws {
+        // 200 + empty list is the canonical "no history" response.
+        let json = #"{ "market": "hl:0:BTC", "funding": [] }"#.data(using: .utf8)!
+        let resp = try decoder.decode(FundingHistoryResponse.self, from: json)
+        XCTAssertEqual(resp.market, "hl:0:BTC")
+        XCTAssertTrue(resp.funding.isEmpty)
+    }
+
     func testFillOperationDecoding() throws {
         let json = """
         {

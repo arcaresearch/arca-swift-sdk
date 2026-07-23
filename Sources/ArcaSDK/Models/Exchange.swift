@@ -786,6 +786,24 @@ public struct OIHistoryResponse: Codable, Sendable {
     public let bars: [OIBar]
 }
 
+/// A single SETTLED funding-rate observation for a market. Unlike ``OIBar`` /
+/// ``Candle`` this is not interval-bucketed — it is a raw event at the venue's
+/// real settlement timestamp (`t`, Unix ms), so a market's true funding
+/// schedule is preserved. `fundingRate`/`premium` are settled historical rates,
+/// never predicted (use the ticker's `funding` + `nextFundingTime` for the
+/// current/predicted rate). `s` is the data source (`"hl"`).
+public struct FundingObservation: Codable, Sendable {
+    public let t: Int
+    public let fundingRate: String
+    public let premium: String?
+    public let s: String?
+}
+
+public struct FundingHistoryResponse: Codable, Sendable {
+    public let market: String
+    public let funding: [FundingObservation]
+}
+
 /// Emitted by ``OIWatchStream`` on each live open-interest bar update.
 public struct OIEvent: Sendable {
     public let market: String

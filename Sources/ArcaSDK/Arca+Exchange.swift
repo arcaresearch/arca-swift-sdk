@@ -1372,6 +1372,48 @@ extension Arca {
         return result
     }
 
+    /// Get market-wide SETTLED funding-rate history for a market.
+    ///
+    /// Returns the venue's real settlement series — each observation carries the
+    /// settlement time (`t`, Unix ms), the settled `fundingRate`, and the
+    /// `premium` — in chronological order. This is distinct from the
+    /// account-scoped funding *payments* streamed by ``watchFunding(objectId:)``;
+    /// these are the market-wide rates that drive those payments. `market` must
+    /// be a canonical market id (e.g. `hl:0:BTC`, `hl:1:TSLA`); HIP-3 markets are
+    /// supported where history exists. Funding is an event series, so there is
+    /// no interval. The default window is the trailing 7 days; the documented
+    /// maximum window is 30 days. Values are settled rates, never predicted —
+    /// read the ticker's `funding` + `nextFundingTime` for the current/predicted
+    /// rate.
+    ///
+    /// - Parameters:
+    ///   - market: Canonical market ID (e.g. `hl:0:BTC`)
+    ///   - startTime: Optional start time in epoch milliseconds
+    ///   - endTime: Optional end time in epoch milliseconds
+    public func getFundingHistory(
+        market: String,
+        startTime: Int? = nil,
+        endTime: Int? = nil
+    ) async throws -> FundingHistoryResponse {
+        let key = buildCacheKey("fundingHistory", [
+            "market": market,
+            "startTime": startTime.map(String.init),
+            "endTime": endTime.map(String.init),
+        ])
+        if let cached: FundingHistoryResponse = historyCache.get(key) {
+            return cached
+        }
+        try Task.checkCancellation()
+        var query: [String: String] = [:]
+        if let startTime = startTime { query["startTime"] = String(startTime) }
+        if let endTime = endTime { query["endTime"] = String(endTime) }
+        let result: FundingHistoryResponse = try await client.get("/exchange/market/funding/\(market)", query: query)
+        if !result.funding.isEmpty {
+            historyCache.set(key, value: result)
+        }
+        return result
+    }
+
     /// Get sparkline close-price arrays for all tracked coins in a single request.
     /// Returns a map of coin name to an array of recent close prices at the
     /// 24 hourly close prices. Sparkline data is pre-computed every ~5 minutes;
