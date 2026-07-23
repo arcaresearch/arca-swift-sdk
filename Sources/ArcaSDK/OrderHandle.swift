@@ -135,10 +135,11 @@ public final class OrderHandle: @unchecked Sendable {
                 do {
                     let response = try await inner.submitted
                     let orderId = try Self.extractOrderId(from: response.operation.outcome)
+                    let cloid = Self.extractCloid(from: response.operation.outcome)
 
                     let fillStream = await deps.fillEvents()
                     for await (fill, _) in fillStream {
-                        if fill.orderId.rawValue == orderId {
+                        if Self.fillMatches(fill, orderId: orderId, cloid: cloid) {
                             continuation.yield(fill)
 
                             let detail = try await deps.getOrder(objectId, orderId)
@@ -209,10 +210,11 @@ public final class OrderHandle: @unchecked Sendable {
             do {
                 let response = try await inner.submitted
                 let orderId = try Self.extractOrderId(from: response.operation.outcome)
+                let cloid = Self.extractCloid(from: response.operation.outcome)
 
                 let fillStream = await deps.fillEvents()
                 for await (fill, _) in fillStream {
-                    if fill.orderId.rawValue == orderId {
+                    if Self.fillMatches(fill, orderId: orderId, cloid: cloid) {
                         callback(fill)
                     }
                 }
@@ -317,5 +319,33 @@ public final class OrderHandle: @unchecked Sendable {
             return orderId
         }
         return raw
+    }
+
+    /// The order's client id (Hyperliquid cloid) from the placement outcome. A
+    /// `normalTpsl` bracket child is not a live venue order until the entry
+    /// fills and the venue arms it — until then it has NO venue order id and is
+    /// addressable only by its cloid, so fill matching must also key on it.
+    /// Returns nil when the outcome carries no cloid (e.g. sim orders).
+    private static func extractCloid(from outcome: String?) -> String? {
+        guard let raw = outcome, !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cloid = parsed["cloid"] as? String, !cloid.isEmpty else {
+            return nil
+        }
+        return cloid
+    }
+
+    /// Whether a fill belongs to this order. Matches on the venue order id when
+    /// the order is live, OR on the cloid — the latter is the only handle a
+    /// still-pending bracket child has before the venue assigns it an oid.
+    private static func fillMatches(_ fill: SimFill, orderId: String, cloid: String?) -> Bool {
+        if !fill.orderId.rawValue.isEmpty, fill.orderId.rawValue == orderId {
+            return true
+        }
+        if let cloid, !cloid.isEmpty, let fillCloid = fill.cloid, fillCloid == cloid {
+            return true
+        }
+        return false
     }
 }

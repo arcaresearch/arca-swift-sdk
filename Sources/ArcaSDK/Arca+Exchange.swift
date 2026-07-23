@@ -648,20 +648,32 @@ extension Arca {
         return SetPositionTpslResult(stopLoss: slHandle, takeProfit: tpHandle)
     }
 
-    /// Open a position and attach reduce-only TP/SL triggers in **one atomic
-    /// batch** — Hyperliquid `normalTpsl` parity. The entry and its triggers
-    /// are submitted as a single signed batch to one operation: the whole
-    /// bracket validates and commits at the venue, or none of it does. The
-    /// trigger legs **arm only when the entry fills**, and the venue links them
-    /// with a shared one-cancels-the-other group so a fill on one cancels its
-    /// sibling.
+    /// Open a position and attach reduce-only TP/SL triggers as a linked
+    /// `normalTpsl` bracket — Hyperliquid parity. The entry and its triggers
+    /// are submitted as a single signed batch to one operation; one signature
+    /// links the legs. The trigger legs **arm only when the entry fills**, and
+    /// the venue links them with a shared one-cancels-the-other group so a fill
+    /// on one cancels its sibling.
+    ///
+    /// `normalTpsl` is a **fixed-size parent-order bracket**: each TP/SL child
+    /// defaults to the entry's `size` (a `normalTpsl` child is a fixed-size leg
+    /// of the parent order, not a whole-position trigger). Pass `takeProfitSz`
+    /// / `stopLossSz` (positive base units) for a smaller partial-close child.
+    /// For a **whole-position** TP/SL that sizes to the entire live position
+    /// (Hyperliquid `positionTpsl`), use ``setStopLoss`` / ``setTakeProfit`` /
+    /// ``setPositionTpsl`` instead — a separate trigger-only model with no entry
+    /// leg that is not accepted here.
     ///
     /// Returns one ``OrderHandle`` per leg (`entry`, `takeProfit?`,
     /// `stopLoss?`), all backed by the single bracket operation. At least one
-    /// of `takeProfitPx` / `stopLossPx` is required. By default the TP/SL legs
-    /// are unsized (`sizeToMax`) reduce-only triggers that close the entire
-    /// position; pass `takeProfitSz` / `stopLossSz` (positive base units) to
-    /// make a leg a **sized** partial close instead.
+    /// of `takeProfitPx` / `stopLossPx` is required. Until the entry fills, a
+    /// TP/SL child is not yet a live venue order (no venue order id —
+    /// addressable only by its cloid); cancelling it before activation cancels
+    /// the parent bracket.
+    ///
+    /// A single signature links the legs, but this is **not** a globally
+    /// all-or-none batch: Hyperliquid only guarantees whole-payload rejection
+    /// for pre-validation failures.
     ///
     /// - Note: the venue links a bracket's TP and SL legs as
     ///   one-cancels-the-other, and a fill on either — including a **partial**
@@ -722,16 +734,18 @@ extension Arca {
             )
         ]
         func trigger(_ tpsl: String, _ triggerPx: String, _ sz: String?) -> BatchLegBody {
-            // Sized: a partial reduce-only close of exactly `sz` (reduce-only
-            // caps it at the live position). Unsized: carries no quantity and
-            // closes the whole live position when it fires (size ignored).
-            let sized = !(sz ?? "").isEmpty
+            // A normalTpsl child is FIXED-SIZE: it defaults to the entry's
+            // `size`. An explicit `sz` is a smaller partial-close child. We
+            // never send `sizeToMax` here — that is the whole-position
+            // `positionTpsl` model, which this endpoint rejects (use
+            // setStopLoss / setTakeProfit).
+            let childSize = (sz ?? "").isEmpty ? size : sz!
             return BatchLegBody(
                 market: market, side: closingSide.rawValue,
                 orderType: triggersAreMarket ? OrderType.market.rawValue : OrderType.limit.rawValue,
-                size: sized ? sz! : "0", reduceOnly: true, timeInForce: tif, applicationFeeTenthsBps: feeBps,
+                size: childSize, reduceOnly: true, timeInForce: tif, applicationFeeTenthsBps: feeBps,
                 isTrigger: true, triggerPx: triggerPx, isMarket: triggersAreMarket,
-                tpsl: tpsl, sizeToMax: sized ? nil : true, isolated: isolatedFlag
+                tpsl: tpsl, sizeToMax: nil, isolated: isolatedFlag
             )
         }
         if let tp = takeProfitPx, !tp.isEmpty { orders.append(trigger("tp", tp, takeProfitSz)) }

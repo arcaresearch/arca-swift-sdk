@@ -34,12 +34,14 @@ private func makeOrderOperation(
 private func makeFill(
     id: String = "fill_1",
     orderId: String = "ord_abc",
+    cloid: String? = nil,
     size: String = "0.5",
     price: String = "50000"
 ) -> SimFill {
     SimFill(
         id: SimFillID(id),
         orderId: SimOrderID(orderId),
+        cloid: cloid,
         accountId: SimAccountID("acc_1"),
         realmId: RealmID("rlm_test"),
         market: "BTC",
@@ -218,6 +220,61 @@ final class OrderHandleTests: XCTestCase {
         await fulfillment(of: [fillExpectation], timeout: 2.0)
         XCTAssertEqual(receivedFill?.size, "0.5")
         XCTAssertEqual(receivedFill?.orderId.rawValue, "ord_abc")
+        unsub()
+    }
+
+    func testOnFillMatchesPendingBracketChildByCloid() async throws {
+        // Pending normalTpsl child: outcome carries the cloid but NO venue
+        // orderId, so extractOrderId falls back to the raw outcome. Only cloid
+        // identity can correlate the fill once the venue arms the child.
+        let cloid = "0xdeadbeefdeadbeefdeadbeefdeadbeef"
+        let op = makeOrderOperation(state: .completed,
+            outcome: "{\"orderId\":\"\",\"cloid\":\"\(cloid)\",\"tpsl\":\"tp\"}")
+        let response = OrderOperationResponse(operation: op)
+
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { _ in op }
+        )
+
+        let fillExpectation = expectation(description: "cloid-matched fill received")
+        // The fill's venue orderId is a real oid (not the operation id); only
+        // its cloid ties it to this handle.
+        let matchingFill = makeFill(orderId: "venue-oid-999", cloid: cloid, size: "0.01", price: "72000")
+
+        let deps = OrderHandleDeps(
+            getOrder: { _, _ in fatalError("unexpected") },
+            fillEvents: {
+                AsyncStream { continuation in
+                    let event = RealmEvent(
+                        realmId: "rlm_test", type: "fill.recorded", entityId: "fill_1",
+                        entityPath: nil, summary: nil, operation: nil, event: nil, object: nil,
+                        mids: nil, exchangeState: nil, valuation: nil, path: nil, watchId: nil,
+                        aggregation: nil, market: nil, interval: nil, candle: nil,
+                        fill: matchingFill, funding: nil
+                    )
+                    continuation.yield((matchingFill, event))
+                    continuation.finish()
+                }
+            },
+            cancelOrder: { _, _, _ in fatalError("unexpected") },
+            modifyOrder: { _, _, _, _ in fatalError("unexpected") },
+            waitForSettlement: { _ in fatalError("unexpected") },
+            listFills: { _ in fatalError("unexpected") }
+        )
+
+        let handle = OrderHandle(
+            inner: inner, objectId: "obj_exchange",
+            placementPath: "/op/order/bracket-1", deps: deps
+        )
+
+        var receivedFill: SimFill?
+        let unsub = handle.onFill { fill in
+            receivedFill = fill
+            fillExpectation.fulfill()
+        }
+        await fulfillment(of: [fillExpectation], timeout: 2.0)
+        XCTAssertEqual(receivedFill?.cloid, cloid)
         unsub()
     }
 

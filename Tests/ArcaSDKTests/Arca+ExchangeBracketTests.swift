@@ -49,18 +49,23 @@ final class ArcaExchangeBracketTests: XCTestCase {
         XCTAssertEqual(orders[0]["size"] as? String, "0.01")
         XCTAssertNil(orders[0]["reduceOnly"], "entry must not be reduce-only")
 
+        // normalTpsl children are FIXED-SIZE: they default to the entry's size
+        // and never carry sizeToMax (that is the whole-position positionTpsl
+        // model, which this endpoint rejects).
         let tp = orders.first { ($0["tpsl"] as? String) == "tp" }
         XCTAssertEqual(tp?["side"] as? String, "sell")
         XCTAssertEqual(tp?["reduceOnly"] as? Bool, true)
-        XCTAssertEqual(tp?["sizeToMax"] as? Bool, true)
+        XCTAssertNil(tp?["sizeToMax"], "normalTpsl child must NOT carry sizeToMax")
         XCTAssertEqual(tp?["isTrigger"] as? Bool, true)
         XCTAssertEqual(tp?["triggerPx"] as? String, "72000")
-        XCTAssertEqual(tp?["size"] as? String, "0")
+        XCTAssertEqual(tp?["size"] as? String, "0.01", "defaults to the entry size")
 
         let sl = orders.first { ($0["tpsl"] as? String) == "sl" }
         XCTAssertEqual(sl?["side"] as? String, "sell")
         XCTAssertEqual(sl?["triggerPx"] as? String, "58000")
         XCTAssertEqual(sl?["reduceOnly"] as? Bool, true)
+        XCTAssertNil(sl?["sizeToMax"], "normalTpsl child must NOT carry sizeToMax")
+        XCTAssertEqual(sl?["size"] as? String, "0.01", "defaults to the entry size")
     }
 
     func testOpenWithBracketHandlesResolveOwnOrderId() async throws {
@@ -90,19 +95,21 @@ final class ArcaExchangeBracketTests: XCTestCase {
             path: "/op/bracket/sized", objectId: "obj_1", market: "hl:0:BTC",
             side: .buy, size: "0.02",
             takeProfitPx: "72000", stopLossPx: "58000",
-            takeProfitSz: "0.01" // scale out half; SL stays whole-position
+            takeProfitSz: "0.01" // scale out half; SL defaults to the entry size
         )
         _ = try await result.entry.submitted
 
         let orders = BracketMockProtocol.capturedBatchPosts[0]["orders"] as? [[String: Any]] ?? []
+        // Explicit takeProfitSz → sized partial close (no sizeToMax).
         let tp = orders.first { ($0["tpsl"] as? String) == "tp" }
         XCTAssertEqual(tp?["size"] as? String, "0.01")
         XCTAssertNil(tp?["sizeToMax"], "sized TP must NOT carry sizeToMax")
         XCTAssertEqual(tp?["reduceOnly"] as? Bool, true)
 
+        // No explicit size → defaults to the entry's fixed size (never sizeToMax).
         let sl = orders.first { ($0["tpsl"] as? String) == "sl" }
-        XCTAssertEqual(sl?["size"] as? String, "0")
-        XCTAssertEqual(sl?["sizeToMax"] as? Bool, true)
+        XCTAssertEqual(sl?["size"] as? String, "0.02", "defaults to the entry size")
+        XCTAssertNil(sl?["sizeToMax"], "default SL must NOT carry sizeToMax")
     }
 
     func testOpenWithBracketOnlyStopLossOmitsTpLeg() async throws {

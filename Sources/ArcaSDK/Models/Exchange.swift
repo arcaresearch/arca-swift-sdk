@@ -174,6 +174,10 @@ public extension SimOrder {
 public struct SimFill: Codable, Sendable {
     public let id: SimFillID
     public let orderId: SimOrderID
+    /// Client order id (Hyperliquid cloid). A `normalTpsl` bracket child is not
+    /// a live venue order until the entry fills and the venue arms it — until
+    /// then it has no venue `orderId`, so its fills correlate only by `cloid`.
+    public let cloid: String?
     public let accountId: SimAccountID?
     public let realmId: RealmID?
     public let market: String
