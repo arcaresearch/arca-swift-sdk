@@ -53,7 +53,7 @@ public final class ArcaClient: @unchecked Sendable {
     public init(
         token: String,
         baseURL: URL,
-        urlSessionConfiguration: URLSessionConfiguration = .default,
+        urlSessionConfiguration: URLSessionConfiguration = .arcaDefault,
         onUnauthorized: (@Sendable (AuthRefreshTrigger) async throws -> String)? = nil,
         onAuthError: (@Sendable (Error) -> Void)? = nil,
         logger: ArcaLogger = .disabled

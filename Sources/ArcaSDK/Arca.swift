@@ -77,7 +77,7 @@ public final class Arca: Sendable {
         realmId: String? = nil,
         tokenProvider: TokenProvider? = nil,
         cache: CacheConfig = CacheConfig(),
-        urlSessionConfiguration: URLSessionConfiguration = .default,
+        urlSessionConfiguration: URLSessionConfiguration = .arcaDefault,
         candleCdnBaseUrl: String? = Arca.defaultCdnBaseUrl,
         logLevel: ArcaLogLevel = .warning,
         logHandler: ArcaLogHandler? = nil

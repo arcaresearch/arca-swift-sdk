@@ -113,7 +113,7 @@ public enum CandleCDN {
         interval: CandleInterval,
         startMs: Int,
         endMs: Int,
-        session: URLSession = .shared,
+        session: URLSession = .arcaDefault,
         logger: ArcaLogger = .disabled,
         apiFallback: @escaping @Sendable (_ startMs: Int, _ endMs: Int) async throws -> [Candle]
     ) async throws -> [Candle] {

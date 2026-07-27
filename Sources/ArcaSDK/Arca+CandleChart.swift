@@ -579,13 +579,20 @@ extension Arca {
                     rangeLoadState.update { $0.task = task }
                     loadingMore.update { $0 = true }
 
-                    let loaded = await task.value
-
-                    rangeLoadState.update { state in
-                        state.loading = false
-                        state.task = nil
+                    // Release the single-flight claim on every exit path. If
+                    // these resets are skipped, `loading` stays true forever
+                    // and every later ensureRange parks on a task that has
+                    // already finished — a chart that spins with no pending
+                    // work and never recovers.
+                    defer {
+                        rangeLoadState.update { state in
+                            state.loading = false
+                            state.task = nil
+                        }
+                        loadingMore.update { $0 = false }
                     }
-                    loadingMore.update { $0 = false }
+
+                    let loaded = await task.value
                     return makeResult(candlesBox.value, loaded)
                 }
 
