@@ -63,6 +63,14 @@ public struct SimPosition: Codable, Sendable {
     public let cumulativePlatformFee: String?
     /// Cumulative builder fee component. See `cumulativeFee`.
     public let cumulativeBuilderFee: String?
+    /// When the position's *current open lot* began — the same lot boundary the
+    /// `cumulative*` fields use. Survives increases, partial reduces, and
+    /// leverage / margin-mode changes; resets on a flip-through-zero and on a
+    /// reopen after a full close.
+    ///
+    /// Derived from the platform's own fill history rather than reported by the
+    /// venue, so it means the same thing on every exchange. `nil` when no
+    /// history exists to derive it from.
     public let createdAt: String?
     public let updatedAt: String?
 }
