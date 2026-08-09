@@ -140,7 +140,15 @@ public struct SimOrder: Codable, Sendable {
     public let ocoGroupId: String?
     /// Why a `.cancelled` order was cancelled — one of `user_requested`,
     /// `sibling_filled`, `position_closed`, `position_flipped`, `liquidated`,
-    /// `position_gone`. `nil` unless `status == .cancelled`.
+    /// `position_gone`, `market_delisted`, `insufficient_margin`. `nil` unless
+    /// `status == .cancelled`.
+    ///
+    /// `insufficient_margin` means a resting limit order kept reaching its
+    /// price while the account could not afford the fill: placement checks
+    /// margin but does not reserve it, so an order can become unaffordable
+    /// while it rests. A brief dip is tolerated — the venue only retires the
+    /// order after it stays unaffordable across repeated attempts over
+    /// several minutes.
     public let cancelReason: String?
     public let createdAt: String?
     public let updatedAt: String?
