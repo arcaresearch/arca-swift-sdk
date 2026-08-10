@@ -322,8 +322,34 @@ public struct ActiveAssetData: Codable, Sendable {
     public let maxBuyUsd: String
     /// Max sell size in USD (positive).
     public let maxSellUsd: String
-    /// Raw available margin in USD (equity minus margin in use). Direction-agnostic.
-    /// Use for "buying power" display. Per-side max exposure uses maxBuyUsd/maxSellUsd.
+    /// The part of `maxBuySize` that reduces an open short, in tokens.
+    ///
+    /// `maxBuySize == maxBuyReduceSize + maxBuyOpenSize`. This leg is the open
+    /// position's size when a buy closes it, and `"0"` otherwise. It is always
+    /// available: a strictly-reducing order lowers both the initial and the
+    /// maintenance requirement, so it is never refused for balance.
+    ///
+    /// `nil` on venues that do not report the split (Hyperliquid) — treat that
+    /// as "unknown", not as `"0"`.
+    public let maxBuyReduceSize: String?
+    /// The part of `maxBuySize` that opens new long exposure, in tokens. This is
+    /// the leg constrained by collateral. See ``maxBuyReduceSize``.
+    public let maxBuyOpenSize: String?
+    /// The part of `maxSellSize` that reduces an open long, in tokens.
+    /// See ``maxBuyReduceSize``.
+    public let maxSellReduceSize: String?
+    /// The part of `maxSellSize` that opens new short exposure, in tokens.
+    /// See ``maxBuyReduceSize``.
+    public let maxSellOpenSize: String?
+    /// Raw available margin in USD: cross equity minus cross **initial** margin.
+    /// Direction-agnostic; use for "buying power" display. Per-side max exposure
+    /// uses maxBuyUsd/maxSellUsd.
+    ///
+    /// Not the same as `withdrawable` on the exchange state, which is cross
+    /// equity minus cross **maintenance** margin. Maintenance is the lower
+    /// requirement, so `withdrawable` is normally the larger number, and this
+    /// value can go negative while the account is still solvent and far from
+    /// liquidation.
     public let availableToTrade: String
     public let markPx: String
     /// Effective fee rate as a decimal (all-in: exchange taker + platform + builder fee).

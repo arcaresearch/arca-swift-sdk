@@ -59,8 +59,17 @@ public func deriveActiveAssetData(
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
-    let equity = parsePositiveDouble(exchangeState.marginSummary.equity)
-    let initialMarginUsed = parsePositiveDouble(exchangeState.marginSummary.initialMarginUsed)
+    // Cross bucket, not the account-wide summary. The server budgets orders
+    // from cross equity alone (PositionService.AvailableBalance) because an
+    // isolated position's collateral and P&L are locked to that position and
+    // can neither fund nor drain another order. Deriving from `marginSummary`
+    // instead lets an isolated position's unrealized profit inflate the
+    // previewed max above what the venue will accept. Falls back to
+    // `marginSummary` for older servers that do not send the cross bucket
+    // (identical when nothing is isolated).
+    let summary = exchangeState.crossMarginSummary ?? exchangeState.marginSummary
+    let equity = parsePositiveDouble(summary.equity)
+    let initialMarginUsed = parsePositiveDouble(summary.initialMarginUsed)
     let hasPositions = !exchangeState.positions.isEmpty
     let availableGuard: Double = hasPositions ? 0.97 : 1.0
     let available = max(0, (equity - initialMarginUsed) * availableGuard)
@@ -126,30 +135,51 @@ public func deriveActiveAssetData(
     }
 
     let currentPosition = exchangeState.positions.first { $0.market == market }
-    var buyMax: Double = 0
-    var sellMax: Double = 0
+    // Each side splits into the part that reduces the open position and the
+    // part that opens new exposure. The reduce leg is unconditional — a
+    // strictly-reducing fill lowers both the initial and the maintenance
+    // requirement, so the venue never refuses it for balance.
+    var buyReduce: Double = 0
+    var buyOpen: Double = 0
+    var sellReduce: Double = 0
+    var sellOpen: Double = 0
 
     if let pos = currentPosition {
         let posSize = parsePositiveDouble(pos.size)
-        let posMargin = parsePositiveDouble(pos.marginUsed)
+        // Isolated positions carry dedicated collateral that can exceed the
+        // leverage-implied marginUsed after updateIsolatedMargin; closing
+        // releases that full amount. Mirrors the server's lockedCollateral().
+        let isolated = parsePositiveDouble(pos.isolatedMargin)
+        let posMargin = isolated > 0 ? isolated : parsePositiveDouble(pos.marginUsed)
         let closeFees = posSize * markPx * feeRate * safetyMarginFactor
         let availableAfterClose = max(0, available + posMargin - closeFees)
 
         switch pos.side {
         case .long:
-            buyMax = maxTokensForDir(available, buyPx)
-            sellMax = posSize + maxTokensForDir(availableAfterClose, sellPx)
+            buyOpen = maxTokensForDir(available, buyPx)
+            sellReduce = posSize
+            sellOpen = maxTokensForDir(availableAfterClose, sellPx)
         case .short:
-            sellMax = maxTokensForDir(available, sellPx)
-            buyMax = posSize + maxTokensForDir(availableAfterClose, buyPx)
+            sellOpen = maxTokensForDir(available, sellPx)
+            buyReduce = posSize
+            buyOpen = maxTokensForDir(availableAfterClose, buyPx)
         }
     } else {
-        buyMax = maxTokensForDir(available, buyPx)
-        sellMax = maxTokensForDir(available, sellPx)
+        buyOpen = maxTokensForDir(available, buyPx)
+        sellOpen = maxTokensForDir(available, sellPx)
     }
 
-    buyMax = floorToDecimals(buyMax, szDecimals)
-    sellMax = floorToDecimals(sellMax, szDecimals)
+    // Only the open legs are floored, and only because they are budget-derived:
+    // floorToDecimals deliberately nudges down to avoid advertising a size the
+    // venue would refuse. The reduce legs are the position size itself, already
+    // at the venue's tick precision, and that nudge would shave a tick off them
+    // (0.02 -> 0.01999) — leaving the user unable to fully close from a slider
+    // that reads this. The server floors both with exact decimal math, where
+    // the reduce leg is a no-op.
+    buyOpen = floorToDecimals(buyOpen, szDecimals)
+    sellOpen = floorToDecimals(sellOpen, szDecimals)
+    let buyMax = buyReduce + buyOpen
+    let sellMax = sellReduce + sellOpen
 
     let rawAvailableUsd = max(0, equity - initialMarginUsed)
 
@@ -160,6 +190,10 @@ public func deriveActiveAssetData(
         maxSellSize: toDecimalString(sellMax, decimals: szDecimals),
         maxBuyUsd: toDecimalString(buyMax * markPx),
         maxSellUsd: toDecimalString(sellMax * markPx),
+        maxBuyReduceSize: toDecimalString(buyReduce, decimals: szDecimals),
+        maxBuyOpenSize: toDecimalString(buyOpen, decimals: szDecimals),
+        maxSellReduceSize: toDecimalString(sellReduce, decimals: szDecimals),
+        maxSellOpenSize: toDecimalString(sellOpen, decimals: szDecimals),
         availableToTrade: toDecimalString(rawAvailableUsd),
         markPx: toDecimalString(markPx),
         feeRate: toDecimalString(feeRate),

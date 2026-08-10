@@ -423,4 +423,130 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertEqual(Double(s0.askPx!)!, 80000 * askRatio, accuracy: 1)
         XCTAssertEqual(Double(s1.askPx!)!, 90000 * askRatio, accuracy: 1)
     }
+
+    // MARK: - Reduce / open split
+
+    func testNoPositionReportsZeroReduceOnBothSides() {
+        let state = makeState(equity: "10000")
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .buy) else {
+            XCTFail("expected non-nil"); return
+        }
+        XCTAssertEqual(d.maxBuyReduceSize, "0")
+        XCTAssertEqual(d.maxSellReduceSize, "0")
+        XCTAssertEqual(d.maxBuyOpenSize, d.maxBuySize)
+        XCTAssertEqual(d.maxSellOpenSize, d.maxSellSize)
+    }
+
+    func testLongPositionSplitsTheSellSideOnly() {
+        let pos = makePosition(market: "hl:0:BTC", side: .long, size: "0.02", marginUsed: "320")
+        let state = makeState(equity: "10000", initialMarginUsed: "320", positions: [pos])
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .sell) else {
+            XCTFail("expected non-nil"); return
+        }
+        // A sell closes the long, so the whole position is reducible. The tick
+        // must survive: 0.02, not 0.01999 — a user has to be able to fully close.
+        XCTAssertEqual(Double(d.maxSellReduceSize!)!, 0.02, accuracy: 1e-12)
+        XCTAssertTrue(Double(d.maxSellOpenSize!)! > 0)
+        // A buy adds to the long; there is nothing on that side to reduce.
+        XCTAssertEqual(d.maxBuyReduceSize, "0")
+        XCTAssertEqual(d.maxBuyOpenSize, d.maxBuySize)
+    }
+
+    func testTotalEqualsReducePlusOpen() {
+        let pos = makePosition(market: "hl:0:BTC", side: .long, size: "0.02", marginUsed: "320")
+        let state = makeState(equity: "10000", initialMarginUsed: "320", positions: [pos])
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .sell) else {
+            XCTFail("expected non-nil"); return
+        }
+        XCTAssertEqual(Double(d.maxSellSize)!,
+                       Double(d.maxSellReduceSize!)! + Double(d.maxSellOpenSize!)!, accuracy: 1e-10)
+        XCTAssertEqual(Double(d.maxBuySize)!,
+                       Double(d.maxBuyReduceSize!)! + Double(d.maxBuyOpenSize!)!, accuracy: 1e-10)
+    }
+
+    // The reported bug in its client-side form: an account below its
+    // initial-margin requirement can open nothing, but it can always close what
+    // it holds. A slider reading only the total must still offer the trim.
+    func testReduceLegSurvivesWhenNothingCanBeOpened() {
+        let pos = makePosition(market: "hl:0:BTC", side: .long, size: "0.5", marginUsed: "4000")
+        let state = makeState(equity: "100", initialMarginUsed: "5000", positions: [pos])
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .sell) else {
+            XCTFail("expected non-nil"); return
+        }
+        XCTAssertEqual(Double(d.maxSellReduceSize!)!, 0.5, accuracy: 1e-12)
+        XCTAssertTrue(Double(d.maxSellSize)! >= 0.5)
+    }
+
+    // MARK: - Isolated positions
+
+    // Isolated collateral and P&L are locked to their own position: the server
+    // budgets orders from cross equity alone (PositionService.AvailableBalance).
+    // Deriving from the account-wide summary let an isolated position's profit
+    // inflate the previewed max above what the venue would accept.
+    func testPrefersCrossBucketOverAccountWideSummary() {
+        let state = ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"), name: "test",
+                                createdAt: "2026-01-01T00:00:00.000000Z", updatedAt: "2026-01-01T00:00:00.000000Z"),
+            // Account-wide: $9,000 free, most of it locked inside an isolated position.
+            marginSummary: SimMarginSummary(
+                equity: "10000", initialMarginUsed: "1000", maintenanceMarginRequired: "0",
+                availableToWithdraw: "9000", totalNtlPos: "0", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            // Cross bucket: only $500 is actually spendable.
+            crossMarginSummary: SimMarginSummary(
+                equity: "1500", initialMarginUsed: "1000", maintenanceMarginRequired: "0",
+                availableToWithdraw: "500", totalNtlPos: "0", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            crossMaintenanceMarginUsed: nil,
+            positions: [], openOrders: [],
+            feeRates: SimFeeRates(taker: "0.00035", maker: "0.0001", platformFee: "0.0001",
+                                  tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
+            pendingIntents: nil)
+
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .buy) else {
+            XCTFail("expected non-nil"); return
+        }
+        // $500 of cross collateral at 5x is ~$2.5k of notional, not the ~$45k
+        // the account-wide summary would have implied.
+        XCTAssertTrue(Double(d.maxBuyUsd)! < 3000, "derived \(d.maxBuyUsd) from the wrong bucket")
+        XCTAssertEqual(Double(d.availableToTrade)!, 500, accuracy: 1e-6)
+    }
+
+    func testFallsBackToAccountWideSummaryWhenNoCrossBucket() {
+        // Older servers, and any account with nothing isolated, where the two
+        // are identical by construction.
+        let state = makeState(equity: "1000")
+        guard let d = deriveActiveAssetData(from: state, market: "hl:0:BTC", markPx: 80000,
+                                            leverage: 5, side: .buy) else {
+            XCTFail("expected non-nil"); return
+        }
+        XCTAssertEqual(Double(d.availableToTrade)!, 1000, accuracy: 1e-6)
+    }
+
+    // An isolated position can hold more collateral than its leverage implies
+    // after updateIsolatedMargin; closing releases the whole amount. Mirrors the
+    // server's lockedCollateral().
+    func testReleasesIsolatedMarginNotMarginUsedIntoTheReversingBudget() {
+        var withTopUp = makePosition(market: "hl:0:BTC", side: .long, size: "0.02", marginUsed: "320")
+        withTopUp.isolatedMargin = "2000"
+        let plainPos = makePosition(market: "hl:0:BTC", side: .long, size: "0.02", marginUsed: "320")
+
+        let topUpState = makeState(equity: "1000", initialMarginUsed: "320", positions: [withTopUp])
+        let plainState = makeState(equity: "1000", initialMarginUsed: "320", positions: [plainPos])
+
+        guard let topUp = deriveActiveAssetData(from: topUpState, market: "hl:0:BTC", markPx: 80000,
+                                                leverage: 5, side: .sell),
+              let plain = deriveActiveAssetData(from: plainState, market: "hl:0:BTC", markPx: 80000,
+                                                leverage: 5, side: .sell) else {
+            XCTFail("expected non-nil"); return
+        }
+        // The extra $1,680 of dedicated collateral is released by the close and
+        // is spendable on the reversing leg, so the open portion grows.
+        XCTAssertTrue(Double(topUp.maxSellOpenSize!)! > Double(plain.maxSellOpenSize!)!)
+        // The reduce leg is the position either way — collateral doesn't change it.
+        XCTAssertEqual(topUp.maxSellReduceSize, plain.maxSellReduceSize)
+    }
 }
