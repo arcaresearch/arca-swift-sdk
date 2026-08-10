@@ -569,10 +569,21 @@ public final class Arca: Sendable {
                     // At the fill instant, mid == price. The merged position's
                     // uPnL is invariant to the new fill, so equityPost only
                     // changes by the fee.
-                    let perUnit = marginAvail / merged.size
-                    let liq = merged.side == .long ? price - perUnit : price + perUnit
-                    if liq > 0 {
-                        estimatedLiquidationPrice = fmt(liq)
+                    //
+                    // As the mark moves, equity falls at `size` per unit while
+                    // this position's own maintenance requirement falls at
+                    // `mmr * size` (MM = mmr * size * mark), so the gap closes
+                    // at only `size * (1 -/+ mmr)` per unit. Omitting that term
+                    // reads optimistic for shorts. Mirrors `crossMarginLiqPrice`
+                    // in sim-exchange's account.go.
+                    let mmrEff = mergedNotional > 0 ? mmMerged / mergedNotional : 0
+                    let sensitivity = merged.side == .long ? 1 - mmrEff : 1 + mmrEff
+                    if sensitivity > 0 {
+                        let perUnit = marginAvail / (merged.size * sensitivity)
+                        let liq = merged.side == .long ? price - perUnit : price + perUnit
+                        if liq > 0 {
+                            estimatedLiquidationPrice = fmt(liq)
+                        }
                     }
                 }
             }

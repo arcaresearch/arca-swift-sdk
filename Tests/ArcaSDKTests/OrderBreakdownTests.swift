@@ -41,7 +41,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 46500, accuracy: 0.5)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 46391.75257732, accuracy: 0.5)
     }
 
     func testCrossMarginLiqShort_NoOtherPositions() {
@@ -55,7 +55,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 53500, accuracy: 0.5)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 53398.05825243, accuracy: 0.5)
     }
 
     func testCrossMarginLiqAccountsForOtherPositionsMM() {
@@ -71,7 +71,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 46022.5, accuracy: 0.5)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 45899.48453608, accuracy: 0.5)
     }
 
     func testSameSideMergeBlendsEntryPrice() {
@@ -93,7 +93,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 44748.333, accuracy: 1)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 44585.911, accuracy: 1)
     }
 
     func testOppositeSideReduceKeepsExistingEntry() {
@@ -114,7 +114,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 41515, accuracy: 0.5)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 41252.57731959, accuracy: 0.5)
     }
 
     func testOppositeSideEqualCloseYieldsNil() {
@@ -151,7 +151,7 @@ final class OrderBreakdownTests: XCTestCase {
             )
         )
         let result = Arca.orderBreakdown(options: opts)
-        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 58462.5, accuracy: 0.5)
+        XCTAssertEqual(Double(result.estimatedLiquidationPrice ?? "")!, 58216.01941748, accuracy: 0.5)
     }
 
     func testOmitsLiqWhenMarginAvailNonPositive() {
