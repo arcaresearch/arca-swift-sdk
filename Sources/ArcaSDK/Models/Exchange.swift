@@ -383,7 +383,10 @@ public struct OrderBreakdownExistingPosition: Sendable {
 /// produce a cross-margin liquidation estimate. The estimate matches the
 /// formula the sim-exchange backend uses at read time
 /// (`marginAvailable = equity - maintenanceMargin`, then
-/// `liq = mid -/+ marginAvailable / size`).
+/// `liq = mid -/+ marginAvailable / (size * (1 -/+ mmr))`). The `(1 -/+ mmr)`
+/// term is maintenance relief: the position's own requirement is a percentage
+/// of notional, so it moves with the mark and equity closes on it at
+/// `size * (1 -/+ mmr)` per unit rather than `size`.
 public struct OrderBreakdownAccountContext: Sendable {
     /// Account equity in USD. From `ExchangeState.marginSummary.equity`.
     public let equity: String
