@@ -44,8 +44,11 @@ final class ArcaErrorTests: XCTestCase {
         let variants = [
             "CONFLICT", "ALREADY_EXISTS", "ALREADY_MEMBER", "ALREADY_DELETED",
             "DUPLICATE_REALM", "ALREADY_REVOKED", "IDEMPOTENCY_VIOLATION",
-            // Order-placement conflicts carry their specific code.
-            "NO_LIQUIDITY", "MARKET_DELISTED",
+            // Venue refusals carry their specific code. ORDER_FAILED belongs
+            // here, not in exchangeError: every server path returns it as a
+            // 409, and the exchangeError class means "transport fault, retry".
+            "NO_LIQUIDITY", "MARKET_DELISTED", "MARKET_NOT_TRADABLE",
+            "MARKET_NOT_USDC_COLLATERAL", "ORDER_FAILED",
         ]
         for code in variants {
             let error = mapAPIError(code: code, message: "Conflict", errorId: nil)
@@ -58,7 +61,7 @@ final class ArcaErrorTests: XCTestCase {
     }
 
     func testExchangeErrorVariants() {
-        let variants = ["EXCHANGE_ERROR", "EXCHANGE_UNAVAILABLE", "ORDER_FAILED", "INVALID_REQUEST"]
+        let variants = ["EXCHANGE_ERROR", "EXCHANGE_UNAVAILABLE", "INVALID_REQUEST"]
         for code in variants {
             let error = mapAPIError(code: code, message: "Exchange error", errorId: nil)
             if case .exchangeError(let errorCode, _, _) = error {

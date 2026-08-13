@@ -18,15 +18,23 @@ public enum ArcaError: Error, Sendable {
     case notFound(code: String, message: String, errorId: String?)
 
     /// Conflict (HTTP 409). Covers duplicates, idempotency violations, and
-    /// order-placement conflicts where `code` carries the specific reason:
-    /// `NO_LIQUIDITY` (empty book side, retry) or `MARKET_DELISTED` (market
-    /// delisted, positions settled by the venue).
+    /// venue refusals where `code` carries the specific reason:
+    /// `NO_LIQUIDITY` (empty book side, retry or use a marketable limit),
+    /// `MARKET_DELISTED` (market delisted, positions settled by the venue),
+    /// `MARKET_NOT_TRADABLE` (halted or not yet live),
+    /// `MARKET_NOT_USDC_COLLATERAL`, or `ORDER_FAILED` (a refusal with no
+    /// narrower code — `message` carries the venue's verbatim text).
+    ///
+    /// None are retryable as-is: the venue evaluated the request and said no.
     case conflict(code: String, message: String, errorId: String?)
 
     /// Unexpected server error (HTTP 500).
     case internalError(message: String, errorId: String?)
 
-    /// Upstream exchange service error (HTTP 502).
+    /// The request couldn't be delivered to the upstream exchange, or its
+    /// answer couldn't be read (HTTP 502) — a transport fault, so retryable.
+    /// A refusal *by* the venue is `.conflict` or `.validation` instead,
+    /// carrying the venue's own reason.
     case exchangeError(code: String, message: String, errorId: String?)
 
     /// Network-level failure (no response received).
@@ -90,16 +98,19 @@ public func mapAPIError(code: String, message: String, errorId: String?) -> Arca
 
     case "CONFLICT", "ALREADY_EXISTS", "ALREADY_MEMBER", "ALREADY_DELETED",
          "DUPLICATE_REALM", "ALREADY_REVOKED", "IDEMPOTENCY_VIOLATION",
-         // Order-placement conflicts (409): well-formed request the venue can't
-         // fill. NO_LIQUIDITY = empty book side (retry / marketable limit);
-         // MARKET_DELISTED = market delisted, positions settled by the venue.
-         "NO_LIQUIDITY", "MARKET_DELISTED":
+         // Venue refusals (409): the venue evaluated a well-formed request and
+         // said no. NO_LIQUIDITY = empty book side (retry / marketable limit);
+         // MARKET_DELISTED = market delisted, positions settled by the venue;
+         // MARKET_NOT_TRADABLE = halted or not yet live; ORDER_FAILED = a
+         // refusal with no narrower code, verbatim venue text in `message`.
+         "NO_LIQUIDITY", "MARKET_DELISTED", "MARKET_NOT_TRADABLE",
+         "MARKET_NOT_USDC_COLLATERAL", "ORDER_FAILED":
         return .conflict(code: code, message: message, errorId: errorId)
 
     case "INTERNAL_ERROR":
         return .internalError(message: message, errorId: errorId)
 
-    case "EXCHANGE_ERROR", "EXCHANGE_UNAVAILABLE", "ORDER_FAILED", "INVALID_REQUEST":
+    case "EXCHANGE_ERROR", "EXCHANGE_UNAVAILABLE", "INVALID_REQUEST":
         return .exchangeError(code: code, message: message, errorId: errorId)
 
     default:
