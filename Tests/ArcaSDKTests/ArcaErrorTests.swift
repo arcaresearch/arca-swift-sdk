@@ -48,7 +48,7 @@ final class ArcaErrorTests: XCTestCase {
             // here, not in exchangeError: every server path returns it as a
             // 409, and the exchangeError class means "transport fault, retry".
             "NO_LIQUIDITY", "MARKET_DELISTED", "MARKET_NOT_TRADABLE",
-            "MARKET_NOT_USDC_COLLATERAL", "ORDER_FAILED",
+            "MARKET_NOT_USDC_COLLATERAL", "VENUE_RATE_LIMITED", "ORDER_FAILED",
         ]
         for code in variants {
             let error = mapAPIError(code: code, message: "Conflict", errorId: nil)
