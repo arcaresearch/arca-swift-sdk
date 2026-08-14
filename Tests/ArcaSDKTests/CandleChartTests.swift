@@ -1136,6 +1136,7 @@ final class CandleChartTests: XCTestCase {
             ("gap handler removal on stop", "removeGapHandler"),
             ("gap task cancellation in onTermination", "gapTask.cancel()"),
             ("failed heal re-arms the seam", "s.seamFrom = s.seamFrom.map { min($0, from) } ?? from"),
+            ("live candles emit after failed CDN history", "case .loaded, .failed:"),
         ]
         for (label, marker) in markers {
             XCTAssertTrue(source.contains(marker), "watchCandleChart missing marker '\(marker)' (\(label))")

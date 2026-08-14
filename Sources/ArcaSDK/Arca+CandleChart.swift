@@ -320,9 +320,16 @@ extension Arca {
                         Task { await healSeam(latest.t) }
                     }
 
-                    // Gate WS-only snapshots until history succeeds
-                    if case .loaded = historySnapshot.value {
+                    // Live tape must still paint when CDN / skipBackfill
+                    // history is empty (thin HIP-3 names). Gating on `.loaded`
+                    // only left those charts blank until a retry succeeded —
+                    // or forever, if it never did. `.loading` stays gated so
+                    // a partial REST read does not flicker ahead of itself.
+                    switch historySnapshot.value {
+                    case .loaded, .failed:
                         yieldSnapshot(continuation, snapshot, latest)
+                    case .loading:
+                        break
                     }
                     _ = ws
                 }
