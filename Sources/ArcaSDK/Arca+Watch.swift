@@ -494,42 +494,60 @@ extension Arca {
         let refreshingBox = SendableBox<Bool>(false)
         let stoppedBox = SendableBox<Bool>(false)
 
+        // The watch is server state tied to the connection it was created on,
+        // so every event that replaces that connection has to re-create it.
+        let recreateWatch: @Sendable () async -> Void = { [weak self] in
+            guard let self = self, !stoppedBox.value else { return }
+            guard !refreshingBox.value else { return }
+            refreshingBox.update { $0 = true }
+            do {
+                let oldWatchId = widBox.value
+                let newWatch = try await self.createAggregationWatch(sources: sources, flowsSince: flowsSince)
+                guard !stoppedBox.value else {
+                    refreshingBox.update { $0 = false }
+                    return
+                }
+                widBox.update { $0 = newWatch.watchId.rawValue }
+                do {
+                    try await self.destroyAggregationWatch(watchId: oldWatchId)
+                } catch {
+                    self.log.debug("watch",
+                                   "destroyAggregationWatch cleanup failed (best-effort)",
+                                   error: error,
+                                   metadata: ["watchId": oldWatchId])
+                }
+                structuralBox.update { $0 = newWatch.aggregation }
+                let currentMids = midsBox.value
+                let revalued = currentMids.isEmpty ? newWatch.aggregation : newWatch.aggregation.revalued(with: currentMids)
+                aggBox.update { $0 = revalued }
+                continuationBox.value?.yield(revalued)
+            } catch {
+                // Best effort — keep existing data
+            }
+            refreshingBox.update { $0 = false }
+        }
+
         let statusStream = await ws.statusStream
-        let statusTask = Task { [weak self] in
+        let statusTask = Task {
             for await s in statusStream {
                 if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
                 } else if s == .connected && state.value == .reconnecting {
-                    guard let self = self, !stoppedBox.value else { continue }
-                    guard !refreshingBox.value else { continue }
-                    refreshingBox.update { $0 = true }
-                    do {
-                        let oldWatchId = widBox.value
-                        let newWatch = try await self.createAggregationWatch(sources: sources, flowsSince: flowsSince)
-                        guard !stoppedBox.value else {
-                            refreshingBox.update { $0 = false }
-                            continue
-                        }
-                        widBox.update { $0 = newWatch.watchId.rawValue }
-                        do {
-                            try await self.destroyAggregationWatch(watchId: oldWatchId)
-                        } catch {
-                            self.log.debug("watch",
-                                           "destroyAggregationWatch cleanup failed (best-effort)",
-                                           error: error,
-                                           metadata: ["watchId": oldWatchId])
-                        }
-                        structuralBox.update { $0 = newWatch.aggregation }
-                        let currentMids = midsBox.value
-                        let revalued = currentMids.isEmpty ? newWatch.aggregation : newWatch.aggregation.revalued(with: currentMids)
-                        aggBox.update { $0 = revalued }
-                        continuationBox.value?.yield(revalued)
-                    } catch {
-                        // Best effort — keep existing data
-                    }
-                    refreshingBox.update { $0 = false }
+                    await recreateWatch()
                     state.update { $0 = .connected }
                 }
+            }
+        }
+
+        // A rotation swaps the socket without an outage, so no status change
+        // fires and the branch above never runs — but the watch the retired
+        // connection held is gone, so without this the stream goes quiet with
+        // no error. The state deliberately stays `.connected`: nothing was
+        // missed, so surfacing a reconnecting spinner would be a lie.
+        let rotatedStream = await ws.rotatedStream
+        let rotatedTask = Task {
+            for await _ in rotatedStream {
+                await recreateWatch()
             }
         }
 
@@ -591,6 +609,7 @@ extension Arca {
                 stoppedBox.update { $0 = true }
                 continuationBox.update { $0 = nil }
                 statusTask.cancel()
+                rotatedTask.cancel()
                 await ws.releaseMids()
                 do {
                     try await self.destroyAggregationWatch(watchId: widBox.value)

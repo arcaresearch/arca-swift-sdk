@@ -134,6 +134,26 @@ for await (operation, event) in await arca.ws.operationEvents() {
 }
 ```
 
+### Socket rotation
+
+Infrastructure in front of the API caps how long any WebSocket may stay open, and for a socket that cap is a maximum lifetime, not an idle timeout — a busy connection is severed on schedule. Reaching it costs an unplanned reconnect (backoff, TCP, TLS, auth, resubscribe), during which a price display holds its last value and looks frozen. The SDK replaces the socket before the cap: a second connection authenticates and re-issues every subscription while the current one keeps streaming, and only takes over once the server confirms the new subscriptions are live. Nothing is missed, no status change is emitted, and a failure anywhere leaves the original socket serving.
+
+`connectionLifetime` on `Arca.init`, `Arca.withTokenProvider` or `WebSocketManager.init` overrides the default of 50 minutes, and the server's reported lifetime is preferred over it when present, so the schedule retunes without an SDK release. `0` disables rotation and outranks both — the socket then runs until something else ends it, which on a fleet that enforces a cap means an unplanned reconnect.
+
+```swift
+// Fires when delivery has moved to a new socket.
+let id = await arca.ws.onRotated { print("socket replaced") }
+await arca.ws.removeRotatedHandler(id)
+
+for await _ in await arca.ws.rotatedStream { print("socket replaced") }
+
+// Trigger one on demand; false when there is no healthy socket to hand off
+// from, or a rotation is already under way.
+let started = await arca.ws.rotateConnection()
+```
+
+A rotation is **not** a reconnect — don't refetch history or run gap recovery from `onRotated`. Rotations are routine, so a refetch there becomes steady background load on every connected client. The hook exists for state the server holds per-connection and so cannot survive the swap; the SDK re-issues mids, candles, open interest, path watches, and chart-history watches itself, and uses the hook internally to re-create standalone aggregation watches.
+
 ## Equity Chart (Historical + Live)
 
 `watchEquityChart` merges historical equity data with a live aggregation stream into a single continuously-updating point array:
@@ -272,7 +292,7 @@ swift package clean
 | `Arca+Exchange` | Exchange/perps operations |
 | `Arca+Aggregation` | Aggregation, P&L, equity history |
 | `ArcaClient` (actor) | HTTP client with retry logic and envelope unwrapping |
-| `WebSocketManager` (actor) | WebSocket with reconnection and `AsyncStream` delivery |
+| `WebSocketManager` (actor) | WebSocket with reconnection, gapless rotation, and `AsyncStream` delivery |
 | `Models/` | All Codable DTOs with phantom-typed `TypedID<Tag>` |
 
 ## API Surface

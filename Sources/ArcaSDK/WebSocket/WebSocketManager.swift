@@ -24,8 +24,9 @@ public actor WebSocketManager {
     private var token: String
     private let realmId: String
 
-    private var webSocketTask: URLSessionWebSocketTask?
+    private var webSocketTask: (any WebSocketTransport)?
     private let session: URLSession
+    private var transportFactory: (@Sendable (URL) -> any WebSocketTransport)?
 
     private var subscribedMids: (exchange: String, coins: [String])?
     private var subscribedCandles: (coins: [String], intervals: [CandleInterval])?
@@ -35,6 +36,22 @@ public actor WebSocketManager {
     private let maxReconnectDelay: TimeInterval
     private var reconnectTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Never>?
+
+    // Gapless rotation: a replacement socket warms up alongside the live one
+    // and only takes over once the server has confirmed its subscriptions.
+    private var handoffTask: (any WebSocketTransport)?
+    private var handoffReceiveTask: Task<Void, Never>?
+    private var handoffTimeoutTask: Task<Void, Never>?
+    private var rotationTask: Task<Void, Never>?
+    // Sockets are addressed by generation rather than by reference so a
+    // receive loop can name the socket it belongs to without carrying a
+    // non-Sendable task across its suspension points. 0 means "no socket".
+    private var nextGeneration = 0
+    private var primaryGeneration = 0
+    private var handoffGeneration = 0
+    private let connectionLifetime: TimeInterval
+    private var serverLifetime: TimeInterval?
+    private var handoffTimeout: TimeInterval = WebSocketManager.handoffTimeoutSeconds
 
     private var eventContinuations: [UUID: AsyncStream<RealmEvent>.Continuation] = [:]
     private var statusContinuations: [UUID: AsyncStream<ConnectionStatus>.Continuation] = [:]
@@ -65,12 +82,30 @@ public actor WebSocketManager {
     // absence is treated as a half-open TCP and forces a reconnect.
     private static let resumePingTimeoutNs: UInt64 = 2_000_000_000  // 2s
 
+    /// Default socket lifetime before a rotation. Sits below the cap the
+    /// production load balancer imposes, leaving room for the retries below
+    /// to land before that cap is reached. Zero disables rotation.
+    public static let defaultConnectionLifetime: TimeInterval = 50 * 60
+    /// Fraction of the known lifetime at which to rotate.
+    static let rotateAt: Double = 0.85
+    // Rotations are spread by ±this fraction. Every rotation costs a
+    // resubscribe, and a resubscribe costs the server a full mids snapshot —
+    // so a fleet rotating on a shared schedule would arrive as a thundering
+    // herd. The spread is what keeps that cost flat instead of spiky.
+    static let rotateJitter: Double = 0.1
+    /// A warming socket that has not taken over within this budget is abandoned.
+    static let handoffTimeoutSeconds: TimeInterval = 10
+    /// Retry delay after a failed handoff.
+    static let handoffRetrySeconds: TimeInterval = 60
+
     private var lastDeliverySeq: Int = 0
     private var gapHandlers: [UUID: @Sendable (Int) -> Void] = [:]
     private var resumeHandlers: [UUID: @Sendable (TimeInterval) -> Void] = [:]
     private var authenticatedHandlers: [UUID: @Sendable () -> Void] = [:]
+    private var rotatedHandlers: [UUID: @Sendable () -> Void] = [:]
     private var resumeContinuations: [UUID: AsyncStream<TimeInterval>.Continuation] = [:]
     private var authenticatedContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var rotatedContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
     private var hiddenAt: Date?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var resumeProbeTask: Task<Void, Never>?
@@ -87,6 +122,7 @@ public actor WebSocketManager {
         realmId: String,
         getToken: (@Sendable () async throws -> String)? = nil,
         maxReconnectDelay: TimeInterval = 30,
+        connectionLifetime: TimeInterval = WebSocketManager.defaultConnectionLifetime,
         logger: ArcaLogger = .disabled
     ) {
         self.baseURL = baseURL
@@ -94,6 +130,7 @@ public actor WebSocketManager {
         self.realmId = realmId
         self.getToken = getToken
         self.maxReconnectDelay = maxReconnectDelay
+        self.connectionLifetime = connectionLifetime
         self.session = URLSession(configuration: .default)
         self.log = logger
     }
@@ -153,12 +190,15 @@ public actor WebSocketManager {
         receiveTask = nil
         resumeProbeTask?.cancel()
         resumeProbeTask = nil
+        cancelRotation()
+        abortHandoff()
         stopHeartbeat()
         cancelIdleTimer()
         for task in unsubTasks.values { task.cancel() }
         unsubTasks.removeAll()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask?.stop(reason: nil)
         webSocketTask = nil
+        primaryGeneration = 0
         setStatus(.disconnected)
         removeLifecycleObservers()
     }
@@ -318,6 +358,15 @@ public actor WebSocketManager {
         maybeStartIdleTimer()
     }
 
+    private func candleSubscriptionMessage() -> OutboundMessage? {
+        guard !candleRefCoins.isEmpty else { return nil }
+        var allIntervals = Set<String>()
+        for ivs in candleRefCoins.values {
+            allIntervals.formUnion(ivs)
+        }
+        return .subscribeCandles(coins: Array(candleRefCoins.keys), intervals: Array(allIntervals))
+    }
+
     private func syncCandleSubscription() {
         if candleRefCoins.isEmpty {
             unsubscribeCandles()
@@ -370,6 +419,15 @@ public actor WebSocketManager {
         unsubTasks.removeValue(forKey: timerKey)
         syncOISubscription()
         maybeStartIdleTimer()
+    }
+
+    private func oiSubscriptionMessage() -> OutboundMessage? {
+        guard !oiRefCoins.isEmpty else { return nil }
+        var allIntervals = Set<String>()
+        for ivs in oiRefCoins.values {
+            allIntervals.formUnion(ivs)
+        }
+        return .subscribeOI(coins: Array(oiRefCoins.keys), intervals: Array(allIntervals))
     }
 
     private func syncOISubscription() {
@@ -670,11 +728,33 @@ public actor WebSocketManager {
         handleMessage(text)
     }
 
+    /// Substitute the socket factory. Must be called before connecting.
+    /// Not for production use.
+    internal func setTransportFactory(_ factory: @escaping @Sendable (URL) -> any WebSocketTransport) {
+        transportFactory = factory
+    }
+
+    /// Shorten the handoff budget so a rotation test does not have to wait out
+    /// the production timeout. Not for production use.
+    internal func setHandoffTimeout(_ seconds: TimeInterval) {
+        handoffTimeout = seconds
+    }
+
     // MARK: - Private: Connection
 
-    private func doConnect() {
-        receiveTask?.cancel()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+    /// Open a socket.
+    ///
+    /// In handoff mode the existing socket is left untouched and serving; the
+    /// new one warms up alongside it and only takes over once it is fully
+    /// subscribed. Every other caller replaces the current socket outright,
+    /// which is the right thing when it is already gone.
+    private func doConnect(handoff: Bool = false) {
+        if !handoff {
+            cancelRotation()
+            abortHandoff()
+            receiveTask?.cancel()
+            webSocketTask?.stop(reason: nil)
+        }
 
         var wsURL = baseURL
         var components = URLComponents(url: wsURL, resolvingAgainstBaseURL: false)!
@@ -686,30 +766,44 @@ public actor WebSocketManager {
         components.path += "/api/v1/ws"
         wsURL = components.url!
 
-        setStatus(.connecting)
-        log.debug("websocket", "connecting",
+        if !handoff { setStatus(.connecting) }
+        log.debug("websocket", handoff ? "warming replacement socket" : "connecting",
                   metadata: ["url": wsURL.absoluteString, "realmId": realmId])
 
-        let task = session.webSocketTask(with: wsURL)
-        self.webSocketTask = task
-        task.resume()
+        let task = transportFactory?(wsURL) ?? session.webSocketTask(with: wsURL)
+        nextGeneration += 1
+        let generation = nextGeneration
+        if handoff {
+            handoffTask = task
+            handoffGeneration = generation
+        } else {
+            webSocketTask = task
+            primaryGeneration = generation
+        }
+        task.start()
 
         if let getToken {
             Task { [weak self] in
                 do {
                     let freshToken = try await getToken()
-                    await self?.applyTokenAndAuth(freshToken)
+                    await self?.applyTokenAndAuth(freshToken, generation: generation)
                 } catch {
                     await self?.logTokenRefreshFailedOnReconnect(error)
-                    await self?.sendAuthWithCurrentToken()
+                    await self?.sendAuthWithCurrentToken(generation: generation)
                 }
             }
         } else {
-            sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
+            sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities),
+                        generation: generation)
         }
 
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
+        let loop: Task<Void, Never> = Task { [weak self] in
+            await self?.receiveLoop(generation: generation)
+        }
+        if handoff {
+            handoffReceiveTask = loop
+        } else {
+            receiveTask = loop
         }
     }
 
@@ -718,42 +812,120 @@ public actor WebSocketManager {
                   error: error)
     }
 
-    private func applyTokenAndAuth(_ freshToken: String) {
+    private func applyTokenAndAuth(_ freshToken: String, generation: Int) {
         self.token = freshToken
-        sendMessage(.auth(token: freshToken, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
+        sendMessage(.auth(token: freshToken, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities),
+                    generation: generation)
     }
 
-    private func sendAuthWithCurrentToken() {
-        sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities))
+    private func sendAuthWithCurrentToken(generation: Int) {
+        sendMessage(.auth(token: token, realmId: realmId, capabilities: ArcaClient.advertisedCapabilities),
+                    generation: generation)
     }
 
-    private func receiveLoop() async {
-        guard let task = webSocketTask else { return }
+    private func transport(for generation: Int) -> (any WebSocketTransport)? {
+        guard generation != 0 else { return nil }
+        if generation == primaryGeneration { return webSocketTask }
+        if generation == handoffGeneration { return handoffTask }
+        return nil
+    }
 
+    /// True while this socket is warming up alongside a still-serving primary.
+    private func isWarming(_ generation: Int) -> Bool {
+        generation != 0 && generation == handoffGeneration && generation != primaryGeneration
+    }
+
+    private func receiveLoop(generation: Int) async {
         while !Task.isCancelled {
+            // Re-read on every pass: a promotion turns this loop's socket from
+            // warming into primary without restarting the loop.
+            guard let task = transport(for: generation) else { return }
+
             do {
-                let message = try await task.receive()
+                let message = try await task.receiveMessage()
+                let text: String?
                 switch message {
-                case .string(let text):
-                    handleMessage(text)
+                case .string(let value):
+                    text = value
                 case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) {
-                        handleMessage(text)
-                    }
+                    text = String(data: data, encoding: .utf8)
                 @unknown default:
-                    break
+                    text = nil
                 }
+                guard let text else { continue }
+                if isWarming(generation) {
+                    handleWarmingMessage(text, generation: generation)
+                } else if generation == primaryGeneration {
+                    handleMessage(text)
+                }
+                // Anything else arrived on a retired socket after the swap;
+                // consumers already have it from the socket that replaced it.
             } catch {
-                if !Task.isCancelled {
-                    log.warning("websocket", "receive loop error", error: error)
-                    setStatus(.disconnected)
-                    if shouldReconnect {
-                        scheduleReconnect()
-                    }
+                if Task.isCancelled { return }
+                if isWarming(generation) {
+                    // A warming socket died before taking over. The primary
+                    // never stopped serving, so consumers see nothing; try
+                    // again later rather than escalating to the reconnect path.
+                    log.warning("websocket", "handoff socket closed before takeover", error: error)
+                    abortHandoff()
+                    scheduleRotation(after: WebSocketManager.handoffRetrySeconds)
+                    return
+                }
+                guard generation == primaryGeneration else { return }
+                log.warning("websocket", "receive loop error", error: error)
+                // The live socket is gone, so a warming replacement for it is
+                // moot — the reconnect path supersedes it.
+                cancelRotation()
+                abortHandoff()
+                setStatus(.disconnected)
+                if shouldReconnect {
+                    scheduleReconnect()
                 }
                 return
             }
         }
+    }
+
+    /// Inbound handling for a socket that has not taken over yet.
+    private func handleWarmingMessage(_ text: String, generation: Int) {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let msgType = json["type"] as? String ?? ""
+
+        if msgType == "error" {
+            log.warning("websocket", "handoff socket rejected",
+                        metadata: ["message": json["message"] as? String ?? "Unknown WebSocket error"])
+            abortHandoff()
+            scheduleRotation(after: WebSocketManager.handoffRetrySeconds)
+            return
+        }
+
+        if msgType == "pong" {
+            // The server reads one connection's messages in order, so a reply
+            // to the ping queued behind the resubscribe batch proves every
+            // subscription in that batch is registered — from here on live
+            // broadcasts reach this socket. Any snapshot those subscriptions
+            // trigger is sent asynchronously and may well land after this
+            // pong, so it is not part of the barrier — and it is not needed,
+            // because the socket being retired has carried the same stream
+            // right up to this moment, leaving consumer state current.
+            clearHandoffTimeout()
+            promoteHandoff(generation: generation)
+            return
+        }
+
+        if msgType == "authenticated" {
+            readServerLifetime(json)
+            resubscribeAll(generation: generation)
+            // Queued behind the batch above; its reply is the barrier this
+            // socket takes over on.
+            sendMessage(.ping, generation: generation)
+            return
+        }
+
+        // The primary is carrying this same stream, so anything else here
+        // duplicates what consumers already have. Dropping it avoids a double
+        // dispatch and keeps gap detection on a single sequence space.
     }
 
     private func handleMessage(_ text: String) {
@@ -773,34 +945,11 @@ public actor WebSocketManager {
                 log.info("websocket", "authenticated")
                 reconnectAttempt = 0
                 lastDeliverySeq = 0
+                readServerLifetime(json)
                 setStatus(.connected)
                 startHeartbeat()
-                // Re-subscribe mids
-                if let mids = subscribedMids {
-                    sendMessage(.subscribeMids(exchange: mids.exchange, coins: mids.coins))
-                }
-                if let candles = subscribedCandles {
-                    sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)))
-                }
-                if let oi = subscribedOI {
-                    sendMessage(.subscribeOI(coins: oi.coins, intervals: oi.intervals.map(\.rawValue)))
-                }
-                if midsRefs > 0 && subscribedMids == nil {
-                    sendMessage(.subscribeMids(exchange: midsExchange, coins: []))
-                }
-                if !candleRefCoins.isEmpty && subscribedCandles == nil {
-                    syncCandleSubscription()
-                }
-                if !oiRefCoins.isEmpty && subscribedOI == nil {
-                    syncOISubscription()
-                }
-                // Re-watch all paths from ref-counted state
-                for path in pathRefs.keys {
-                    sendMessage(.watch(path: path))
-                }
-                for (watchId, req) in chartHistoryWatches {
-                    sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId))
-                }
+                scheduleRotation()
+                resubscribeAll(generation: primaryGeneration)
                 // Notify subscribers AFTER all subscriptions are re-issued so
                 // any chart-history watch IDs they depend on are already
                 // registered.
@@ -815,9 +964,12 @@ public actor WebSocketManager {
                 let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
                 log.error("websocket", "server error",
                           metadata: ["message": errorMessage])
+                cancelRotation()
+                abortHandoff()
                 setStatus(.disconnected)
-                webSocketTask?.cancel(with: .goingAway, reason: errorMessage.data(using: .utf8))
+                webSocketTask?.stop(reason: errorMessage)
                 webSocketTask = nil
+                primaryGeneration = 0
                 if shouldReconnect {
                     scheduleReconnect()
                 }
@@ -1013,6 +1165,32 @@ public actor WebSocketManager {
         authenticatedHandlers.removeValue(forKey: id)
     }
 
+    /// Register a handler that fires when delivery has moved to a new socket
+    /// without an outage (see ``rotateConnection()``).
+    ///
+    /// This is not a reconnect: no status change is emitted, nothing was
+    /// missed, and there is no gap to recover. It exists for state the server
+    /// holds per-connection and therefore cannot survive the swap — a
+    /// standalone aggregation watch has to be re-created against the new
+    /// socket. Anything the manager re-issues itself (mids, candles, OI, path
+    /// watches, chart-history watches) is already handled and needs no hook.
+    ///
+    /// Do NOT use this to refetch history or run gap recovery; ``onAuthenticated``
+    /// is the hook for that. Rotations are routine, so a refetch here
+    /// multiplies into steady background load across every connected client.
+    /// Returns an ID that can be passed to ``removeRotatedHandler`` to unregister.
+    @discardableResult
+    public func onRotated(_ handler: @escaping @Sendable () -> Void) -> UUID {
+        let id = UUID()
+        rotatedHandlers[id] = handler
+        return id
+    }
+
+    /// Remove a previously registered rotation handler.
+    public func removeRotatedHandler(_ id: UUID) {
+        rotatedHandlers.removeValue(forKey: id)
+    }
+
     /// A stream of resume events. Each emission carries the hidden
     /// duration in seconds. Mirrors ``onResume`` for SwiftUI / structured-
     /// concurrency consumers.
@@ -1042,12 +1220,31 @@ public actor WebSocketManager {
         }
     }
 
+    /// A stream that emits whenever delivery moves to a new socket without an
+    /// outage. Mirrors ``onRotated`` for SwiftUI / structured-concurrency
+    /// consumers; the same "not a reconnect" caveats apply.
+    public var rotatedStream: AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuation.onTermination = { [weak self] _ in
+                Task { [weak self] in
+                    await self?.removeRotatedContinuation(id: id)
+                }
+            }
+            self.rotatedContinuations[id] = continuation
+        }
+    }
+
     private func removeResumeContinuation(id: UUID) {
         resumeContinuations.removeValue(forKey: id)
     }
 
     private func removeAuthenticatedContinuation(id: UUID) {
         authenticatedContinuations.removeValue(forKey: id)
+    }
+
+    private func removeRotatedContinuation(id: UUID) {
+        rotatedContinuations.removeValue(forKey: id)
     }
 
     // MARK: - App Lifecycle Observation
@@ -1162,14 +1359,161 @@ public actor WebSocketManager {
         guard lastMessageAt == baselineMessageAt else { return } // any inbound message means alive
         log.warning("websocket", "resume probe timeout, forcing reconnect")
         stopHeartbeat()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        cancelRotation()
+        abortHandoff()
+        webSocketTask?.stop(reason: nil)
         webSocketTask = nil
+        primaryGeneration = 0
         receiveTask?.cancel()
         receiveTask = nil
         setStatus(.disconnected)
         if shouldReconnect {
             scheduleReconnect()
         }
+    }
+
+    // MARK: - Connection Rotation
+
+    /// Replace the current socket with a fresh one without interrupting delivery.
+    ///
+    /// The replacement authenticates and re-issues every subscription while the
+    /// current socket keeps streaming. Only once the server confirms those
+    /// subscriptions are live does it take over, and only then does the old
+    /// socket close — so there is no window in which nothing is subscribed. A
+    /// failure anywhere along the way leaves the current socket untouched and
+    /// serving, which makes the worst case "nothing happened".
+    ///
+    /// Returns false when there is no healthy socket to hand off from, or when
+    /// a handoff is already under way.
+    @discardableResult
+    public func rotateConnection() -> Bool {
+        guard shouldReconnect else { return false }
+        guard handoffGeneration == 0 else { return false }
+        guard _status == .connected else { return false }
+        guard webSocketTask != nil else { return false }
+
+        // Armed before the socket exists so a half-built one can never be left
+        // hanging around unnoticed.
+        clearHandoffTimeout()
+        let budget = handoffTimeout
+        handoffTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(budget * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.handoffTimedOut()
+        }
+        doConnect(handoff: true)
+        return true
+    }
+
+    private func handoffTimedOut() {
+        handoffTimeoutTask = nil
+        log.warning("websocket", "handoff timed out; abandoning replacement socket")
+        abortHandoff()
+        scheduleRotation(after: WebSocketManager.handoffRetrySeconds)
+    }
+
+    /// Hand delivery over to the warmed socket and retire the current one.
+    private func promoteHandoff(generation: Int) {
+        guard generation == handoffGeneration, let promoted = handoffTask else { return }
+
+        clearHandoffTimeout()
+        handoffTask = nil
+        handoffGeneration = 0
+
+        // Silence the retiring loop before closing its socket: the teardown
+        // must not emit a status change, must not schedule a competing
+        // reconnect, and must not let buffered frames reach consumers a second
+        // time.
+        let retiring = webSocketTask
+        receiveTask?.cancel()
+        webSocketTask = promoted
+        primaryGeneration = generation
+        receiveTask = handoffReceiveTask
+        handoffReceiveTask = nil
+        retiring?.stop(reason: nil)
+
+        // New connection, new sequence space. Carrying the old cursor across
+        // would read the next frame as a burst of missed events and trigger a
+        // REST refetch storm on every rotation.
+        lastDeliverySeq = 0
+        lastMessageAt = Date()
+        startHeartbeat()
+        scheduleRotation()
+
+        log.info("websocket", "rotated to replacement socket")
+
+        // Status deliberately does not move. Delivery never stopped, so
+        // emitting `.disconnected` would put consumers into a reconnecting
+        // state and run gap recovery for a gap that did not happen. State the
+        // swap genuinely cannot carry over is re-established via `onRotated`.
+        for handler in rotatedHandlers.values { handler() }
+        for continuation in rotatedContinuations.values {
+            continuation.yield(())
+        }
+    }
+
+    /// Abandon a warming socket. The live socket is left exactly as it was.
+    private func abortHandoff() {
+        let socket = handoffTask
+        handoffTask = nil
+        handoffGeneration = 0
+        clearHandoffTimeout()
+        handoffReceiveTask?.cancel()
+        handoffReceiveTask = nil
+        socket?.stop(reason: nil)
+    }
+
+    /// Arm the next rotation. `delay` overrides the schedule, which is how a
+    /// failed handoff retries before the lifetime it is racing runs out.
+    private func scheduleRotation(after delay: TimeInterval? = nil) {
+        cancelRotation()
+        var wait = delay
+        if wait == nil {
+            // A configured 0 is an opt-out and outranks the server's figure.
+            // The server reports a real constraint, so it wins over any other
+            // configured value — but it must not resurrect rotation for a
+            // caller who turned it off, or the documented escape hatch would be
+            // inoperative on the one fleet that advertises a cap.
+            let lifetime = connectionLifetime == 0 ? 0 : (serverLifetime ?? connectionLifetime)
+            guard lifetime > 0 else { return }
+            let base = lifetime * WebSocketManager.rotateAt
+            let spread = base * WebSocketManager.rotateJitter
+            wait = base - spread + Double.random(in: 0...1) * spread * 2
+        }
+        guard let wait, wait > 0 else { return }
+        rotationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.rotationDue()
+        }
+    }
+
+    private func rotationDue() {
+        rotationTask = nil
+        rotateConnection()
+    }
+
+    private func cancelRotation() {
+        rotationTask?.cancel()
+        rotationTask = nil
+    }
+
+    private func clearHandoffTimeout() {
+        handoffTimeoutTask?.cancel()
+        handoffTimeoutTask = nil
+    }
+
+    /// Adopt the socket lifetime the server reports at auth.
+    ///
+    /// The server sits behind the proxy that enforces the cap, so it is the
+    /// only party that knows the real figure. Taking it from the wire means
+    /// retuning the cap is a server config change rather than an SDK release —
+    /// otherwise every deployed client keeps rotating against a number that
+    /// silently went stale.
+    private func readServerLifetime(_ json: [String: Any]) {
+        guard let seconds = json["maxConnectionLifetimeSec"] as? Double,
+              seconds.isFinite, seconds > 0 else { return }
+        serverLifetime = seconds
     }
 
     // MARK: - Private: Reconnection
@@ -1224,8 +1568,11 @@ public actor WebSocketManager {
                             "thresholdSeconds": String(format: "%.1f", WebSocketManager.staleThresholdS),
                         ])
             stopHeartbeat()
-            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            cancelRotation()
+            abortHandoff()
+            webSocketTask?.stop(reason: nil)
             webSocketTask = nil
+            primaryGeneration = 0
             receiveTask?.cancel()
             receiveTask = nil
             setStatus(.disconnected)
@@ -1240,11 +1587,15 @@ public actor WebSocketManager {
     // MARK: - Private: Messaging
 
     private func sendMessage(_ message: OutboundMessage) {
-        guard let task = webSocketTask else { return }
+        sendMessage(message, generation: primaryGeneration)
+    }
+
+    private func sendMessage(_ message: OutboundMessage, generation: Int) {
+        guard let task = transport(for: generation) else { return }
         do {
             let data = try JSONEncoder().encode(message)
             if let text = String(data: data, encoding: .utf8) {
-                task.send(.string(text)) { [log] err in
+                task.sendText(text) { [log] err in
                     if let err = err {
                         log.warning("websocket", "message send failed", error: err)
                     }
@@ -1252,6 +1603,39 @@ public actor WebSocketManager {
             }
         } catch {
             log.error("websocket", "outbound message encode failed", error: error)
+        }
+    }
+
+    /// Re-issue every live subscription on one socket. Runs on a fresh primary
+    /// after auth and on a warming socket during a handoff, so it must target
+    /// a named socket rather than "the current one".
+    private func resubscribeAll(generation: Int) {
+        if let mids = subscribedMids {
+            sendMessage(.subscribeMids(exchange: mids.exchange, coins: mids.coins), generation: generation)
+        }
+        if let candles = subscribedCandles {
+            sendMessage(.subscribeCandles(coins: candles.coins, intervals: candles.intervals.map(\.rawValue)),
+                        generation: generation)
+        }
+        if let oi = subscribedOI {
+            sendMessage(.subscribeOI(coins: oi.coins, intervals: oi.intervals.map(\.rawValue)),
+                        generation: generation)
+        }
+        if midsRefs > 0 && subscribedMids == nil {
+            sendMessage(.subscribeMids(exchange: midsExchange, coins: []), generation: generation)
+        }
+        if !candleRefCoins.isEmpty && subscribedCandles == nil, let message = candleSubscriptionMessage() {
+            sendMessage(message, generation: generation)
+        }
+        if !oiRefCoins.isEmpty && subscribedOI == nil, let message = oiSubscriptionMessage() {
+            sendMessage(message, generation: generation)
+        }
+        for path in pathRefs.keys {
+            sendMessage(.watch(path: path), generation: generation)
+        }
+        for (watchId, req) in chartHistoryWatches {
+            sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId),
+                        generation: generation)
         }
     }
 

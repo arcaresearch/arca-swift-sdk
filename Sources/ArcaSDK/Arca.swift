@@ -80,7 +80,8 @@ public final class Arca: Sendable {
         urlSessionConfiguration: URLSessionConfiguration = .arcaDefault,
         candleCdnBaseUrl: String? = Arca.defaultCdnBaseUrl,
         logLevel: ArcaLogLevel = .warning,
-        logHandler: ArcaLogHandler? = nil
+        logHandler: ArcaLogHandler? = nil,
+        connectionLifetime: TimeInterval? = nil
     ) throws {
         let resolved = try realmId ?? Self.extractRealmId(from: token)
 
@@ -140,6 +141,7 @@ public final class Arca: Sendable {
             token: token,
             realmId: resolved,
             getToken: wsGetToken,
+            connectionLifetime: connectionLifetime ?? WebSocketManager.defaultConnectionLifetime,
             logger: self.log
         )
         let createdWS = self.ws
@@ -192,7 +194,8 @@ public final class Arca: Sendable {
         cache: CacheConfig = CacheConfig(),
         candleCdnBaseUrl: String? = defaultCdnBaseUrl,
         logLevel: ArcaLogLevel = .warning,
-        logHandler: ArcaLogHandler? = nil
+        logHandler: ArcaLogHandler? = nil,
+        connectionLifetime: TimeInterval? = nil
     ) async throws -> Arca {
         let token = try await tokenProvider()
         return try Arca(
@@ -203,7 +206,8 @@ public final class Arca: Sendable {
             cache: cache,
             candleCdnBaseUrl: candleCdnBaseUrl,
             logLevel: logLevel,
-            logHandler: logHandler
+            logHandler: logHandler,
+            connectionLifetime: connectionLifetime
         )
     }
 
