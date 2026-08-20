@@ -494,8 +494,14 @@ extension Arca {
         let refreshingBox = SendableBox<Bool>(false)
         let stoppedBox = SendableBox<Bool>(false)
 
-        // The watch is server state tied to the connection it was created on,
-        // so every event that replaces that connection has to re-create it.
+        // Every event that replaces the connection has to re-create this watch,
+        // but not for the reason the other SDKs have: they create it over the
+        // socket, so the server destroys it on close. This one is created over
+        // REST and survives that cleanup. What it does not survive is landing
+        // on a different pod — the registry is an in-process map on whichever
+        // platform pod served the create, and no session affinity is
+        // configured, so a replacement connection is balanced independently
+        // and usually reaches a pod that has never heard of this watch id.
         let recreateWatch: @Sendable () async -> Void = { [weak self] in
             guard let self = self, !stoppedBox.value else { return }
             guard !refreshingBox.value else { return }
@@ -540,9 +546,9 @@ extension Arca {
         }
 
         // A rotation swaps the socket without an outage, so no status change
-        // fires and the branch above never runs — but the watch the retired
-        // connection held is gone, so without this the stream goes quiet with
-        // no error. The state deliberately stays `.connected`: nothing was
+        // fires and the branch above never runs — yet the replacement lands on
+        // an independently chosen pod, so without this the stream goes quiet
+        // with no error. The state deliberately stays `.connected`: nothing was
         // missed, so surfacing a reconnecting spinner would be a lie.
         let rotatedStream = await ws.rotatedStream
         let rotatedTask = Task {
