@@ -279,6 +279,56 @@ public struct AggregationWatchStream: Sendable {
     }
 }
 
+// MARK: - ProjectionWatchStream
+
+/// A stream of redacted per-object valuations for a registered projection.
+///
+/// One batched watch covers every object the projection's resources match.
+/// Server frames are deltas — they carry only the rows that changed, plus
+/// an optional `removed` list of deleted paths — and the stream merges them
+/// into ``valuations`` by path. Between server deltas, rows re-mark
+/// client-side against the mids feed so a leaderboard ticks with the market
+/// without extra server traffic.
+///
+/// The stream never receives balances, reserved balances, fills, orders,
+/// or any field outside the projection's registered set.
+public struct ProjectionWatchStream: Sendable {
+    /// Current lifecycle state of the stream.
+    public let state: SendableBox<WatchStreamState>
+    /// Projection name this stream serves.
+    public let projection: String
+    /// The projection's registered field set.
+    public let fields: [String]
+    /// Current server-assigned watch ID (changes after reconnect/rotation).
+    public let watchId: SendableBox<String>
+    /// Latest redacted valuations keyed by object path, re-marked on every
+    /// mids tick.
+    public let valuations: SendableBox<[String: ProjectedValuation]>
+    /// Async stream of merged valuation snapshots (latest-only buffering).
+    public let updates: AsyncStream<[String: ProjectedValuation]>
+    /// Stop listening, unsubscribe, and destroy the server-side watch.
+    public let stop: @Sendable () async -> Void
+
+    internal let updateCallbacks: SendableBox<[UUID: @Sendable ([String: ProjectedValuation]) -> Void]>
+
+    /// Register a callback invoked on each merged snapshot. Returns an unsubscribe function.
+    @discardableResult
+    public func onUpdate(_ handler: @escaping @Sendable ([String: ProjectedValuation]) -> Void) -> @Sendable () -> Void {
+        let id = UUID()
+        updateCallbacks.update { $0[id] = handler }
+        return { [updateCallbacks] in
+            updateCallbacks.update { $0.removeValue(forKey: id) }
+        }
+    }
+
+    /// Returns when the initial snapshot has loaded. Never throws.
+    public func ready() async {
+        while state.value == .loading {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+}
+
 // MARK: - MarketPriceStream
 
 /// A stream of real-time mid prices.

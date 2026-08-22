@@ -6,6 +6,25 @@ import UIKit
 import AppKit
 #endif
 
+/// Reply to a `watch_projection` request: the server-assigned watch ID,
+/// the projection's registered field set, and the first page of redacted
+/// valuations (remaining pages are fetched over REST with `cursor`).
+public struct ProjectionWatchCreated: Sendable {
+    public let watchId: String
+    public let projection: String
+    public let fields: [String]
+    public let valuations: [ProjectedValuation]
+    public let cursor: String?
+
+    public init(watchId: String, projection: String, fields: [String], valuations: [ProjectedValuation], cursor: String?) {
+        self.watchId = watchId
+        self.projection = projection
+        self.fields = fields
+        self.valuations = valuations
+        self.cursor = cursor
+    }
+}
+
 /// Actor-based WebSocket manager for real-time Arca events.
 ///
 /// Handles authentication, channel subscriptions, automatic reconnection
@@ -65,6 +84,13 @@ public actor WebSocketManager {
     private var candleRefCoins: [String: Set<String>] = [:]
     private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
+    // Request/reply seam for watch_projection: requestId → continuation,
+    // plus deferred sends for requests issued before auth completes.
+    private var pendingProjectionRequests: [String: CheckedContinuation<ProjectionWatchCreated, Error>] = [:]
+    private var pendingProjectionSends: [String: String] = [:]
+    private var projectionTimeoutTasks: [String: Task<Void, Never>] = [:]
+    private var nextProjectionRequestId = 0
+    private static let projectionRequestTimeoutNs: UInt64 = 10_000_000_000 // 10s
     private var unsubTasks: [String: Task<Void, Never>] = [:]
     private var idleDisconnectTask: Task<Void, Never>?
     private static let unsubDebounceNs: UInt64 = 100_000_000 // 100ms
@@ -463,6 +489,60 @@ public actor WebSocketManager {
         maybeStartIdleTimer()
     }
 
+    // MARK: - Projection Watches
+
+    /// Create a projection watch over the socket: sends `watch_projection`
+    /// and suspends until the server replies with `projection_watch_created`
+    /// (or an error / timeout). The watch is connection-scoped on the server
+    /// side, so callers must re-create it after a reconnect or rotation —
+    /// ``Arca/watchProjection(name:exchange:)`` handles that automatically.
+    public func createProjectionWatch(projection: String) async throws -> ProjectionWatchCreated {
+        cancelIdleTimer()
+        ensureConnected()
+        nextProjectionRequestId += 1
+        let requestId = "proj-\(nextProjectionRequestId)"
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingProjectionRequests[requestId] = continuation
+            projectionTimeoutTasks[requestId] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: WebSocketManager.projectionRequestTimeoutNs)
+                guard !Task.isCancelled else { return }
+                await self?.timeoutProjectionRequest(requestId)
+            }
+            if _status == .connected {
+                sendMessage(.watchProjection(projection: projection, requestId: requestId))
+            } else {
+                // Not authenticated yet — the send is flushed from the
+                // `authenticated` handler once the connection is live.
+                pendingProjectionSends[requestId] = projection
+            }
+        }
+    }
+
+    /// Destroy a projection watch (`unwatch_projection`).
+    public func destroyProjectionWatch(watchId: String) {
+        sendMessage(.unwatchProjection(watchId: watchId))
+        maybeStartIdleTimer()
+    }
+
+    private func timeoutProjectionRequest(_ requestId: String) {
+        projectionTimeoutTasks.removeValue(forKey: requestId)
+        pendingProjectionSends.removeValue(forKey: requestId)
+        guard let continuation = pendingProjectionRequests.removeValue(forKey: requestId) else { return }
+        continuation.resume(throwing: ArcaError.unknown(
+            code: "WS_REQUEST_TIMEOUT",
+            message: "watch_projection: timeout waiting for server response",
+            errorId: nil
+        ))
+    }
+
+    private func flushPendingProjectionSends() {
+        guard !pendingProjectionSends.isEmpty else { return }
+        for (requestId, projection) in pendingProjectionSends {
+            sendMessage(.watchProjection(projection: projection, requestId: requestId))
+        }
+        pendingProjectionSends.removeAll()
+    }
+
     private func maybeStartIdleTimer() {
         guard !hasAnyInterest() else { return }
         guard idleDisconnectTask == nil else { return }
@@ -626,6 +706,23 @@ public actor WebSocketManager {
                   let interval = CandleInterval(rawValue: intervalStr),
                   let bar = event.bar else { return nil }
             return OIEvent(market: market, interval: interval, bar: bar, isClosed: event.isClosed ?? false)
+        }
+    }
+
+    /// Stream of projection-watch delta frames: `object.valuation` events
+    /// carrying a path-keyed map of redacted valuations for a projection
+    /// watch. Frames are deltas — they carry only the accounts that changed
+    /// (merge rows by path) plus an optional `removed` list of paths whose
+    /// objects were deleted (drop those rows). Single-object
+    /// `object.valuation` events (which carry `valuation`, not `valuations`)
+    /// are not delivered here.
+    public func projectionValuationEvents() -> AsyncStream<(String, [String: ProjectedValuation], [String]?, RealmEvent)> {
+        filteredStream { event in
+            guard event.type == EventType.objectValuation.rawValue,
+                  let watchId = event.watchId,
+                  event.projection != nil,
+                  let valuations = event.valuations else { return nil }
+            return (watchId, valuations, event.removed, event)
         }
     }
 
@@ -970,6 +1067,8 @@ public actor WebSocketManager {
                 startHeartbeat()
                 scheduleRotation()
                 resubscribeAll(generation: primaryGeneration)
+                // Flush projection-watch requests issued while disconnected.
+                flushPendingProjectionSends()
                 // Notify subscribers AFTER all subscriptions are re-issued so
                 // any chart-history watch IDs they depend on are already
                 // registered.
@@ -980,8 +1079,40 @@ public actor WebSocketManager {
                 return
             }
 
+            if msgType == "projection_watch_created" {
+                if let requestId = json["requestId"] as? String,
+                   let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
+                    projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
+                    var valuations: [ProjectedValuation] = []
+                    if let raw = json["valuations"],
+                       let valData = JSONSafe.data(from: raw),
+                       let decoded = try? JSONDecoder().decode([ProjectedValuation].self, from: valData) {
+                        valuations = decoded
+                    }
+                    continuation.resume(returning: ProjectionWatchCreated(
+                        watchId: json["watchId"] as? String ?? "",
+                        projection: json["projection"] as? String ?? "",
+                        fields: json["fields"] as? [String] ?? [],
+                        valuations: valuations,
+                        cursor: json["cursor"] as? String
+                    ))
+                }
+                return
+            }
+
             if msgType == "error" {
                 let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
+                // A request-scoped error rejects just that pending request;
+                // the connection itself is healthy and keeps serving.
+                if let requestId = json["requestId"] as? String,
+                   let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
+                    projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
+                    log.warning("websocket", "projection watch request rejected",
+                                metadata: ["message": errorMessage])
+                    continuation.resume(throwing: ArcaError.unknown(
+                        code: "WS_REQUEST_ERROR", message: errorMessage, errorId: nil))
+                    return
+                }
                 log.error("websocket", "server error",
                           metadata: ["message": errorMessage])
                 cancelRotation()

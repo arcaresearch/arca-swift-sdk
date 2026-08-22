@@ -13,6 +13,8 @@ enum OutboundMessage: Encodable {
     case unsubscribeOI
     case watchChartHistory(watchId: String, target: String, kind: String, objectId: String?)
     case unwatchChartHistory(watchId: String)
+    case watchProjection(projection: String, requestId: String)
+    case unwatchProjection(watchId: String)
     case ping
 
     func encode(to encoder: Encoder) throws {
@@ -57,6 +59,13 @@ enum OutboundMessage: Encodable {
         case .unwatchChartHistory(let watchId):
             try container.encode("unwatch_chart_history", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
+        case .watchProjection(let projection, let requestId):
+            try container.encode("watch_projection", forKey: .action)
+            try container.encode(projection, forKey: .projection)
+            try container.encode(requestId, forKey: .requestId)
+        case .unwatchProjection(let watchId):
+            try container.encode("unwatch_projection", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
         case .ping:
             try container.encode("ping", forKey: .action)
         }
@@ -64,7 +73,7 @@ enum OutboundMessage: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case action, token, realmId, capabilities, exchange, coins, intervals, path, batch
-        case watchId, target, kind, objectId
+        case watchId, target, kind, objectId, projection, requestId
     }
 }
 
