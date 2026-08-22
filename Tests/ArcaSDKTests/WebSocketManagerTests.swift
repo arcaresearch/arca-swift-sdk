@@ -650,4 +650,92 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertTrue(valuationEvents.isEmpty,
                       "Fragment valuation values must be skipped, emitting no valuation event")
     }
+
+    // MARK: - stream.resync (server-announced event loss)
+    //
+    // The server sends this marker when events for the connection were
+    // dropped BEFORE they were sequenced (delivery-queue overflow under
+    // backpressure): no deliverySeq gap will ever reveal that loss, so the
+    // marker must run the same recovery as a detected gap.
+
+    func testStreamResyncFiresGapHandlerWithFloorOfOne() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let gaps = SendableBox<[Int]>([])
+        await manager.onGap { missed in gaps.update { $0.append(missed) } }
+
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"1"},"deliverySeq":1}"#)
+        await manager.injectMessage(#"{"type":"stream.resync","reason":"event_loss","deliverySeq":2}"#)
+
+        // The server knows events were lost, not how many: the count is a
+        // floor of 1.
+        XCTAssertEqual(gaps.value, [1])
+    }
+
+    func testStreamResyncKeepsSequenceContiguous() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let gaps = SendableBox<[Int]>([])
+        await manager.onGap { missed in gaps.update { $0.append(missed) } }
+
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"1"},"deliverySeq":1}"#)
+        await manager.injectMessage(#"{"type":"stream.resync","reason":"event_loss","deliverySeq":2}"#)
+        // The event after the marker continues the sequence; if the marker's
+        // own seq were not consumed this would misread as a sequence gap and
+        // trigger a second, spurious recovery.
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"2"},"deliverySeq":3}"#)
+
+        XCTAssertEqual(gaps.value, [1])
+    }
+
+    func testStreamResyncIsNotForwardedToEventStreams() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let events = await manager.events
+        let received = SendableBox<[RealmEvent]>([])
+        let consumer = Task {
+            for await event in events {
+                received.update { $0.append(event) }
+            }
+        }
+
+        await manager.injectMessage(#"{"type":"stream.resync","reason":"event_loss","deliverySeq":1}"#)
+        await manager.injectMessage(#"{"type":"object.updated","path":"/after","deliverySeq":2}"#)
+
+        let deadline = Date().addingTimeInterval(0.5)
+        while received.value.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        consumer.cancel()
+
+        // The real event arrives; the control message does not.
+        XCTAssertEqual(received.value.map(\.type), ["object.updated"])
+    }
+
+    func testStreamResyncAlsoReportsSequenceGapWhenMarkerRevealsOne() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+        let gaps = SendableBox<[Int]>([])
+        await manager.onGap { missed in gaps.update { $0.append(missed) } }
+
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"1"},"deliverySeq":1}"#)
+        // Events after the drop site can themselves be lost further down the
+        // write path; a marker arriving with a seq jump means both kinds of
+        // loss happened, and both must be reported (sequence hole first).
+        await manager.injectMessage(#"{"type":"stream.resync","reason":"event_loss","deliverySeq":5}"#)
+
+        XCTAssertEqual(gaps.value, [3, 1])
+    }
 }

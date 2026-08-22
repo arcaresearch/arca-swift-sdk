@@ -941,6 +941,26 @@ public actor WebSocketManager {
                 return
             }
 
+            // The server announced that events for this connection were
+            // dropped BEFORE they were sequenced (delivery-queue overflow
+            // under backpressure), so no deliverySeq gap will ever reveal the
+            // loss — this marker is the only signal. Run the same recovery as
+            // a detected gap; the count is a floor of 1 (the server knows
+            // events were lost, not how many). The marker carries its own
+            // deliverySeq, so the sequence check runs first and stays
+            // contiguous for subsequent messages. A control message: never
+            // forwarded to event streams.
+            if msgType == "stream.resync" {
+                if let seq = json["deliverySeq"] as? Int {
+                    checkDeliveryGap(seq)
+                }
+                log.warning("websocket", "server announced event loss (stream.resync)")
+                for handler in gapHandlers.values {
+                    handler(1)
+                }
+                return
+            }
+
             if msgType == "authenticated" {
                 log.info("websocket", "authenticated")
                 reconnectAttempt = 0
@@ -1111,8 +1131,14 @@ public actor WebSocketManager {
         lastDeliverySeq = seq
     }
 
-    /// Register a handler that fires when a delivery sequence gap is detected.
+    /// Register a handler that fires when delivery loss is detected.
     /// The handler receives the number of missed events.
+    ///
+    /// Fires for two kinds of loss: a hole the client observed in the
+    /// server-assigned `deliverySeq` (the count is exact), and a server-sent
+    /// `stream.resync` marker announcing that events were dropped before they
+    /// were sequenced — a loss no sequence check can see (the count is a
+    /// floor of 1). Both mean the same thing for recovery: refetch.
     /// Returns an ID that can be passed to ``removeGapHandler`` to unregister.
     @discardableResult
     public func onGap(_ handler: @escaping @Sendable (Int) -> Void) -> UUID {
