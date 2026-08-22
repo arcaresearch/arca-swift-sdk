@@ -939,7 +939,11 @@ extension Arca {
                         realizedPnl: simFill.realizedPnl,
                         resultingPosition: nil,
                         isLiquidation: simFill.isLiquidation,
-                        createdAt: simFill.createdAt
+                        createdAt: simFill.createdAt,
+                        isTrigger: nil,
+                        tpsl: nil,
+                        triggerPx: nil,
+                        liquidationKind: nil
                     )
 
                     let timerTask = Task {

@@ -933,6 +933,19 @@ public struct Fill: Codable, Sendable {
     public let resultingPosition: FillResultingPosition?
     public let isLiquidation: Bool?
     public let createdAt: String?
+    /// Whether the originating order was a trigger (TP/SL) order, decorated
+    /// server-side from the order operation. `false` means "known regular
+    /// order"; `nil` means the fill is unattributable (external trade,
+    /// liquidation) — absence and falseness are distinct.
+    public let isTrigger: Bool?
+    /// Trigger kind ("tp" | "sl") of the originating order. Present only for trigger orders.
+    public let tpsl: String?
+    /// Trigger price of the originating order. Present only for trigger orders.
+    public let triggerPx: String?
+    /// Classification of an `isLiquidation` fill: "liquidation" (margin
+    /// call) or "adl" (backstop / auto-deleverage close). Absent on
+    /// liquidations recorded before the venue method was stamped.
+    public let liquidationKind: String?
 }
 
 public struct FillListResponse: Codable, Sendable {
