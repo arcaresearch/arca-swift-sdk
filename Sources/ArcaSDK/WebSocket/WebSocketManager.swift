@@ -84,6 +84,11 @@ public actor WebSocketManager {
     private var candleRefCoins: [String: Set<String>] = [:]
     private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
+    // Watches created out-of-band (REST POST /aggregations/watch) that this
+    // socket registered for delivery. Delivery is ownership-gated
+    // server-side, so these must be re-attached on every reconnect or the
+    // watch goes silent.
+    private var attachedWatches: Set<String> = []
     // Request/reply seam for watch_projection: requestId → continuation,
     // plus deferred sends for requests issued before auth completes.
     private var pendingProjectionRequests: [String: CheckedContinuation<ProjectionWatchCreated, Error>] = [:]
@@ -486,6 +491,32 @@ public actor WebSocketManager {
     public func unwatchChartHistory(watchId: String) {
         chartHistoryWatches.removeValue(forKey: watchId)
         sendMessage(.unwatchChartHistory(watchId: watchId))
+        maybeStartIdleTimer()
+    }
+
+    // MARK: - Attached (REST-created) Aggregation Watches
+
+    /// Register a watch created out-of-band (`POST /aggregations/watch`) for
+    /// delivery on this socket.
+    ///
+    /// Delivery is ownership-gated server-side: a socket receives
+    /// `aggregation.updated` only for watches it registered. Without this a
+    /// REST-created watch produces no events. The server re-authorizes the
+    /// watch's sources against this connection's credential, so attaching can
+    /// never widen access.
+    public func attachAggregationWatch(watchId: String) {
+        guard !watchId.isEmpty else { return }
+        cancelIdleTimer()
+        attachedWatches.insert(watchId)
+        ensureConnected()
+        sendMessage(.attachAggregationWatch(watchId: watchId))
+    }
+
+    /// Stop delivery of a watch on this socket without destroying it.
+    public func detachAggregationWatch(watchId: String) {
+        guard !watchId.isEmpty else { return }
+        attachedWatches.remove(watchId)
+        sendMessage(.detachAggregationWatch(watchId: watchId))
         maybeStartIdleTimer()
     }
 
@@ -1793,6 +1824,12 @@ public actor WebSocketManager {
         for (watchId, req) in chartHistoryWatches {
             sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId),
                         generation: generation)
+        }
+        // Re-register REST-created watches. The registry is per-pod, so a
+        // reconnect landing elsewhere answers "unknown watch" — the watch is
+        // genuinely gone there and the stream recreates it.
+        for watchId in attachedWatches {
+            sendMessage(.attachAggregationWatch(watchId: watchId), generation: generation)
         }
     }
 

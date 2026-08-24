@@ -973,12 +973,18 @@ extension Arca {
     /// are pushed via WebSocket.
     ///
     /// - Parameter sources: Sources to track
+    /// The watch is registered on this client's WebSocket before returning.
+    /// Delivery is ownership-gated server-side — a socket receives
+    /// `aggregation.updated` only for watches it registered — so without that
+    /// step this would create a watch that never emits.
     public func createAggregationWatch(sources: [AggregationSource], flowsSince: String? = nil) async throws -> CreateWatchResponse {
-        try await client.post("/aggregations/watch", body: CreateWatchRequest(
+        let response: CreateWatchResponse = try await client.post("/aggregations/watch", body: CreateWatchRequest(
             realmId: realm,
             sources: sources,
             flowsSince: flowsSince
         ))
+        await ws.attachAggregationWatch(watchId: response.watchId.rawValue)
+        return response
     }
 
     /// Get the current aggregation for an existing watch.
@@ -989,6 +995,7 @@ extension Arca {
 
     /// Destroy an aggregation watch.
     public func destroyAggregationWatch(watchId: String) async throws {
+        await ws.detachAggregationWatch(watchId: watchId)
         let _: EmptyResponse = try await client.delete("/aggregations/watch/\(watchId)")
     }
 }

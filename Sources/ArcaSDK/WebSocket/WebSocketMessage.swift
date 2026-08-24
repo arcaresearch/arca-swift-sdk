@@ -15,6 +15,8 @@ enum OutboundMessage: Encodable {
     case unwatchChartHistory(watchId: String)
     case watchProjection(projection: String, requestId: String)
     case unwatchProjection(watchId: String)
+    case attachAggregationWatch(watchId: String)
+    case detachAggregationWatch(watchId: String)
     case ping
 
     func encode(to encoder: Encoder) throws {
@@ -65,6 +67,12 @@ enum OutboundMessage: Encodable {
             try container.encode(requestId, forKey: .requestId)
         case .unwatchProjection(let watchId):
             try container.encode("unwatch_projection", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
+        case .attachAggregationWatch(let watchId):
+            try container.encode("attach_aggregation_watch", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
+        case .detachAggregationWatch(let watchId):
+            try container.encode("detach_aggregation_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
         case .ping:
             try container.encode("ping", forKey: .action)

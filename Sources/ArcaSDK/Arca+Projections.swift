@@ -64,18 +64,24 @@ extension Arca {
     ///   - prefix: Narrow the page to paths under this prefix (never widens
     ///     the projection).
     ///   - path: Exact object path — the single-object variant.
+    ///   - paths: Read a known set of paths in one call (max 500). Use this
+    ///     when you already know which accounts you want — a leaderboard
+    ///     roster, a set of followed traders — instead of paging the whole
+    ///     projection to find them. Like every other filter it only narrows.
     ///   - cursor: Keyset cursor from the prior page.
     ///   - limit: Page size (default 100, max 500).
     public func getProjectionValuations(
         name: String,
         prefix: String? = nil,
         path: String? = nil,
+        paths: [String]? = nil,
         cursor: String? = nil,
         limit: Int? = nil
     ) async throws -> ProjectionValuationsPage {
         var query: [String: String] = ["realmId": realm]
         if let prefix { query["prefix"] = prefix }
         if let path { query["path"] = path }
+        if let paths, !paths.isEmpty { query["paths"] = paths.joined(separator: ",") }
         if let cursor { query["cursor"] = cursor }
         if let limit { query["limit"] = String(limit) }
         return try await client.get("/projections/\(name)/valuations", query: query)
