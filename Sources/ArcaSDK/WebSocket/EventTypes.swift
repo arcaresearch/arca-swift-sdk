@@ -10,6 +10,25 @@ public enum EventType: String, Sendable {
     case objectDeleted = "object.deleted"
     case balanceUpdated = "balance.updated"
     case exchangeUpdated = "exchange.updated"
+    /// The exchange arca's venue account exists and its metadata is stamped, so
+    /// it stops answering `503 EXCHANGE_PROVISIONING`.
+    ///
+    /// This does not always mean it can trade: on a cosign-armed boundary the
+    /// trading agent still needs the user's co-signature, which
+    /// ``ExchangeProvisioning/cosignRequired`` reports and ``exchangeReady``
+    /// marks.
+    case exchangeProvisioned = "exchange.provisioned"
+    /// The trading agent is registered on chain and the account can trade.
+    ///
+    /// On an unarmed boundary this follows ``exchangeProvisioned`` immediately.
+    /// On an armed one it waits for the user's co-signed agent grant, which may
+    /// be minutes or days — treat the gap as waiting on the user, not a stall.
+    case exchangeReady = "exchange.ready"
+    /// Money seen arriving at a watched deposit address, before it has been
+    /// swept into the boundary and become balance. ``balanceUpdated`` is still
+    /// what says the funds landed; this is the honest earlier signal that they
+    /// are on their way.
+    case depositDetected = "deposit.detected"
     case aggregationUpdated = "aggregation.updated"
     case midsUpdated = "mids.updated"
     case candleClosed = "candle.closed"
