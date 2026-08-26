@@ -59,16 +59,16 @@ private func chartResolutionSeconds(_ resolution: String?) -> Int64 {
 private struct V2HistoryPoint: Codable, Sendable {
     let ts: String
     let equityUsd: String
+    let unflooredEquityUsd: String?
     let status: ChartPointStatus?
     let cumInflowsUsd: String?
     let cumOutflowsUsd: String?
-    let lastEventOpId: String?
-    let midSetId: String?
 }
 
 private struct V2HistoryResponse: Codable, Sendable {
     let resolution: String?
     let resolutionRequested: String?
+    let bucketSeconds: Int?
     let serverNow: String?
     let points: [V2HistoryPoint]?
 }
@@ -77,21 +77,20 @@ private struct V2PnlHistoryPoint: Codable, Sendable {
     let ts: String
     let pnlUsd: String
     let equityUsd: String
+    let unflooredEquityUsd: String?
     let status: ChartPointStatus?
     let cumInflowsUsd: String?
     let cumOutflowsUsd: String?
-    let lastEventOpId: String?
-    let midSetId: String?
     let valueUsd: String?
 }
 
 private struct V2PnlHistoryResponse: Codable, Sendable {
     let resolution: String?
     let resolutionRequested: String?
+    let bucketSeconds: Int?
     let serverNow: String?
     let startEquityUsd: String?
     let startingEquityUsd: String?
-    let effectiveFrom: String?
     let externalFlows: [ExternalFlowEntry]?
     let midPrices: [String: String]?
     let points: [V2PnlHistoryPoint]?
@@ -184,19 +183,18 @@ extension Arca {
             points: result.points?.count ?? 0,
             resolution: result.resolution,
             resolutionRequested: result.resolutionRequested,
+            bucketSeconds: result.bucketSeconds,
             serverNow: result.serverNow,
             startingEquityUsd: result.startEquityUsd ?? result.startingEquityUsd ?? "0",
-            effectiveFrom: result.effectiveFrom,
             pnlPoints: result.points?.map {
                 PnlPoint(
                     timestamp: $0.ts,
                     pnlUsd: $0.pnlUsd,
                     equityUsd: $0.equityUsd,
+                    unflooredEquityUsd: $0.unflooredEquityUsd,
                     status: $0.status,
                     cumInflowsUsd: $0.cumInflowsUsd,
                     cumOutflowsUsd: $0.cumOutflowsUsd,
-                    lastEventOpId: $0.lastEventOpId,
-                    midSetId: $0.midSetId,
                     valueUsd: $0.valueUsd
                 )
             } ?? [],
@@ -248,16 +246,16 @@ extension Arca {
             points: result.points?.count ?? 0,
             resolution: result.resolution,
             resolutionRequested: result.resolutionRequested,
+            bucketSeconds: result.bucketSeconds,
             serverNow: result.serverNow,
             equityPoints: result.points?.map {
                 EquityPoint(
                     timestamp: $0.ts,
                     equityUsd: $0.equityUsd,
+                    unflooredEquityUsd: $0.unflooredEquityUsd,
                     status: $0.status,
                     cumInflowsUsd: $0.cumInflowsUsd,
-                    cumOutflowsUsd: $0.cumOutflowsUsd,
-                    lastEventOpId: $0.lastEventOpId,
-                    midSetId: $0.midSetId
+                    cumOutflowsUsd: $0.cumOutflowsUsd
                 )
             } ?? []
         )
@@ -613,7 +611,14 @@ extension Arca {
 
         let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
         await ws.watchPath(path)
-        let flowsSince = history.effectiveFrom ?? from
+        // `flowsSince` must align with the instant `startingEquityUsd` is
+        // measured at, or the live tick double-counts flows already baked
+        // into the anchor. The server anchors on the first point of the
+        // requested window and does not trim leading zero-equity points,
+        // so the window start IS the anchor instant. (This previously read
+        // a server `effectiveFrom` field for a trimming behaviour the
+        // consolidated read path does not implement and never emitted.)
+        let flowsSince = from
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange,

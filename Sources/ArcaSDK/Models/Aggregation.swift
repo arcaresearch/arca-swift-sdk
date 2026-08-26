@@ -340,13 +340,19 @@ public struct PnlResponse: Codable, Sendable {
 
 public struct PnlPoint: Codable, Sendable {
     public let timestamp: String
+    /// Flow-adjusted P&L: external inflows/outflows removed, anchored at
+    /// the first point. A deposit does not move this.
     public let pnlUsd: String
+    /// Marked account value for this bucket, floored at zero — the same
+    /// number `getEquityHistory` returns for the same bucket. Chart this,
+    /// not `pnlUsd`, when you want "what is the account worth".
     public let equityUsd: String
+    /// True signed value, present only when the zero floor clamped this
+    /// point. `pnlUsd` is already derived from it.
+    public let unflooredEquityUsd: String?
     public let status: ChartPointStatus?
     public let cumInflowsUsd: String?
     public let cumOutflowsUsd: String?
-    public let lastEventOpId: String?
-    public let midSetId: String?
     /// Present when the chart is created with `anchor: .equity`.
     /// Equal to pnlUsd shifted so the live (rightmost) point equals current equity.
     public var valueUsd: String?
@@ -355,21 +361,19 @@ public struct PnlPoint: Codable, Sendable {
         timestamp: String,
         pnlUsd: String,
         equityUsd: String,
+        unflooredEquityUsd: String? = nil,
         status: ChartPointStatus? = nil,
         cumInflowsUsd: String? = nil,
         cumOutflowsUsd: String? = nil,
-        lastEventOpId: String? = nil,
-        midSetId: String? = nil,
         valueUsd: String? = nil
     ) {
         self.timestamp = timestamp
         self.pnlUsd = pnlUsd
         self.equityUsd = equityUsd
+        self.unflooredEquityUsd = unflooredEquityUsd
         self.status = status
         self.cumInflowsUsd = cumInflowsUsd
         self.cumOutflowsUsd = cumOutflowsUsd
-        self.lastEventOpId = lastEventOpId
-        self.midSetId = midSetId
         self.valueUsd = valueUsd
     }
 }
@@ -397,12 +401,10 @@ public struct PnlHistoryResponse: Codable, Sendable {
     public let points: Int
     public let resolution: String?
     public let resolutionRequested: String?
+    /// Bucket width of `resolution`, in seconds.
+    public let bucketSeconds: Int?
     public let serverNow: String?
     public let startingEquityUsd: String
-    /// Timestamp of the first non-zero equity point (after leading-zero
-    /// trimming). Use as `flowsSince` for the live watch to avoid
-    /// double-counting flows already reflected in `startingEquityUsd`.
-    public let effectiveFrom: String?
     public let pnlPoints: [PnlPoint]
     public let externalFlows: [ExternalFlowEntry]?
     public let midPrices: [String: String]?
@@ -414,9 +416,9 @@ public struct PnlHistoryResponse: Codable, Sendable {
         points: Int,
         resolution: String? = nil,
         resolutionRequested: String? = nil,
+        bucketSeconds: Int? = nil,
         serverNow: String? = nil,
         startingEquityUsd: String,
-        effectiveFrom: String? = nil,
         pnlPoints: [PnlPoint],
         externalFlows: [ExternalFlowEntry]? = nil,
         midPrices: [String: String]? = nil
@@ -427,9 +429,9 @@ public struct PnlHistoryResponse: Codable, Sendable {
         self.points = points
         self.resolution = resolution
         self.resolutionRequested = resolutionRequested
+        self.bucketSeconds = bucketSeconds
         self.serverNow = serverNow
         self.startingEquityUsd = startingEquityUsd
-        self.effectiveFrom = effectiveFrom
         self.pnlPoints = pnlPoints
         self.externalFlows = externalFlows
         self.midPrices = midPrices
@@ -438,6 +440,11 @@ public struct PnlHistoryResponse: Codable, Sendable {
 
 // MARK: - Equity History
 
+/// Provenance of a bucket's CASH side. Not a marked/unmarked flag:
+/// every bucket is marked to that bucket's own mids, so a `.carried`
+/// point still changes value as the market moves. `.incomplete` means an
+/// input was missing (no mid for a market, or the position overlay could
+/// not run).
 public enum ChartPointStatus: String, Codable, Sendable {
     case open
     case sealed
@@ -447,29 +454,36 @@ public enum ChartPointStatus: String, Codable, Sendable {
 
 public struct EquityPoint: Codable, Sendable {
     public let timestamp: String
+    /// Marked account value for this bucket: cash valued at the bucket's
+    /// own mids, plus unrealized P&L on every position open at that
+    /// bucket, valued at the same mids. Floored at zero — an exchange
+    /// account is the one class permitted to hold a negative balance,
+    /// and a balance that renders negative is worse than one that
+    /// renders as zero.
     public let equityUsd: String
+    /// True signed value, present ONLY when the zero floor clamped this
+    /// point — so its presence is also how you tell a floored point from
+    /// a genuinely-zero one. The floor never destroys the number; use
+    /// this to reconstruct the real change.
+    public let unflooredEquityUsd: String?
     public let status: ChartPointStatus?
     public let cumInflowsUsd: String?
     public let cumOutflowsUsd: String?
-    public let lastEventOpId: String?
-    public let midSetId: String?
 
     public init(
         timestamp: String,
         equityUsd: String,
+        unflooredEquityUsd: String? = nil,
         status: ChartPointStatus? = nil,
         cumInflowsUsd: String? = nil,
-        cumOutflowsUsd: String? = nil,
-        lastEventOpId: String? = nil,
-        midSetId: String? = nil
+        cumOutflowsUsd: String? = nil
     ) {
         self.timestamp = timestamp
         self.equityUsd = equityUsd
+        self.unflooredEquityUsd = unflooredEquityUsd
         self.status = status
         self.cumInflowsUsd = cumInflowsUsd
         self.cumOutflowsUsd = cumOutflowsUsd
-        self.lastEventOpId = lastEventOpId
-        self.midSetId = midSetId
     }
 }
 
@@ -478,8 +492,16 @@ public struct EquityHistoryResponse: Codable, Sendable {
     public let from: String
     public let to: String
     public let points: Int
+    /// Ladder rung actually served. The ladder picks the finest rung
+    /// whose bucket count fits the requested `points`, so a 24h window at
+    /// `points: 180` is served at `15m` (~96 points). Compare two series
+    /// by window and `resolution`, never by array length.
     public let resolution: String?
+    /// Set only when the requested rung lacked coverage and the server
+    /// promoted to a coarser one.
     public let resolutionRequested: String?
+    /// Bucket width of `resolution`, in seconds.
+    public let bucketSeconds: Int?
     public let serverNow: String?
     public let equityPoints: [EquityPoint]
 
@@ -490,6 +512,7 @@ public struct EquityHistoryResponse: Codable, Sendable {
         points: Int,
         resolution: String? = nil,
         resolutionRequested: String? = nil,
+        bucketSeconds: Int? = nil,
         serverNow: String? = nil,
         equityPoints: [EquityPoint]
     ) {
@@ -499,6 +522,7 @@ public struct EquityHistoryResponse: Codable, Sendable {
         self.points = points
         self.resolution = resolution
         self.resolutionRequested = resolutionRequested
+        self.bucketSeconds = bucketSeconds
         self.serverNow = serverNow
         self.equityPoints = equityPoints
     }
