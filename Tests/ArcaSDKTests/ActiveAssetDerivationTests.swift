@@ -627,6 +627,42 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertEqual(Double(btc.availability!.crossDexAvailableUsd)!, 3.12145, accuracy: 0.001)
     }
 
+    /// The REST path: both numbers from a one-shot state, no stream needed.
+    func testMarketAvailabilityFromPlainState() {
+        let st = crossDexState(totalCollateral: "14.4519", equity: "14.4519", initialMarginUsed: "6.3333",
+            positions: [dexPosition("hl:0:BTC", marginUsed: "4.9971", positionValue: "99.9425"),
+                        dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6134"),
+                        dexPosition("hl:9:US500", marginUsed: "0.6555", positionValue: "13.1109")])
+
+        let nvda = marketAvailability(exchangeState: st, market: "hl:1:NVDA")
+        XCTAssertTrue(nvda.reservationEnforced)
+        XCTAssertEqual(Double(nvda.crossDexAvailableUsd)!, 3.12145, accuracy: 0.001)
+        XCTAssertEqual(Double(nvda.nativeAvailableUsd)!, 8.1186, accuracy: 0.001)
+
+        // Same two numbers from the native market — only the flag differs.
+        let btc = marketAvailability(exchangeState: st, market: "hl:0:BTC")
+        XCTAssertFalse(btc.reservationEnforced)
+        XCTAssertEqual(btc.crossDexAvailableUsd, nvda.crossDexAvailableUsd)
+        XCTAssertEqual(btc.nativeAvailableUsd, nvda.nativeAvailableUsd)
+
+        // ...and it agrees with what the stream reports for the same state.
+        let streamed = deriveActiveAssetData(from: st, market: "hl:1:NVDA",
+                                             markPx: 226.59, leverage: 20, side: .buy)!
+        XCTAssertEqual(streamed.availability!.crossDexAvailableUsd, nvda.crossDexAvailableUsd)
+        XCTAssertEqual(streamed.availability!.nativeAvailableUsd, nvda.nativeAvailableUsd)
+    }
+
+    /// A venue with no reservation returns one number twice.
+    func testMarketAvailabilityEqualWhenNoReservation() {
+        let sim = crossDexState(totalCollateral: "1000", equity: "1000", initialMarginUsed: "200",
+            positions: [dexPosition("hl:0:BTC", marginUsed: "200", positionValue: "4000")],
+            declaresModel: false)
+        let a = marketAvailability(exchangeState: sim, market: "hl:1:NVDA")
+        XCTAssertFalse(a.reservationEnforced)
+        XCTAssertEqual(a.crossDexAvailableUsd, a.nativeAvailableUsd)
+        XCTAssertEqual(Double(a.crossDexAvailableUsd)!, 800, accuracy: 1e-6)
+    }
+
     /// A single-pool venue declares no model and must be left entirely alone.
     func testNoModelMeansNoReservation() {
         let sim = crossDexState(totalCollateral: "14.4519", equity: "14.4519", initialMarginUsed: "6.3333",

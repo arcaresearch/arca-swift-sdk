@@ -49,6 +49,37 @@ struct ResolvedAvailability {
     let rate: Double
 }
 
+/// Both of an account's buying-power numbers, from an ``ExchangeState`` you
+/// already have. No network call.
+///
+/// ``Arca/watchMaxOrderSize(options:)`` reports this on every tick as
+/// ``ActiveAssetData/availability``; this is the same computation for callers
+/// holding a one-shot `getExchangeState` result — a market list, a portfolio
+/// header, or an order ticket not driving a live slider.
+///
+/// ```swift
+/// let state = try await arca.getExchangeState(objectId: objectId)
+/// let a = marketAvailability(exchangeState: state, market: "hl:1:NVDA")
+/// a.crossDexAvailableUsd  // buying power on NVIDIA (and every non-native dex)
+/// a.nativeAvailableUsd    // buying power on hl:0:* — larger when native is >10x
+/// a.reservationEnforced   // whether THIS market draws on the shared pool
+/// ```
+///
+/// On a venue that declares no reservation both numbers are equal and
+/// `reservationEnforced` is false, so a caller can render one code path.
+public func marketAvailability(exchangeState: ExchangeState, market: String) -> AvailabilityBreakdown {
+    let summary = exchangeState.crossMarginSummary ?? exchangeState.marginSummary
+    let a = resolveAvailability(
+        exchangeState: exchangeState, market: market,
+        equity: parsePositiveDouble(summary.equity),
+        initialMarginUsed: parsePositiveDouble(summary.initialMarginUsed))
+    return AvailabilityBreakdown(
+        reservationEnforced: a.enforced,
+        crossDexAvailableUsd: toDecimalString(a.crossDex),
+        nativeAvailableUsd: toDecimalString(a.native),
+        reservationRate: toDecimalString(a.rate))
+}
+
 /// An account on a venue with a cross-dex reservation has exactly TWO buying
 /// power numbers, and this returns both.
 ///
