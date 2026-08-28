@@ -515,6 +515,129 @@ final class ActiveAssetDerivationTests: XCTestCase {
         XCTAssertEqual(Double(d.availableToTrade)!, 500, accuracy: 1e-6)
     }
 
+    // An account on a venue with a cross-dex reservation has exactly TWO buying
+    // power numbers: the native dex's own budget, and one pool shared by every
+    // other perp dex. Every case below is a reading taken from Hyperliquid
+    // mainnet on 2026-08-28 — three live accounts plus states driven
+    // deliberately on a test account.
+    private static let hlRate = "0.1"
+
+    private func crossDexState(totalCollateral: String, equity: String,
+                               initialMarginUsed: String, positions: [SimPosition],
+                               declaresModel: Bool = true) -> ExchangeState {
+        ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"), name: "test",
+                                createdAt: "2026-01-01T00:00:00.000000Z",
+                                updatedAt: "2026-01-01T00:00:00.000000Z"),
+            marginSummary: SimMarginSummary(
+                equity: equity, initialMarginUsed: initialMarginUsed,
+                maintenanceMarginRequired: "0", availableToWithdraw: "0",
+                totalNtlPos: "0", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            crossMarginSummary: nil, crossMaintenanceMarginUsed: nil,
+            positions: positions, openOrders: [],
+            feeRates: SimFeeRates(taker: "0.00035", maker: "0.0001", platformFee: "0.0001",
+                                  tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
+            pendingIntents: nil,
+            collateralModel: declaresModel
+                ? CollateralModel(crossDexReservationEnforced: true,
+                                  crossDexReservationRate: Self.hlRate,
+                                  totalCollateralUsd: totalCollateral)
+                : nil)
+    }
+
+    private func dexPosition(_ market: String, marginUsed: String, positionValue: String) -> SimPosition {
+        SimPosition(
+            id: SimPositionID("pos_\(market)"), accountId: SimAccountID("act_1"),
+            realmId: RealmID("rlm_1"), market: market, side: .long, size: "1",
+            entryPrice: "1", leverage: 20, marginUsed: marginUsed,
+            liquidationPrice: nil, unrealizedPnl: nil, returnOnEquity: nil,
+            positionValue: positionValue, error: nil, cumulativeFunding: nil,
+            cumulativeFee: nil, cumulativeExchangeFee: nil, cumulativePlatformFee: nil,
+            cumulativeBuilderFee: nil, createdAt: nil, updatedAt: nil)
+    }
+
+    /// The venue's own answer for each state, on a non-native (HIP-3) market.
+    func testCrossDexAvailableMatchesMainnet() {
+        let cases: [(String, ExchangeState, Double)] = [
+            // The Gobi letter tester: 40x native swallows the entire balance.
+            ("letter tester 40x", crossDexState(totalCollateral: "21.647938", equity: "21.647938",
+                initialMarginUsed: "9.931551",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "9.931551", positionValue: "397.262040")]), 0),
+            ("lab, headroom", crossDexState(totalCollateral: "9.749047", equity: "9.749047",
+                initialMarginUsed: "3.087293",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "3.087293", positionValue: "73.436720")]), 2.405375),
+            // Two dexes — the account that falsified the previous formula.
+            ("tester2 native+xyz", crossDexState(totalCollateral: "8.696417", equity: "8.668287",
+                initialMarginUsed: "4.072284",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "2.397960", positionValue: "23.979600"),
+                            dexPosition("hl:1:NVDA", marginUsed: "1.674324", positionValue: "33.486480")]), 4.624133),
+            ("native 20x", crossDexState(totalCollateral: "14.753099", equity: "14.753099",
+                initialMarginUsed: "4.994187",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "4.994187", positionValue: "99.883750")]), 4.764724),
+            // Below 1/rate the margin term wins — the branch that proves the max().
+            ("native 8x", crossDexState(totalCollateral: "14.700599", equity: "14.700599",
+                initialMarginUsed: "12.479531",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "12.479531", positionValue: "99.836250")]), 2.221068),
+            // A HIP-3 position is never charged the notional floor.
+            ("HIP-3 only", crossDexState(totalCollateral: "14.563936", equity: "14.563936",
+                initialMarginUsed: "0.679900",
+                positions: [dexPosition("hl:1:NVDA", marginUsed: "0.679900", positionValue: "13.597800")]), 13.884036),
+            ("two HIP-3 dexes", crossDexState(totalCollateral: "14.4957", equity: "14.4957",
+                initialMarginUsed: "1.3362",
+                positions: [dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6140"),
+                            dexPosition("hl:9:US500", marginUsed: "0.6555", positionValue: "13.1109")]), 13.1595),
+            ("all three dexes", crossDexState(totalCollateral: "14.4519", equity: "14.4519",
+                initialMarginUsed: "6.3333",
+                positions: [dexPosition("hl:0:BTC", marginUsed: "4.9971", positionValue: "99.9425"),
+                            dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6134"),
+                            dexPosition("hl:9:US500", marginUsed: "0.6555", positionValue: "13.1109")]), 3.12145),
+        ]
+        for (name, state, want) in cases {
+            guard let d = deriveActiveAssetData(from: state, market: "hl:1:NVDA",
+                                                markPx: 226.59, leverage: 20, side: .buy) else {
+                XCTFail("\(name): expected non-nil"); continue
+            }
+            XCTAssertEqual(Double(d.availableToTrade)!, want, accuracy: 0.001, name)
+            XCTAssertEqual(Double(d.availability!.crossDexAvailableUsd)!, want, accuracy: 0.001, name)
+        }
+    }
+
+    /// Every non-native dex reads the SAME number, including one never touched.
+    func testEveryNonNativeDexSharesOneNumber() {
+        let st = crossDexState(totalCollateral: "14.4519", equity: "14.4519", initialMarginUsed: "6.3333",
+            positions: [dexPosition("hl:0:BTC", marginUsed: "4.9971", positionValue: "99.9425"),
+                        dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6134"),
+                        dexPosition("hl:9:US500", marginUsed: "0.6555", positionValue: "13.1109")])
+        let nvda = deriveActiveAssetData(from: st, market: "hl:1:NVDA", markPx: 226.59, leverage: 20, side: .buy)!
+        let us500 = deriveActiveAssetData(from: st, market: "hl:9:US500", markPx: 771.22, leverage: 20, side: .buy)!
+        let gold = deriveActiveAssetData(from: st, market: "hl:2:GOLD", markPx: 4153.2, leverage: 20, side: .buy)!
+        XCTAssertEqual(nvda.availableToTrade, us500.availableToTrade)
+        XCTAssertEqual(gold.availableToTrade, nvda.availableToTrade)
+    }
+
+    /// The native dex keeps its own, larger budget (measured 8.115 vs 3.120).
+    func testNativeDexKeepsItsOwnBudget() {
+        let st = crossDexState(totalCollateral: "14.4519", equity: "14.4519", initialMarginUsed: "6.3333",
+            positions: [dexPosition("hl:0:BTC", marginUsed: "4.9971", positionValue: "99.9425"),
+                        dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6134"),
+                        dexPosition("hl:9:US500", marginUsed: "0.6555", positionValue: "13.1109")])
+        let btc = deriveActiveAssetData(from: st, market: "hl:0:BTC", markPx: 79954, leverage: 20, side: .buy)!
+        XCTAssertEqual(Double(btc.availableToTrade)!, 8.1186, accuracy: 0.001)
+        XCTAssertFalse(btc.availability!.reservationEnforced)
+        XCTAssertEqual(Double(btc.availability!.crossDexAvailableUsd)!, 3.12145, accuracy: 0.001)
+    }
+
+    /// A single-pool venue declares no model and must be left entirely alone.
+    func testNoModelMeansNoReservation() {
+        let sim = crossDexState(totalCollateral: "14.4519", equity: "14.4519", initialMarginUsed: "6.3333",
+            positions: [dexPosition("hl:0:BTC", marginUsed: "4.9971", positionValue: "99.9425"),
+                        dexPosition("hl:1:NVDA", marginUsed: "0.6807", positionValue: "13.6134")],
+            declaresModel: false)
+        let d = deriveActiveAssetData(from: sim, market: "hl:1:NVDA", markPx: 226.59, leverage: 20, side: .buy)!
+        XCTAssertEqual(Double(d.availableToTrade)!, 8.1186, accuracy: 0.001)
+        XCTAssertFalse(d.availability!.reservationEnforced)
+    }
+
     func testFallsBackToAccountWideSummaryWhenNoCrossBucket() {
         // Older servers, and any account with nothing isolated, where the two
         // are identical by construction.

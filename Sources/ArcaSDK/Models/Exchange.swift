@@ -264,13 +264,19 @@ public struct ExchangeState: Codable, Sendable {
     /// equity, max-order-size) are server-authoritative and the SDK does not
     /// recompute them from mids. Absent ⇒ `.client`.
     public let pricingMode: PricingMode?
+    /// The venue's collateral rule for this account. Drives
+    /// ``ActiveAssetData/availableToTrade`` and its
+    /// ``ActiveAssetData/availability`` breakdown. Absent on venues that have
+    /// not declared a model, which clients read as "no reservation".
+    public let collateralModel: CollateralModel?
 
     public init(
         account: SimAccount, marginSummary: SimMarginSummary,
         crossMarginSummary: SimMarginSummary?, crossMaintenanceMarginUsed: String?,
         positions: [SimPosition], openOrders: [SimOrder],
         feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?,
-        pricingMode: PricingMode? = nil
+        pricingMode: PricingMode? = nil,
+        collateralModel: CollateralModel? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -278,6 +284,7 @@ public struct ExchangeState: Codable, Sendable {
         self.positions = positions; self.openOrders = openOrders
         self.feeRates = feeRates; self.pendingIntents = pendingIntents
         self.pricingMode = pricingMode
+        self.collateralModel = collateralModel
     }
 
     public init(from decoder: Decoder) throws {
@@ -291,11 +298,12 @@ public struct ExchangeState: Codable, Sendable {
         feeRates = try container.decodeIfPresent(SimFeeRates.self, forKey: .feeRates)
         pendingIntents = try container.decodeIfPresent([ExchangeIntent].self, forKey: .pendingIntents)
         pricingMode = try container.decodeIfPresent(PricingMode.self, forKey: .pricingMode)
+        collateralModel = try container.decodeIfPresent(CollateralModel.self, forKey: .collateralModel)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents, pricingMode
+        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel
     }
 }
 
@@ -366,6 +374,93 @@ public struct ActiveAssetData: Codable, Sendable {
     /// at the ask, so this is the directional execution price for max-buy
     /// sizing. Equals `markPx` when no order book is available.
     public let askPx: String?
+    /// Why ``availableToTrade`` is what it is, when a venue rule holds part of
+    /// the account back from this market.
+    ///
+    /// Present whenever the client derived the figure
+    /// (``Arca/watchMaxOrderSize(options:)``); nil on older SDKs. Gate
+    /// reservation-aware UI on ``AvailabilityBreakdown/reservationEnforced`` —
+    /// it is both the capability signal and the live state, so a screen written
+    /// against it renders correctly before and after a venue is switched on,
+    /// with no coordination.
+    public let availability: AvailabilityBreakdown?
+}
+
+/// Both buying-power numbers for an account, and which one this market uses.
+/// See ``CollateralModel``.
+public struct AvailabilityBreakdown: Codable, Sendable {
+    /// Whether *this* market draws on the shared cross-dex pool rather than the
+    /// native dex's own budget — true for a market on any non-native perp dex
+    /// when the venue declares a reservation.
+    ///
+    /// This is the flag to gate reservation-aware UI on: it is both the
+    /// capability signal (nil on older SDKs) and the per-market state.
+    public let reservationEnforced: Bool
+    /// Buying power on every non-native perp dex. One number, shared by all of
+    /// them — a position on one costs its margin on all the others equally.
+    public let crossDexAvailableUsd: String
+    /// Buying power on the venue-native dex (`equity - totalMargin`). Equal to
+    /// ``crossDexAvailableUsd`` unless a native position is levered above
+    /// `1/reservationRate`; that is the only thing that separates them.
+    public let nativeAvailableUsd: String
+    /// The venue's notional fraction (`"0.1"`), or `"0"` when nothing applies.
+    public let reservationRate: String
+
+    public init(reservationEnforced: Bool, crossDexAvailableUsd: String,
+                nativeAvailableUsd: String, reservationRate: String) {
+        self.reservationEnforced = reservationEnforced
+        self.crossDexAvailableUsd = crossDexAvailableUsd
+        self.nativeAvailableUsd = nativeAvailableUsd
+        self.reservationRate = reservationRate
+    }
+}
+
+/// How a venue decides whether an account's free collateral can back an order
+/// on a perp dex it holds no margin on.
+///
+/// This is a venue rule, not a market property, and the two venues answer it
+/// differently over *identical* market ids: the live `hl` venue reserves
+/// `max(initialMargin, rate * totalNotional)` behind the open positions before
+/// collateral can move to another dex, while the `hl-sim` paper venue has a
+/// single pool and no transfer to gate. Both publish `hl:<dexIndex>:<symbol>`,
+/// so a client inspecting the market id cannot tell them apart.
+///
+/// Absent means no reservation — read it that way rather than guessing.
+public struct CollateralModel: Codable, Sendable {
+    /// Whether collateral already backing open positions is held back from a
+    /// perp dex other than the venue-native one.
+    ///
+    /// When true the account has exactly **two** buying-power numbers, and
+    /// ``ActiveAssetData/availability`` reports both:
+    ///
+    ///     native   = equity - totalMargin              (the venue-native dex)
+    ///     crossDex = totalCollateral - reserved        (EVERY other dex, shared)
+    ///     reserved = max(marginNative, rate * notionalNative) + marginOtherDexes
+    ///
+    /// The notional floor applies to the **native dex only**; a position on any
+    /// other dex contributes just its own margin, uniformly, everywhere. So only
+    /// a native position above `1/rate` leverage separates the two numbers — the
+    /// shared pool is charged as if it had been opened at exactly `1/rate`.
+    public let crossDexReservationEnforced: Bool
+    /// The notional fraction in that formula, as a decimal string (`"0.1"` on
+    /// Hyperliquid). Also the leverage threshold: below `1/rate` on the native
+    /// dex the margin term wins and there is no gap between the two numbers.
+    public let crossDexReservationRate: String?
+    /// The account's whole settlement-asset pool (spot USDC on Hyperliquid),
+    /// before any of it is committed to a perp dex.
+    ///
+    /// Sent because it is **price-invariant** — it is cash — so a client can
+    /// recompute the reservation exactly against live marks between state
+    /// reads. Do not substitute equity: equity carries unrealized P&L and moves
+    /// with the mark.
+    public let totalCollateralUsd: String?
+
+    public init(crossDexReservationEnforced: Bool, crossDexReservationRate: String? = nil,
+                totalCollateralUsd: String? = nil) {
+        self.crossDexReservationEnforced = crossDexReservationEnforced
+        self.crossDexReservationRate = crossDexReservationRate
+        self.totalCollateralUsd = totalCollateralUsd
+    }
 }
 
 // MARK: - Asset Fee Rates

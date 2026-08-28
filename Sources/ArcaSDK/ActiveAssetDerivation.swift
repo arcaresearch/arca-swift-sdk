@@ -30,6 +30,87 @@ private func toDecimalString(_ value: Double, decimals: Int = 8) -> String {
     return s
 }
 
+/// Perp-dex index of a canonical market id (`hl:<dexIndex>:<symbol>`), or nil
+/// when the id is not in the three-segment form (a bare symbol, or a venue that
+/// does not carry a dex index).
+private func perpDexIndexOf(_ market: String?) -> Int? {
+    guard let market else { return nil }
+    let parts = market.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count >= 3, let idx = Int(parts[1]), idx >= 0 else { return nil }
+    return idx
+}
+
+/// Both buying-power numbers for an account, and which one `market` uses.
+struct ResolvedAvailability {
+    let available: Double
+    let crossDex: Double
+    let native: Double
+    let enforced: Bool
+    let rate: Double
+}
+
+/// An account on a venue with a cross-dex reservation has exactly TWO buying
+/// power numbers, and this returns both.
+///
+///     native   = equity - totalMargin           (the venue-native dex)
+///     crossDex = totalCollateral - reserved     (shared by EVERY other dex)
+///     reserved = max(marginNative, rate * notionalNative) + marginOnOtherDexes
+///
+/// Pinned against Hyperliquid mainnet on 2026-08-28 across three live accounts
+/// and nine constructed states. Two properties are load-bearing and an earlier
+/// revision of this function got both wrong:
+///
+/// - The notional floor applies to the VENUE-NATIVE dex only. A position on any
+///   other dex contributes exactly its own initial margin and is never charged
+///   the floor.
+/// - Every non-native dex shares the ONE `crossDex` number. A position on one of
+///   them costs its margin uniformly — on the native dex, on itself, and on
+///   every sibling alike. Only a native position is asymmetric, and only above
+///   `1/rate` leverage, where the floor exceeds the margin it posted.
+///
+/// The intuition: the shared pool is charged as if the native position had been
+/// opened at `1/rate` leverage. Native leverage beyond that is invisible to the
+/// native dex's own budget and charged in full to every other dex.
+func resolveAvailability(
+    exchangeState: ExchangeState,
+    market: String,
+    equity: Double,
+    initialMarginUsed: Double
+) -> ResolvedAvailability {
+    let native = max(0, equity - initialMarginUsed)
+    let model = exchangeState.collateralModel
+    let rate = parsePositiveDouble(model?.crossDexReservationRate)
+    let total = parsePositiveDouble(model?.totalCollateralUsd)
+
+    // No declared rule (a single-pool venue), or a term the venue did not send:
+    // there is one budget and it is the ordinary one. Never guess a reservation.
+    guard let model, model.crossDexReservationEnforced, rate > 0, total > 0 else {
+        return ResolvedAvailability(available: native, crossDex: native,
+                                    native: native, enforced: false, rate: rate)
+    }
+
+    var marginNative = 0.0, notionalNative = 0.0, marginOtherDexes = 0.0
+    for p in exchangeState.positions {
+        guard let d = perpDexIndexOf(p.market) else { continue }
+        let mu = parsePositiveDouble(p.marginUsed)
+        if d == 0 {
+            marginNative += mu
+            notionalNative += parsePositiveDouble(p.positionValue)
+        } else {
+            marginOtherDexes += mu
+        }
+    }
+    let reserved = max(marginNative, rate * notionalNative) + marginOtherDexes
+    let crossDex = max(0, total - reserved)
+    // The native dex keeps the ordinary budget; every other dex draws on the
+    // shared pool — including one this account already holds a position on,
+    // because adding there still has to move collateral into it.
+    let onNativeDex = perpDexIndexOf(market) == 0
+    return ResolvedAvailability(available: onNativeDex ? native : crossDex,
+                                crossDex: crossDex, native: native,
+                                enforced: !onNativeDex, rate: rate)
+}
+
 /// Derives ``ActiveAssetData`` from an ``ExchangeState`` and user-selected
 /// trading parameters, matching the TypeScript SDK's
 /// `deriveActiveAssetDataFromState` implementation.
@@ -55,7 +136,7 @@ public func deriveActiveAssetData(
     // sells at the bid, so we convert the live mid to the directional execution
     // price via these ratios. Default 1 (no spread) reproduces mid-based sizing.
     askRatio: Double = 1,
-    bidRatio: Double = 1
+    bidRatio: Double = 1,
 ) -> ActiveAssetData? {
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
@@ -72,7 +153,9 @@ public func deriveActiveAssetData(
     let initialMarginUsed = parsePositiveDouble(summary.initialMarginUsed)
     let hasPositions = !exchangeState.positions.isEmpty
     let availableGuard: Double = hasPositions ? 0.97 : 1.0
-    let available = max(0, (equity - initialMarginUsed) * availableGuard)
+    let avail = resolveAvailability(exchangeState: exchangeState, market: market,
+                                    equity: equity, initialMarginUsed: initialMarginUsed)
+    let available = max(0, avail.available * availableGuard)
     let takerRate = parsePositiveDouble(exchangeState.feeRates?.taker)
     let effectiveScale = feeScale.isFinite && feeScale > 0 ? feeScale : 1
     let platformRate: Double = {
@@ -181,7 +264,7 @@ public func deriveActiveAssetData(
     let buyMax = buyReduce + buyOpen
     let sellMax = sellReduce + sellOpen
 
-    let rawAvailableUsd = max(0, equity - initialMarginUsed)
+    let rawAvailableUsd = avail.available
 
     return ActiveAssetData(
         market: market,
@@ -202,6 +285,12 @@ public func deriveActiveAssetData(
         // Live directional prices = mid * resolved spread ratio. Equal to markPx
         // until the spread is resolved (ratio 1).
         bidPx: toDecimalString(sellPx),
-        askPx: toDecimalString(buyPx)
+        askPx: toDecimalString(buyPx),
+        availability: AvailabilityBreakdown(
+            reservationEnforced: avail.enforced,
+            crossDexAvailableUsd: toDecimalString(avail.crossDex),
+            nativeAvailableUsd: toDecimalString(avail.native),
+            reservationRate: toDecimalString(avail.rate)
+        )
     )
 }

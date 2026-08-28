@@ -1527,6 +1527,10 @@ extension Arca {
             }
         }
 
+        // The cross-dex reservation is not resolved here: the venue states it
+        // on `exchangeState.collateralModel`, which the derivation reads
+        // directly and which refreshes with the state.
+
         // Resolve the per-asset MMR, margin tiers, and top-of-book spread once
         // via getActiveAssetData and feed them into every recompute. None of
         // these are derivable from market meta alone (the margin table and the
