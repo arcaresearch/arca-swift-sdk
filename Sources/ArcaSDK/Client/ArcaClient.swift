@@ -78,8 +78,8 @@ public final class ArcaClient: @unchecked Sendable {
         try await executeWithAuthRetry(method: "GET", path: path, query: query)
     }
 
-    public func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
-        try await executeWithAuthRetry(method: "POST", path: path, body: body)
+    public func post<T: Decodable>(_ path: String, query: [String: String]? = nil, body: (any Encodable)? = nil) async throws -> T {
+        try await executeWithAuthRetry(method: "POST", path: path, query: query, body: body)
     }
 
     public func patch<T: Decodable>(_ path: String, query: [String: String]? = nil, body: (any Encodable)? = nil) async throws -> T {
@@ -292,7 +292,12 @@ public final class ArcaClient: @unchecked Sendable {
                 )
             }
             if let error = envelope.error {
-                let mapped = mapAPIError(code: error.code, message: error.message, errorId: error.errorId)
+                let mapped = mapAPIError(
+                    code: error.code,
+                    message: error.message,
+                    errorId: error.errorId,
+                    details: error.details?.values
+                )
                 log.warning("network", "API error",
                             error: mapped,
                             metadata: [

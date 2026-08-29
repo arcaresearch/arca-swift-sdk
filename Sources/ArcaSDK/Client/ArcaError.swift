@@ -53,8 +53,59 @@ public enum ArcaError: Error, Sendable {
     /// The full `Operation` is available for inspection (e.g. `operation.outcome`).
     case operationFailed(operation: Operation)
 
+    /// The operation would move value out of a co-sign-armed boundary without
+    /// the owner's signature (HTTP 412 `COSIGN_REQUIRED`).
+    ///
+    /// The SDK cannot transparently retry this the way it could a browser
+    /// confirmation: a co-signature comes from a key the platform does not
+    /// hold. Route `challenge` to whatever holds the boundary's co-sign key.
+    ///
+    /// For venue hops, `hopVenues(..., sign:)` handles this end to end.
+    case cosignRequired(message: String, challenge: CosignRequiredChallenge, errorId: String?)
+
     /// Unknown API error code.
     case unknown(code: String, message: String, errorId: String?)
+}
+
+/// The structured payload accompanying a 412 `COSIGN_REQUIRED` response.
+///
+/// A co-sign-armed isolation boundary requires the boundary owner's EIP-712
+/// signature before value may leave it, and the platform cannot produce that
+/// signature — only the key holder can. The challenge names which surface was
+/// gated and where to take the propose/submit pair that collects it.
+///
+/// `surface` is the discriminator worth branching on: `transfer.venue_hop`,
+/// `transfer.venue_deposit`, `transfer.cross_boundary`,
+/// `deposit.venue_deposit`, `withdrawal.plain`.
+public struct CosignRequiredChallenge: Sendable, Equatable {
+    public let surface: String
+    public let boundaryId: String
+    /// Set on single-object surfaces (deposit, withdrawal).
+    public let arcaPath: String?
+    /// Set on the two-ended surfaces (transfer, hop).
+    public let sourceArcaPath: String?
+    public let targetArcaPath: String?
+    /// Endpoints that collect the signature, when the surface has a pair.
+    public let propose: String?
+    public let submit: String?
+
+    /// Builds a challenge from the server's `details` map.
+    ///
+    /// Only `boundaryId` is required: the surfaces differ in which path fields
+    /// they carry, and a challenge naming the boundary is still actionable
+    /// even if a future surface adds fields this version does not know.
+    init?(details: [String: String]?) {
+        guard let details, let boundaryId = details["boundaryId"], !boundaryId.isEmpty else {
+            return nil
+        }
+        self.surface = details["surface"] ?? ""
+        self.boundaryId = boundaryId
+        self.arcaPath = details["arcaPath"]
+        self.sourceArcaPath = details["sourceArcaPath"]
+        self.targetArcaPath = details["targetArcaPath"]
+        self.propose = details["propose"]
+        self.submit = details["submit"]
+    }
 }
 
 extension ArcaError: LocalizedError {
@@ -75,6 +126,7 @@ extension ArcaError: LocalizedError {
         case .operationFailed(let op):
             let reason = op.outcome ?? op.state.rawValue
             return "Operation \(op.id) \(op.state.rawValue): \(reason)"
+        case .cosignRequired(let message, _, _): return message
         case .unknown(let code, let message, _): return "\(code): \(message)"
         }
     }
@@ -83,8 +135,19 @@ extension ArcaError: LocalizedError {
 // MARK: - Error Mapping
 
 /// Maps an API error response code to the appropriate `ArcaError` case.
-public func mapAPIError(code: String, message: String, errorId: String?) -> ArcaError {
+public func mapAPIError(
+    code: String,
+    message: String,
+    errorId: String?,
+    details: [String: String]? = nil
+) -> ArcaError {
     switch code {
+    case "COSIGN_REQUIRED":
+        guard let challenge = CosignRequiredChallenge(details: details) else {
+            return .unknown(code: code, message: message, errorId: errorId)
+        }
+        return .cosignRequired(message: message, challenge: challenge, errorId: errorId)
+
     case "VALIDATION_ERROR":
         return .validation(message: message, errorId: errorId)
 
