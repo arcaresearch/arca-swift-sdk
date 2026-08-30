@@ -170,6 +170,11 @@ final class VenueHopTests: XCTestCase {
                 details.resolution?.contains("re-propose") == true,
                 "the refusal must name the remedy: \(details.resolution ?? "nil")"
             )
+            // The owner cancelled it, so nothing moved and there is no
+            // operation of ours to name. Only this disposition licenses the
+            // caller to assert that.
+            XCTAssertEqual(details.disposition, .revoked)
+            XCTAssertNil(details.operationId)
         } catch {
             XCTFail("error is \(error), want .cosignNonceUsed — a spent slot is not a bad signature")
         }
@@ -206,6 +211,40 @@ final class VenueHopTests: XCTestCase {
         XCTAssertFalse(state.spendable)
         XCTAssertFalse(state.unordered)
         XCTAssertEqual(state.counterNonce, "9")
+    }
+
+    /// `spendable == false` alone leaves the caller unable to say whether the
+    /// customer's money moved. These three fields are the answer.
+    func testGetCosignNonceStateAttributesABurnedSlotToItsExecution() async throws {
+        HopMockProtocol.nonceStateBody = HopMockProtocol.nonceStateExecuted
+        let state = try await makeArca().getCosignNonceState(boundaryId: "bnd_v7", nonce: "42")
+
+        XCTAssertEqual(state.disposition, .executed)
+        XCTAssertEqual(state.operationId, "op_01k")
+        XCTAssertEqual(state.txHash, "0xabc")
+    }
+
+    func testGetCosignNonceStateLeavesASpendableSlotUnattributed() async throws {
+        HopMockProtocol.nonceStateBody = HopMockProtocol.nonceStateSpendable
+        let state = try await makeArca().getCosignNonceState(boundaryId: "bnd_v7", nonce: "42")
+
+        XCTAssertTrue(state.spendable)
+        // Nothing burned it, so there is nothing to attribute. Reporting
+        // `.unknown` here would read as "we couldn't tell", which is wrong.
+        XCTAssertNil(state.disposition)
+        XCTAssertNil(state.txHash)
+    }
+
+    /// Swift's synthesized `Codable` for a `String` enum *throws* on an
+    /// unrecognized raw value, so without the custom decoder a newer server
+    /// value would turn this read into a decode failure — and a `default` arm
+    /// gets written as "not executed, so nothing moved" far more often than as
+    /// "unrecognized, go reconcile".
+    func testGetCosignNonceStateNarrowsAnUnrecognizedDispositionToUnknown() async throws {
+        HopMockProtocol.nonceStateBody = HopMockProtocol.nonceStateFutureDisposition
+        let state = try await makeArca().getCosignNonceState(boundaryId: "bnd_v7", nonce: "42")
+
+        XCTAssertEqual(state.disposition, .unknown)
     }
 
     func testSubmitVenueHopOmitsAnUnsetRefSoTheServerDerivesIt() async throws {
@@ -283,6 +322,8 @@ private final class HopMockProtocol: URLProtocol {
     nonisolated(unsafe) static var nonceUsedOnSubmit = false
     /// When true, the nonce-state read answers as a pre-v7 counter kernel.
     nonisolated(unsafe) static var counterKernel = false
+    /// When set, the nonce-state read answers with this body verbatim.
+    nonisolated(unsafe) static var nonceStateBody: String?
 
     static var requests: [RecordedRequest] {
         lock.lock(); defer { lock.unlock() }; return _requests
@@ -300,6 +341,7 @@ private final class HopMockProtocol: URLProtocol {
         tampered = false
         nonceUsedOnSubmit = false
         counterKernel = false
+        nonceStateBody = nil
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -323,7 +365,10 @@ private final class HopMockProtocol: URLProtocol {
         Self.lock.unlock()
 
         if path.contains("/cosign-nonces/") {
-            respond(Self.counterKernel ? Self.nonceStateCounter : Self.nonceStateConsumed)
+            respond(
+                Self.nonceStateBody
+                    ?? (Self.counterKernel ? Self.nonceStateCounter : Self.nonceStateConsumed)
+            )
         } else if path.hasSuffix("/custody/venue-hops/propose") {
             respond(Self.tampered ? Self.tamperedProposal : Self.proposal)
         } else if path.hasSuffix("/custody/venue-hops") {
@@ -432,7 +477,8 @@ private final class HopMockProtocol: URLProtocol {
         {"success":false,"error":{"code":"COSIGN_NONCE_USED",
          "message":"co-sign nonce has already been used; re-propose the action",
          "details":{"boundaryId":"bnd_src","nonce":"\(Vectors.nonce)","reason":"nonce_consumed",
-           "resolution":"re-propose the action to obtain a fresh nonce, re-sign, and resubmit"}}}
+           "resolution":"re-propose the action to obtain a fresh nonce, re-sign, and resubmit",
+           "disposition":"revoked","txHash":"0xdead"}}}
         """
     }
 
@@ -444,5 +490,23 @@ private final class HopMockProtocol: URLProtocol {
     static let nonceStateCounter = #"""
     {"success":true,"data":{"boundaryId":"bnd_k5","nonce":"8",
      "spendable":false,"consumed":false,"unordered":false,"counterNonce":"9"}}
+    """#
+
+    static let nonceStateExecuted = #"""
+    {"success":true,"data":{"boundaryId":"bnd_v7","nonce":"42",
+     "spendable":false,"consumed":true,"unordered":true,
+     "disposition":"executed","txHash":"0xabc","operationId":"op_01k"}}
+    """#
+
+    static let nonceStateSpendable = #"""
+    {"success":true,"data":{"boundaryId":"bnd_v7","nonce":"42",
+     "spendable":true,"consumed":false,"unordered":true}}
+    """#
+
+    /// A disposition from a server newer than this SDK.
+    static let nonceStateFutureDisposition = #"""
+    {"success":true,"data":{"boundaryId":"bnd_v7","nonce":"42",
+     "spendable":false,"consumed":true,"unordered":true,
+     "disposition":"superseded_by_something_new"}}
     """#
 }

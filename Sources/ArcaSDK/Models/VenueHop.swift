@@ -34,6 +34,21 @@ public struct CosignNonceState: Codable, Sendable {
     /// On such a kernel an envelope is live iff it was signed over exactly
     /// this.
     public let counterNonce: String?
+    /// Why an unspendable slot is gone. Absent when ``spendable`` is true —
+    /// an unburned slot has no burn to explain.
+    ///
+    /// ``CosignNonceDisposition/executed`` and
+    /// ``CosignNonceDisposition/revoked`` are opposite answers to "did the
+    /// value move?", so do not collapse them; and do not read
+    /// ``CosignNonceDisposition/unknown`` as either one. Only `revoked`
+    /// licenses asserting that nothing moved.
+    public let disposition: CosignNonceDisposition?
+    /// The transaction that burned the slot, when one was found.
+    public let txHash: String?
+    /// The platform operation the burn belongs to. Present only for an
+    /// `executed` burn that the platform submitted — a revocation is the
+    /// owner acting directly on the kernel, so it has no operation.
+    public let operationId: String?
 }
 
 /// Everything a signer needs to re-derive and sign a venue hop.

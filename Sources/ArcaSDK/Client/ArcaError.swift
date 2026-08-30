@@ -99,6 +99,21 @@ public struct CosignNonceUsedDetails: Sendable, Equatable {
     public let reason: String?
     /// Human-readable remedy, always "re-propose … re-sign … resubmit".
     public let resolution: String?
+    /// Why the slot is gone — the field that tells you whether value moved.
+    ///
+    /// ``reason`` names which nonce lane refused; this names the CAUSE, and
+    /// the two causes are opposite facts about your customer's money. Branch
+    /// on it before deciding whether to re-send.
+    ///
+    /// Always present on a current server; `nil` from an older one, which is
+    /// itself distinct from ``CosignNonceDisposition/unknown``.
+    public let disposition: CosignNonceDisposition?
+    /// The transaction that burned the slot, when one was found.
+    public let txHash: String?
+    /// The platform operation that spent the nonce. Present only when
+    /// ``disposition`` is ``CosignNonceDisposition/executed`` and the platform
+    /// submitted it.
+    public let operationId: String?
 
     /// Builds the details from the server's `details` map.
     ///
@@ -113,6 +128,44 @@ public struct CosignNonceUsedDetails: Sendable, Equatable {
         self.nonce = details["nonce"]
         self.reason = details["reason"]
         self.resolution = details["resolution"]
+        self.disposition = details["disposition"].map(CosignNonceDisposition.init(wire:))
+        self.txHash = details["txHash"]
+        self.operationId = details["operationId"]
+    }
+}
+
+/// Why a co-sign nonce can no longer be spent.
+///
+/// The distinction is the whole point of reading it: ``executed`` and
+/// ``revoked`` are opposite facts about whether the customer's value moved.
+/// Only ``revoked`` licenses asserting that nothing happened.
+public enum CosignNonceDisposition: String, Codable, Sendable, Equatable {
+    /// A sovereign signature over the slot verified and the action ran.
+    /// Reconcile against the operation; do **not** re-send.
+    case executed
+    /// The boundary owner retired the slot; it never ran and no value moved.
+    /// Safe to fail the attempt, or re-propose for a fresh approval.
+    case revoked
+    /// The slot is spent but the attributing log was not found — the burn is
+    /// older than the platform's lookback window, or the chain read failed.
+    /// Reconcile before re-sending; this is not evidence that nothing
+    /// happened.
+    case unknown
+
+    /// Narrows an unrecognized wire value to ``unknown`` rather than failing
+    /// to decode.
+    ///
+    /// A caller switches on this to decide whether to re-send money, and a
+    /// `default` arm is far more likely to be written as "not executed, so
+    /// nothing moved" than as "unrecognized, go reconcile". Collapsing here
+    /// makes the unsafe reading unreachable, and a new server value can never
+    /// turn a refusal into a decode failure.
+    init(wire: String) {
+        self = CosignNonceDisposition(rawValue: wire) ?? .unknown
+    }
+
+    public init(from decoder: any Decoder) throws {
+        self.init(wire: try decoder.singleValueContainer().decode(String.self))
     }
 }
 
