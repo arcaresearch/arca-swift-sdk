@@ -1578,10 +1578,24 @@ extension Arca {
 
         func recompute() -> ActiveAssetData? {
             guard let exState = exchangeStateBox.value else { return nil }
-            let markStr = priceStream.prices.value[opts.market]
+            let mids = priceStream.prices.value
+            let markStr = mids[opts.market]
             let markPx = markStr.flatMap(Double.init) ?? 0
+            // Re-mark the book against current mids before deriving.
+            //
+            // Load-bearing for HIP-3 markets, not merely a freshness nicety:
+            // the cross-dex reservation is `max(margin, rate * NOTIONAL)` of the
+            // venue-native position, and notional is read off `positionValue`.
+            // A book left at the marks of the last structural push holds the
+            // shared pool still while the price it depends on moves, so a HIP-3
+            // market's buying power would sit at a stale number until the next
+            // fill or funding event — hours, on a quiet account.
+            //
+            // `totalCollateralUsd` is spot cash and price-invariant by
+            // construction, so re-marking positions is the whole of what moves.
+            let marked = mids.isEmpty ? exState : exState.revalued(with: mids)
             return deriveActiveAssetData(
-                from: exState,
+                from: marked,
                 market: opts.market,
                 markPx: markPx,
                 leverage: opts.leverage,

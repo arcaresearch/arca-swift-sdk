@@ -708,4 +708,126 @@ final class ActiveAssetDerivationTests: XCTestCase {
         // The reduce leg is the position either way — collateral doesn't change it.
         XCTAssertEqual(topUp.maxSellReduceSize, plain.maxSellReduceSize)
     }
+
+    // MARK: - Published availability anchor
+
+    /// The venue evaluates its own rule and publishes both numbers. They are an
+    /// anchor for the client's derivation, not a replacement: `crossDex` is a
+    /// fraction of live notional and goes stale as soon as the mark moves.
+    private func anchoredState(rate: String?, total: String?,
+                               nativeAvailable: String?, crossDexAvailable: String?) -> ExchangeState {
+        ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"), name: "test",
+                                createdAt: "2026-01-01T00:00:00.000000Z",
+                                updatedAt: "2026-01-01T00:00:00.000000Z"),
+            marginSummary: SimMarginSummary(
+                equity: "10.030972", initialMarginUsed: "1.595659",
+                maintenanceMarginRequired: "0", availableToWithdraw: "0",
+                totalNtlPos: "0", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            crossMarginSummary: nil, crossMaintenanceMarginUsed: nil,
+            positions: [dexPosition("hl:0:BTC", marginUsed: "1.595659", positionValue: "63.82638")],
+            openOrders: [],
+            feeRates: SimFeeRates(taker: "0.00035", maker: "0.0001", platformFee: "0.0001",
+                                  tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
+            pendingIntents: nil,
+            collateralModel: CollateralModel(
+                crossDexReservationEnforced: true, crossDexReservationRate: rate,
+                totalCollateralUsd: total, nativeAvailableUsd: nativeAvailable,
+                crossDexAvailableUsd: crossDexAvailable))
+    }
+
+    /// With every term present the client derives, so an older server that
+    /// publishes no pair is fully served and a newer one changes nothing.
+    func testPrefersDerivingWheneverItCan() {
+        let st = anchoredState(rate: "0.1", total: "9.98464",
+                               nativeAvailable: nil, crossDexAvailable: nil)
+        let a = marketAvailability(exchangeState: st, market: "hl:1:NVDA")
+        // 9.98464 - max(1.595659, 0.1 * 63.82638) = 3.602002, which is what HL
+        // itself answered for xyz:NVDA on this account.
+        XCTAssertEqual(Double(a.crossDexAvailableUsd)!, 3.602002, accuracy: 1e-4)
+    }
+
+    /// The rule is enforced but the pool is missing, so the client cannot run
+    /// the arithmetic. Falling back to the NATIVE budget would hand a HIP-3
+    /// market the larger number — the one it may not spend.
+    func testFallsBackToThePublishedFigureWhenATermIsMissing() {
+        let st = anchoredState(rate: "0.1", total: nil,
+                               nativeAvailable: "8.435313", crossDexAvailable: "3.602002")
+        let a = marketAvailability(exchangeState: st, market: "hl:1:NVDA")
+        XCTAssertTrue(a.reservationEnforced)
+        XCTAssertEqual(Double(a.crossDexAvailableUsd)!, 3.602002, accuracy: 1e-6)
+        XCTAssertEqual(Double(a.nativeAvailableUsd)!, 8.435313, accuracy: 1e-6)
+    }
+
+    /// A published "0" is an answer, not an absence. Reading it as missing is
+    /// how a market the venue will refuse at any size gets advertised as
+    /// fundable.
+    func testTreatsAPublishedZeroAsARealZero() {
+        let st = anchoredState(rate: "0.1", total: nil,
+                               nativeAvailable: "8.435313", crossDexAvailable: "0")
+        let a = marketAvailability(exchangeState: st, market: "hl:1:NVDA")
+        XCTAssertEqual(Double(a.crossDexAvailableUsd)!, 0, accuracy: 1e-9)
+        // Not the native number, which is what a truthiness check would give.
+        XCTAssertEqual(Double(a.nativeAvailableUsd)!, 8.435313, accuracy: 1e-6)
+    }
+
+    /// Re-marking a book must not throw away the venue's collateral rule.
+    ///
+    /// `revalued(with:)` rebuilds the state field by field, and omitting
+    /// `collateralModel` degraded every non-native market to "no reservation" —
+    /// which reports the LARGER native budget as spendable on a HIP-3 dex that
+    /// may not spend it. The failure is silent and in the unsafe direction, so
+    /// it is pinned separately from the arithmetic that consumes it.
+    func testRevaluePreservesTheCollateralModel() {
+        let st = anchoredState(rate: "0.1", total: "9.98464",
+                               nativeAvailable: "8.435313", crossDexAvailable: "3.602002")
+        let marked = st.revalued(with: ["hl:0:BTC": "70000"])
+
+        XCTAssertNotNil(marked.collateralModel, "the rule is structural and survives re-marking")
+        XCTAssertTrue(marked.collateralModel!.crossDexReservationEnforced)
+        XCTAssertEqual(marked.collateralModel!.crossDexReservationRate, "0.1")
+        XCTAssertEqual(marked.collateralModel!.totalCollateralUsd, "9.98464")
+        XCTAssertEqual(marked.collateralModel!.crossDexAvailableUsd, "3.602002")
+        XCTAssertEqual(marked.collateralModel!.nativeAvailableUsd, "8.435313")
+    }
+
+    /// Re-marking the book is what keeps a HIP-3 market's buying power tracking
+    /// the native price between structural pushes. This account is SHORT BTC,
+    /// so a falling BTC price shrinks the notional, shrinks the reservation,
+    /// and releases buying power to every HIP-3 dex.
+    func testRevaluedBookMovesHIP3BuyingPower() {
+        let short = SimPosition(
+            id: SimPositionID("pos_btc"), accountId: SimAccountID("act_1"),
+            realmId: RealmID("rlm_1"), market: "hl:0:BTC", side: .short, size: "0.00081",
+            entryPrice: "78850", leverage: 40, marginUsed: "1.595659",
+            liquidationPrice: nil, unrealizedPnl: nil, returnOnEquity: nil,
+            positionValue: "63.82638", error: nil, cumulativeFunding: nil,
+            cumulativeFee: nil, cumulativeExchangeFee: nil, cumulativePlatformFee: nil,
+            cumulativeBuilderFee: nil, createdAt: nil, updatedAt: nil)
+        let st = ExchangeState(
+            account: SimAccount(id: SimAccountID("act_1"), realmId: RealmID("rlm_1"), name: "test",
+                                createdAt: "2026-01-01T00:00:00.000000Z",
+                                updatedAt: "2026-01-01T00:00:00.000000Z"),
+            marginSummary: SimMarginSummary(
+                equity: "10.030972", initialMarginUsed: "1.595659",
+                maintenanceMarginRequired: "0", availableToWithdraw: "0",
+                totalNtlPos: "0", totalUnrealizedPnl: "0", totalRawUsd: nil),
+            crossMarginSummary: nil, crossMaintenanceMarginUsed: nil,
+            positions: [short], openOrders: [],
+            feeRates: SimFeeRates(taker: "0.00035", maker: "0.0001", platformFee: "0.0001",
+                                  tier: nil, tierLabel: nil, volume14d: nil, schedule: nil),
+            pendingIntents: nil,
+            collateralModel: CollateralModel(crossDexReservationEnforced: true,
+                                             crossDexReservationRate: "0.1",
+                                             totalCollateralUsd: "9.98464"))
+
+        let atMark = marketAvailability(exchangeState: st, market: "hl:1:NVDA")
+        XCTAssertEqual(Double(atMark.crossDexAvailableUsd)!, 3.602002, accuracy: 1e-4)
+
+        // BTC falls: 0.00081 * 70000 = 56.7 notional, 5.67 reserved.
+        let marked = st.revalued(with: ["hl:0:BTC": "70000"])
+        let after = marketAvailability(exchangeState: marked, market: "hl:1:NVDA")
+        XCTAssertEqual(Double(after.crossDexAvailableUsd)!, 4.31464, accuracy: 1e-4)
+        XCTAssertTrue(Double(after.crossDexAvailableUsd)! > Double(atMark.crossDexAvailableUsd)!)
+    }
 }

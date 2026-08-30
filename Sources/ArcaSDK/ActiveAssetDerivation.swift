@@ -112,10 +112,29 @@ func resolveAvailability(
     let model = exchangeState.collateralModel
     let rate = parsePositiveDouble(model?.crossDexReservationRate)
     let total = parsePositiveDouble(model?.totalCollateralUsd)
+    let onNativeDexEarly = perpDexIndexOf(market) == 0
 
-    // No declared rule (a single-pool venue), or a term the venue did not send:
-    // there is one budget and it is the ordinary one. Never guess a reservation.
-    guard let model, model.crossDexReservationEnforced, rate > 0, total > 0 else {
+    // No declared rule (a single-pool venue): one budget, and it is the
+    // ordinary one. Never guess a reservation.
+    guard let model, model.crossDexReservationEnforced else {
+        return ResolvedAvailability(available: native, crossDex: native,
+                                    native: native, enforced: false, rate: rate)
+    }
+
+    // The rule is enforced but a term needed to evaluate it is missing. Falling
+    // through to `native` here would hand a HIP-3 market the LARGER number —
+    // the one it may not spend — so prefer the venue's own evaluation when it
+    // sent one. Read with an explicit nil check, not a truthiness test: a
+    // published "0" is a real answer ("this market can open nothing"), and
+    // treating it as absent is how a $0 market gets advertised as fundable.
+    guard rate > 0, total > 0 else {
+        if let publishedCross = model.crossDexAvailableUsd, let crossVal = Double(publishedCross) {
+            let crossDex = max(0, crossVal)
+            let nativeUsd = model.nativeAvailableUsd.flatMap(Double.init).map { max(0, $0) } ?? native
+            return ResolvedAvailability(available: onNativeDexEarly ? nativeUsd : crossDex,
+                                        crossDex: crossDex, native: nativeUsd,
+                                        enforced: !onNativeDexEarly, rate: rate)
+        }
         return ResolvedAvailability(available: native, crossDex: native,
                                     native: native, enforced: false, rate: rate)
     }

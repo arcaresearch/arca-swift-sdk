@@ -454,12 +454,29 @@ public struct CollateralModel: Codable, Sendable {
     /// reads. Do not substitute equity: equity carries unrealized P&L and moves
     /// with the mark.
     public let totalCollateralUsd: String?
+    /// The venue's own evaluation of its rule, at the marks of this read.
+    ///
+    /// An **anchor**, not a substitute for deriving: `crossDexAvailableUsd` is a
+    /// fraction of live native notional, so it goes stale as soon as the mark
+    /// moves. A client driving a slider keeps recomputing from
+    /// ``totalCollateralUsd`` (cash, which does not move) plus re-marked
+    /// positions — see ``marketAvailability(exchangeState:market:)`` — and
+    /// treats these as what that recomputation should equal at the instant of
+    /// the read.
+    ///
+    /// Absent on venues that declare no rule, and on servers older than
+    /// 2026-08-30. Absent is not zero.
+    public let nativeAvailableUsd: String?
+    public let crossDexAvailableUsd: String?
 
     public init(crossDexReservationEnforced: Bool, crossDexReservationRate: String? = nil,
-                totalCollateralUsd: String? = nil) {
+                totalCollateralUsd: String? = nil, nativeAvailableUsd: String? = nil,
+                crossDexAvailableUsd: String? = nil) {
         self.crossDexReservationEnforced = crossDexReservationEnforced
         self.crossDexReservationRate = crossDexReservationRate
         self.totalCollateralUsd = totalCollateralUsd
+        self.nativeAvailableUsd = nativeAvailableUsd
+        self.crossDexAvailableUsd = crossDexAvailableUsd
     }
 }
 
@@ -1139,6 +1156,12 @@ extension ExchangeState {
             crossMaintenanceMarginUsed: crossMaintenanceMarginUsed,
             positions: newPositions, openOrders: openOrders,
             feeRates: feeRates, pendingIntents: pendingIntents,
-            pricingMode: pricingMode)
+            pricingMode: pricingMode,
+            // The collateral model is structural and price-invariant, so it
+            // survives re-marking. Dropping it here silently degraded every
+            // non-native market to "no reservation" — which reports the LARGER
+            // native budget as spendable on a HIP-3 dex that may not spend it.
+            // Any field added to ExchangeState must be carried through here.
+            collateralModel: collateralModel)
     }
 }
