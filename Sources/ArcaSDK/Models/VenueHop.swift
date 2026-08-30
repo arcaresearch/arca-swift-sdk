@@ -9,6 +9,33 @@ public struct CosignDomain: Codable, Sendable {
     public let verifyingContract: String
 }
 
+/// Whether one co-signature nonce can still be spent on a boundary.
+///
+/// Returned by ``Arca/getCosignNonceState(boundaryId:nonce:)``. Read
+/// ``spendable`` — it is the only field correct on both kernel generations.
+public struct CosignNonceState: Codable, Sendable {
+    public let boundaryId: String
+    /// The nonce that was checked, echoed as a decimal string.
+    public let nonce: String
+    /// The single answer most callers want: can this envelope still be
+    /// submitted? Correct on both kernel generations.
+    public let spendable: Bool
+    /// Burn-set read: `true` means this slot is spent.
+    ///
+    /// Meaningful **only when ``unordered`` is true**. A frozen-counter kernel
+    /// has no burn set, so this is always `false` there — including for nonces
+    /// the counter will refuse. Prefer ``spendable``.
+    public let consumed: Bool
+    /// `true` on a burn-set kernel (marker 7+) that accepts caller-chosen
+    /// nonces; `false` on a frozen-counter kernel (marker 3-6), where
+    /// ``counterNonce`` is the only value it will accept.
+    public let unordered: Bool
+    /// The boundary's live counter, present only when ``unordered`` is false.
+    /// On such a kernel an envelope is live iff it was signed over exactly
+    /// this.
+    public let counterNonce: String?
+}
+
 /// Everything a signer needs to re-derive and sign a venue hop.
 ///
 /// `amountRaw` — not `amount` — is what the paramsHash commits to. Encoding

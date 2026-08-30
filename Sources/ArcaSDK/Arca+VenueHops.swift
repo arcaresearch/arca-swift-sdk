@@ -104,6 +104,41 @@ extension Arca {
         }
     }
 
+    /// Check whether a co-signature's nonce can still be spent.
+    ///
+    /// Use this before submitting an envelope that has been outstanding long
+    /// enough to have been overtaken — a retry that raced the original, a
+    /// second device, or a user who cancelled the approval. Submitting a spent
+    /// nonce throws ``ArcaError/cosignNonceUsed(message:details:errorId:)``;
+    /// this read tells you first, so you can re-propose without asking for a
+    /// signature that cannot land.
+    ///
+    /// ```swift
+    /// let state = try await arca.getCosignNonceState(
+    ///     boundaryId: "bnd_abc", nonce: proposal.nonce
+    /// )
+    /// if !state.spendable {
+    ///     // re-propose rather than prompting the device for a dead slot
+    /// }
+    /// ```
+    ///
+    /// Read ``CosignNonceState/spendable``, not `consumed`: on a frozen-counter
+    /// kernel (marker 3-6) there is no burn set, so `consumed` is always
+    /// `false` even for a nonce the kernel will refuse.
+    ///
+    /// This answers about the nonce, not the signature over it. A spendable
+    /// nonce means submitting is not futile — not that the envelope will
+    /// verify.
+    public func getCosignNonceState(
+        boundaryId: String,
+        nonce: String
+    ) async throws -> CosignNonceState {
+        try await client.get(
+            "/custody/boundaries/\(boundaryId)/cosign-nonces/\(nonce)",
+            query: ["realmId": realm]
+        )
+    }
+
     /// Signable fields for a co-signed venue hop. Nothing is persisted and no
     /// funds move.
     ///

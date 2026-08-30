@@ -63,8 +63,57 @@ public enum ArcaError: Error, Sendable {
     /// For venue hops, `hopVenues(..., sign:)` handles this end to end.
     case cosignRequired(message: String, challenge: CosignRequiredChallenge, errorId: String?)
 
+    /// A co-signed submission named a nonce that can no longer be spent
+    /// (HTTP 412 `COSIGN_NONCE_USED`).
+    ///
+    /// **This is not a signature failure.** The signature was very likely
+    /// fine; the slot it committed to is gone — a retry racing the original
+    /// already spent it, or the user cancelled the approval. The remedy is
+    /// always the same: propose again, have the device sign the fresh digest,
+    /// resubmit. Reporting it as "that approval didn't match this request"
+    /// tells the user their wallet misbehaved when it did not.
+    ///
+    /// Treat it as blocked-pending-user rather than retryable: replaying the
+    /// same envelope can never succeed, so a reconciler must re-propose.
+    ///
+    /// ``Arca/getCosignNonceState(boundaryId:nonce:)`` checks the slot before
+    /// submitting, which avoids the round trip for an envelope that has been
+    /// outstanding a while.
+    case cosignNonceUsed(message: String, details: CosignNonceUsedDetails, errorId: String?)
+
     /// Unknown API error code.
     case unknown(code: String, message: String, errorId: String?)
+}
+
+/// The structured payload accompanying a 412 `COSIGN_NONCE_USED` response.
+///
+/// `reason` is either `nonce_consumed` (the burn-set kernel, marker 7+, says
+/// this exact slot is spent: the action executed, or the owner revoked it with
+/// `invalidateCosignNonce`) or `counter_stale` (a frozen-counter kernel,
+/// marker 3-6, moved its counter while the device was signing). Both resolve
+/// identically, so branch on the error case; `reason` is for logs.
+public struct CosignNonceUsedDetails: Sendable, Equatable {
+    public let boundaryId: String
+    /// The nonce that was refused, as a decimal string.
+    public let nonce: String?
+    public let reason: String?
+    /// Human-readable remedy, always "re-propose … re-sign … resubmit".
+    public let resolution: String?
+
+    /// Builds the details from the server's `details` map.
+    ///
+    /// Only `boundaryId` is required, matching ``CosignRequiredChallenge``: an
+    /// error naming the boundary is actionable even if a future field is
+    /// unrecognized.
+    init?(details: [String: String]?) {
+        guard let details, let boundaryId = details["boundaryId"], !boundaryId.isEmpty else {
+            return nil
+        }
+        self.boundaryId = boundaryId
+        self.nonce = details["nonce"]
+        self.reason = details["reason"]
+        self.resolution = details["resolution"]
+    }
 }
 
 /// The structured payload accompanying a 412 `COSIGN_REQUIRED` response.
@@ -127,6 +176,7 @@ extension ArcaError: LocalizedError {
             let reason = op.outcome ?? op.state.rawValue
             return "Operation \(op.id) \(op.state.rawValue): \(reason)"
         case .cosignRequired(let message, _, _): return message
+        case .cosignNonceUsed(let message, _, _): return message
         case .unknown(let code, let message, _): return "\(code): \(message)"
         }
     }
@@ -147,6 +197,12 @@ public func mapAPIError(
             return .unknown(code: code, message: message, errorId: errorId)
         }
         return .cosignRequired(message: message, challenge: challenge, errorId: errorId)
+
+    case "COSIGN_NONCE_USED":
+        guard let parsed = CosignNonceUsedDetails(details: details) else {
+            return .unknown(code: code, message: message, errorId: errorId)
+        }
+        return .cosignNonceUsed(message: message, details: parsed, errorId: errorId)
 
     case "VALIDATION_ERROR":
         return .validation(message: message, errorId: errorId)
