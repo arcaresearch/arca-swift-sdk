@@ -5,6 +5,23 @@ final class ModelDecodingTests: XCTestCase {
 
     private let decoder = JSONDecoder()
 
+    /// The GLL adapter must supply the same required position fields as sim.
+    /// A first fill used to omit marginUsed, breaking the whole state decode.
+    func testGLLPositionDecoding() throws {
+        let json = #"""
+        {"id":"gllt-position:42:gllt:3:long","accountId":"42","market":"gllt:3",
+         "side":"long","size":"0.01","entryPrice":"79000","leverage":10,
+         "marginUsed":"80.000000","marginMode":"cross","positionValue":"800.000000"}
+        """#.data(using: .utf8)!
+        let position = try decoder.decode(SimPosition.self, from: json)
+        XCTAssertEqual(position.id.rawValue, "gllt-position:42:gllt:3:long")
+        XCTAssertEqual(position.accountId?.rawValue, "42")
+        XCTAssertEqual(position.market, "gllt:3")
+        XCTAssertEqual(position.leverage, 10)
+        XCTAssertEqual(position.marginUsed, "80.000000")
+        XCTAssertEqual(position.marginMode, .cross)
+    }
+
     // MARK: - TypedID
 
     func testTypedIDDecoding() throws {
