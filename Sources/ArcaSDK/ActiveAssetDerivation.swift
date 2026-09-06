@@ -71,7 +71,7 @@ public func marketAvailability(exchangeState: ExchangeState, market: String) -> 
     let summary = exchangeState.crossMarginSummary ?? exchangeState.marginSummary
     let a = resolveAvailability(
         exchangeState: exchangeState, market: market,
-        equity: parsePositiveDouble(summary.equity),
+        equity: (Double(summary.equity).flatMap { $0.isFinite ? $0 : nil } ?? 0),
         initialMarginUsed: parsePositiveDouble(summary.initialMarginUsed))
     return AvailabilityBreakdown(
         reservationEnforced: a.enforced,
@@ -106,12 +106,15 @@ func resolveAvailability(
     exchangeState: ExchangeState,
     market: String,
     equity: Double,
-    initialMarginUsed: Double
+    initialMarginUsed: Double,
+    excludingMarket: String? = nil,
+    collateralDelta: Double = 0
 ) -> ResolvedAvailability {
     let native = max(0, equity - initialMarginUsed)
     let model = exchangeState.collateralModel
     let rate = parsePositiveDouble(model?.crossDexReservationRate)
-    let total = parsePositiveDouble(model?.totalCollateralUsd)
+    let totalInput = model?.totalCollateralUsd.flatMap(Double.init)
+    let total = (totalInput ?? 0) + collateralDelta
     let onNativeDexEarly = perpDexIndexOf(market) == 0
 
     // No declared rule (a single-pool venue): one budget, and it is the
@@ -127,7 +130,11 @@ func resolveAvailability(
     // sent one. Read with an explicit nil check, not a truthiness test: a
     // published "0" is a real answer ("this market can open nothing"), and
     // treating it as absent is how a $0 market gets advertised as fundable.
-    guard rate > 0, total > 0 else {
+    guard rate > 0, let totalInput, totalInput.isFinite else {
+        // A published clamped value cannot reconstruct a post-close deficit.
+        if excludingMarket != nil {
+            return ResolvedAvailability(available: onNativeDexEarly ? native : 0, crossDex: 0, native: native, enforced: !onNativeDexEarly, rate: rate)
+        }
         if let publishedCross = model.crossDexAvailableUsd, let crossVal = Double(publishedCross) {
             let crossDex = max(0, crossVal)
             let nativeUsd = model.nativeAvailableUsd.flatMap(Double.init).map { max(0, $0) } ?? native
@@ -141,8 +148,9 @@ func resolveAvailability(
 
     var marginNative = 0.0, notionalNative = 0.0, marginOtherDexes = 0.0
     for p in exchangeState.positions {
+        if p.market == excludingMarket { continue }
         guard let d = perpDexIndexOf(p.market) else { continue }
-        let mu = parsePositiveDouble(p.marginUsed)
+        let mu = p.marginMode == .isolated ? (Double(p.isolatedMargin ?? "") ?? parsePositiveDouble(p.marginUsed)) : parsePositiveDouble(p.marginUsed)
         if d == 0 {
             marginNative += mu
             notionalNative += parsePositiveDouble(p.positionValue)
@@ -199,7 +207,7 @@ public func deriveActiveAssetData(
     // `marginSummary` for older servers that do not send the cross bucket
     // (identical when nothing is isolated).
     let summary = exchangeState.crossMarginSummary ?? exchangeState.marginSummary
-    let equity = parsePositiveDouble(summary.equity)
+    let equity = (Double(summary.equity).flatMap { $0.isFinite ? $0 : nil } ?? 0)
     let initialMarginUsed = parsePositiveDouble(summary.initialMarginUsed)
     let hasPositions = !exchangeState.positions.isEmpty
     let availableGuard: Double = hasPositions ? 0.97 : 1.0
@@ -284,8 +292,15 @@ public func deriveActiveAssetData(
         // releases that full amount. Mirrors the server's lockedCollateral().
         let isolated = parsePositiveDouble(pos.isolatedMargin)
         let posMargin = isolated > 0 ? isolated : parsePositiveDouble(pos.marginUsed)
-        let closeFees = posSize * markPx * feeRate * safetyMarginFactor
-        let availableAfterClose = max(0, available + posMargin - closeFees)
+        let closePx = pos.side == .long ? sellPx : buyPx
+        let closePnl = (closePx - (Double(pos.entryPrice) ?? closePx)) * posSize * (pos.side == .long ? 1 : -1)
+        let oldCrossPnl = pos.marginMode == .cross ? (Double(pos.unrealizedPnl ?? "") ?? 0) : 0
+        let isolatedFunding = pos.marginMode == .isolated ? (Double(pos.unsettledFundingUsd ?? "") ?? 0) : 0
+        let closeFees = posSize * closePx * feeRate * safetyMarginFactor
+        let afterClose = resolveAvailability(exchangeState: exchangeState, market: market,
+            equity: equity + posMargin + closePnl - oldCrossPnl + isolatedFunding, initialMarginUsed: initialMarginUsed,
+            excludingMarket: market, collateralDelta: closePnl + isolatedFunding)
+        let availableAfterClose = max(0, (afterClose.available - closeFees) * availableGuard)
 
         switch pos.side {
         case .long:

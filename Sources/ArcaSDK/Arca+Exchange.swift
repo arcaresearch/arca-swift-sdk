@@ -1664,6 +1664,7 @@ extension Arca {
             }
         }
 
+        let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ActiveAssetData.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
@@ -1676,6 +1677,7 @@ extension Arca {
                               let fetched = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
                         nextState = fetched
                     }
+                    guard !Task.isCancelled else { break }
                     exchangeStateBox.update { $0 = nextState }
                     let data: ActiveAssetData?
                     if nextState.pricingMode == .server {
@@ -1702,9 +1704,25 @@ extension Arca {
                     }
                 }
             }
+            let refreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    let interval = min(60000, max(5000, exchangeStateBox.value?.stateRefreshIntervalMs ?? 30000))
+                    do { try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000) } catch { break }
+                    guard (exchangeStateBox.value?.stateRefreshIntervalMs ?? 0) > 0 else { continue }
+                    guard let self, let fresh = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
+                    guard !Task.isCancelled else { break }
+                    exchangeStateBox.update { $0 = fresh }
+                    let data = fresh.pricingMode == .server ? await fetchServerActiveAssetData() : recompute()
+                    guard !Task.isCancelled else { break }
+                    if let data { activeAssetBox.update { $0 = data }; continuation.yield(data) }
+                }
+            }
+            stopUpdates.update { $0 = {
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                continuation.finish()
+            } }
             continuation.onTermination = { _ in
-                exchangeTask.cancel()
-                midsTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }
 
@@ -1717,6 +1735,7 @@ extension Arca {
             activeAssetData: activeAssetBox,
             updates: updates,
             stop: { [ws] in
+                stopUpdates.value?()
                 statusTask.cancel()
                 await priceStream.stop()
                 await ws.unwatchPath(objectPath)
