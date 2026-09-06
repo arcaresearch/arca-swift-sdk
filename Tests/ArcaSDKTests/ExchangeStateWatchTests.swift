@@ -77,6 +77,58 @@ final class ExchangeStateWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    func testUnavailableStateClearsMoneyWithoutRefetchAndRecoversOnPush() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        let initial = try XCTUnwrap(stream.exchangeState.value)
+        let cleared = expectation(description: "previous observation cleared")
+        let observer = stream.exchangeState.onChange { state in
+            if state == nil { cleared.fulfill() }
+        }
+        await arca.ws.injectMessage(#"{"type":"exchange.updated","entityId":"obj_1","exchangeStateUnavailable":true}"#)
+        await fulfillment(of: [cleared], timeout: 1)
+        stream.exchangeState.removeObserver(observer)
+        XCTAssertNil(stream.exchangeState.value)
+        XCTAssertEqual(stream.state.value, .reconnecting)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+
+        let restored = expectation(description: "fresh observation restored")
+        let restoreObserver = stream.exchangeState.onChange { state in
+            if state != nil { restored.fulfill() }
+        }
+        let event = RealmEvent(type: "exchange.updated", entityId: "obj_1", exchangeState: initial)
+        let data = try JSONEncoder().encode(event)
+        await arca.ws.injectMessage(String(decoding: data, as: UTF8.self))
+        await fulfillment(of: [restored], timeout: 1)
+        XCTAssertEqual(stream.exchangeState.value?.marginSummary.equity, "1000")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        stream.exchangeState.removeObserver(restoreObserver)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testQuietMirrorObservationExpiresWithoutRefetch() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        let initial = try XCTUnwrap(stream.exchangeState.value)
+        var state = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(initial)) as? [String: Any])
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        state["tradingAllocation"] = ["revision": "1", "preferences": [:], "projectionUnavailable": false,
+                                      "asOf": formatter.string(from: now), "validUntil": formatter.string(from: now.addingTimeInterval(0.1))] as [String: Any]
+        let expired = expectation(description: "quiet mirror expired")
+        let observer = stream.exchangeState.onChange { state in if state == nil { expired.fulfill() } }
+        let data = try JSONSerialization.data(withJSONObject: ["type": "exchange.updated", "entityId": "obj_1", "exchangeState": state])
+        await arca.ws.injectMessage(String(decoding: data, as: UTF8.self))
+        await fulfillment(of: [expired], timeout: 1)
+        XCTAssertNil(stream.exchangeState.value)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        stream.exchangeState.removeObserver(observer)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     private func makeArca() -> Arca {
         try! Arca(
             token: fakeJwt(),

@@ -95,11 +95,14 @@ extension Arca {
     public func updateLeverage(
         objectId: String,
         market: String,
-        leverage: Int
+        leverage: Int? = nil,
+        mode: LeveragePreferenceMode? = nil,
+        commandId: String? = nil
     ) async throws -> UpdateLeverageResponse {
-        try await client.post("/objects/\(objectId)/exchange/leverage", body: UpdateLeverageRequest(
-            market: market,
-            leverage: leverage
+        let command = commandId ?? (market.hasPrefix("gllt:") ? UUID().uuidString : nil)
+        return try await client.post("/objects/\(objectId)/exchange/leverage", body: UpdateLeverageRequest(
+            market: market, leverage: mode == .venueDefault ? nil : leverage,
+            mode: mode, commandId: command
         ))
     }
 
@@ -205,7 +208,9 @@ extension Arca {
         sizeTolerance: Double? = nil,
         maxSizeTolerance: Double? = nil,
         isolated: Bool? = nil,
-        ocoGroupId: String? = nil
+        ocoGroupId: String? = nil,
+        leverageMode: LeveragePreferenceMode? = nil,
+        slippageBps: Int? = nil
     ) -> OrderHandle {
         let effectiveTolerance = sizeTolerance ?? maxSizeTolerance
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
@@ -230,7 +235,7 @@ extension Arca {
                 useMax: useMax,
                 sizeTolerance: effectiveTolerance,
                 isolated: isolated == true ? true : nil,
-                ocoGroupId: ocoGroupId
+                ocoGroupId: ocoGroupId, leverageMode: leverageMode, slippageBps: slippageBps
             ))
         }
 
@@ -1805,7 +1810,9 @@ private struct CreateExchangeRequest: Encodable {
 
 private struct UpdateLeverageRequest: Encodable {
     let market: String
-    let leverage: Int
+    let leverage: Int?
+    let mode: LeveragePreferenceMode?
+    let commandId: String?
 }
 
 private struct UpdateIsolatedMarginRequest: Encodable {
@@ -1850,6 +1857,8 @@ private struct PlaceOrderRequest: Encodable {
     /// optional — call sites that don't bracket (e.g. closePosition) omit the
     /// key, while placeOrder/setPositionTrigger set it.
     var ocoGroupId: String? = nil
+    var leverageMode: LeveragePreferenceMode? = nil
+    var slippageBps: Int? = nil
 }
 
 private struct ModifyOrderBody: Encodable {

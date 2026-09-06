@@ -253,6 +253,8 @@ public struct ExchangeIntent: Codable, Sendable {
 public struct ExchangeState: Codable, Sendable {
     /// Optional Arca mirror allocation. Absent until this capability is enabled.
     public let tradingAllocation: TradingAllocationState?
+    public let financialInputId: String?
+    public let mirrorUnsettledFunding: String?
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
     public let crossMarginSummary: SimMarginSummary?
@@ -279,7 +281,8 @@ public struct ExchangeState: Codable, Sendable {
         feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?,
         pricingMode: PricingMode? = nil,
         collateralModel: CollateralModel? = nil,
-        tradingAllocation: TradingAllocationState? = nil
+        tradingAllocation: TradingAllocationState? = nil,
+        financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -289,6 +292,7 @@ public struct ExchangeState: Codable, Sendable {
         self.pricingMode = pricingMode
         self.collateralModel = collateralModel
         self.tradingAllocation = tradingAllocation
+        self.financialInputId = financialInputId; self.mirrorUnsettledFunding = mirrorUnsettledFunding
     }
 
     public init(from decoder: Decoder) throws {
@@ -304,11 +308,13 @@ public struct ExchangeState: Codable, Sendable {
         pricingMode = try container.decodeIfPresent(PricingMode.self, forKey: .pricingMode)
         collateralModel = try container.decodeIfPresent(CollateralModel.self, forKey: .collateralModel)
         tradingAllocation = try container.decodeIfPresent(TradingAllocationState.self, forKey: .tradingAllocation)
+        financialInputId = try container.decodeIfPresent(String.self, forKey: .financialInputId)
+        mirrorUnsettledFunding = try container.decodeIfPresent(String.self, forKey: .mirrorUnsettledFunding)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation
+        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding
     }
 }
 
@@ -656,15 +662,23 @@ public struct OrderBreakdown: Sendable {
 public struct UpdateLeverageResponse: Codable, Sendable {
     public let accountId: String
     public let market: String
-    public let leverage: Int
-    public let previousLeverage: Int
+    /// Nil when GLL's applied cap is unverified; never interpret nil as zero.
+    public let leverage: Int?
+    public let previousLeverage: Int?
+    public let mode: LeveragePreferenceMode?
+    public let intendedLeverage: Int?
+    public let revision: String?
+    public let projectionUnavailable: Bool?
+    public let commandId: String?
 }
 
 public struct LeverageSetting: Codable, Sendable {
     public let market: String
-    public let leverage: Int
-    /// Asset's configured margin mode.
+    public let leverage: Int?
     public let marginMode: MarginMode
+    public let mode: LeveragePreferenceMode?
+    public let intendedLeverage: Int?
+    public let inputId: String?
 }
 
 public struct UpdateIsolatedMarginResponse: Codable, Sendable {
@@ -1167,6 +1181,7 @@ extension ExchangeState {
             // non-native market to "no reservation" — which reports the LARGER
             // native budget as spendable on a HIP-3 dex that may not spend it.
             // Any field added to ExchangeState must be carried through here.
-            collateralModel: collateralModel, tradingAllocation: tradingAllocation)
+            collateralModel: collateralModel, tradingAllocation: tradingAllocation,
+            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding)
     }
 }

@@ -13,6 +13,7 @@ public struct RealmEvent: Codable, Sendable {
     public let object: ArcaObject?
     public let mids: [String: String]?
     public let exchangeState: ExchangeState?
+    public let exchangeStateUnavailable: Bool?
     /// Present on `exchange.provisioned` and `exchange.ready`.
     public let exchange: ExchangeProvisioning?
     /// Present on `deposit.detected`.
@@ -72,6 +73,7 @@ public struct RealmEvent: Codable, Sendable {
         object = try container.decodeIfPresent(ArcaObject.self, forKey: .object)
         mids = try container.decodeIfPresent([String: String].self, forKey: .mids)
         exchangeState = try container.decodeIfPresent(ExchangeState.self, forKey: .exchangeState)
+        exchangeStateUnavailable = try container.decodeIfPresent(Bool.self, forKey: .exchangeStateUnavailable)
         exchange = try container.decodeIfPresent(ExchangeProvisioning.self, forKey: .exchange)
         deposit = try container.decodeIfPresent(DetectedDeposit.self, forKey: .deposit)
         valuation = try container.decodeIfPresent(ObjectValuation.self, forKey: .valuation)
@@ -108,7 +110,7 @@ public struct RealmEvent: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case realmId, type, entityId, entityPath, summary, operation, event, object
-        case mids, exchangeState, exchange, deposit, valuation, path, watchId, aggregation
+        case mids, exchangeStateUnavailable, exchangeState, exchange, deposit, valuation, path, watchId, aggregation
         case projection, valuations, removed
         case market, interval, candle, bar, isClosed, fill, funding, trade, realm, twap, driftCorrected
         case eventId, correlationId, sequence, timestamp, deliverySeq
@@ -117,7 +119,7 @@ public struct RealmEvent: Codable, Sendable {
     public init(
         realmId: String? = nil, type: String, entityId: String? = nil, entityPath: String? = nil,
         summary: ExplorerSummary? = nil, operation: Operation? = nil, event: ArcaEvent? = nil,
-        object: ArcaObject? = nil, mids: [String: String]? = nil, exchangeState: ExchangeState? = nil,
+        object: ArcaObject? = nil, mids: [String: String]? = nil, exchangeState: ExchangeState? = nil, exchangeStateUnavailable: Bool? = nil,
         exchange: ExchangeProvisioning? = nil, deposit: DetectedDeposit? = nil,
         valuation: ObjectValuation? = nil, path: String? = nil, watchId: String? = nil,
         aggregation: PathAggregation? = nil,
@@ -133,6 +135,7 @@ public struct RealmEvent: Codable, Sendable {
         self.realmId = realmId; self.type = type; self.entityId = entityId; self.entityPath = entityPath
         self.summary = summary; self.operation = operation; self.event = event; self.object = object
         self.mids = mids; self.exchangeState = exchangeState
+        self.exchangeStateUnavailable = exchangeStateUnavailable
         self.exchange = exchange; self.deposit = deposit; self.valuation = valuation
         self.path = path; self.watchId = watchId; self.aggregation = aggregation
         self.projection = projection; self.valuations = valuations; self.removed = removed

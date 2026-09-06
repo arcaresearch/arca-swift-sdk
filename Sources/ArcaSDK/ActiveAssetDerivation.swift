@@ -188,6 +188,8 @@ public func deriveActiveAssetData(
     askRatio: Double = 1,
     bidRatio: Double = 1,
 ) -> ActiveAssetData? {
+    // The mirror quote includes commitments and applied risk unavailable to local sizing.
+    guard exchangeState.tradingAllocation == nil else { return nil }
     guard markPx.isFinite, markPx > 0, leverage > 0 else { return nil }
 
     // Cross bucket, not the account-wide summary. The server budgets orders

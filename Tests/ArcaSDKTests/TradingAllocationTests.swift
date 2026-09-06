@@ -36,5 +36,6 @@ final class TradingAllocationTests: XCTestCase {
         XCTAssertEqual(marked.marginSummary.equity, "1000")
         XCTAssertEqual(marked.positions[0].unrealizedPnl, "0")
         XCTAssertEqual(marked.tradingAllocation?.projection?.availableToTrade, "0")
+        XCTAssertNil(deriveActiveAssetData(from: state, market: "gllt:3", markPx: 1000, leverage: 10, side: .buy))
     }
 }

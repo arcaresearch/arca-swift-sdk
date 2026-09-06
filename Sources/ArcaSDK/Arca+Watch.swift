@@ -653,11 +653,38 @@ extension Arca {
         let stateBox = SendableBox<ExchangeState?>(nil)
         let structuralBox = SendableBox<ExchangeState?>(nil)
         let midsBox = SendableBox<[String: String]>([:])
+        let observationEpoch = SendableBox<UInt64>(0)
+        let expiryTask = SendableBox<Task<Void, Never>?>(nil)
+        let armExpiry: @Sendable (ExchangeState, UInt64) -> Bool = { state, epoch in
+            expiryTask.update { $0?.cancel(); $0 = nil }
+            guard let delay = state.tradingAllocation?.remainingValidity() else { return true }
+            guard delay > 0 else {
+                structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
+                streamState.update { $0 = .reconnecting }
+                return false
+            }
+            expiryTask.update { task in
+                task = Task {
+                    do { try await Task.sleep(nanoseconds: UInt64(min(delay, 86_400) * 1_000_000_000)) }
+                    catch { return }
+                    observationEpoch.update { current in
+                        guard current == epoch, !Task.isCancelled else { return }
+                        current &+= 1
+                        structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
+                        streamState.update { $0 = .reconnecting }
+                    }
+                }
+            }
+            return true
+        }
+
 
         let initialState = try await getExchangeState(objectId: objectId)
-        structuralBox.update { $0 = initialState }
-        stateBox.update { $0 = initialState }
-        streamState.update { $0 = .connected }
+        if armExpiry(initialState, 0) {
+            structuralBox.update { $0 = initialState }
+            stateBox.update { $0 = initialState }
+            streamState.update { $0 = .connected }
+        }
 
         let statusStream = await ws.statusStream
         let statusTask = Task { [weak self] in
@@ -667,18 +694,24 @@ extension Arca {
                 } else if s == .connected && streamState.value == .reconnecting {
                     guard let self = self else { continue }
                     do {
+                        let epoch = observationEpoch.value
                         let refreshed = try await self.getExchangeState(objectId: objectId)
-                        structuralBox.update { $0 = refreshed }
-                        let currentMids = midsBox.value
-                        let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
-                        stateBox.update { $0 = revalued }
+                        observationEpoch.update { current in
+                            guard current == epoch else { return }
+                            current &+= 1
+                            guard armExpiry(refreshed, current) else { return }
+                            structuralBox.update { $0 = refreshed }
+                            let currentMids = midsBox.value
+                            let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
+                            stateBox.update { $0 = revalued }
+                            streamState.update { $0 = .connected }
+                        }
                     } catch {
                         self.log.warning("watch",
                                          "exchange state refresh on reconnect failed",
                                          error: error,
                                          metadata: ["objectId": objectId])
                     }
-                    streamState.update { $0 = .connected }
                 }
             }
         }
@@ -693,6 +726,17 @@ extension Arca {
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == objectId || event.entityPath == objectPath else { continue }
+                    observationEpoch.update { $0 &+= 1 }
+                    let epoch = observationEpoch.value
+                    if event.exchangeStateUnavailable == true {
+                        expiryTask.update { $0?.cancel(); $0 = nil }
+                        observationEpoch.update { _ in
+                            structuralBox.update { $0 = nil }
+                            stateBox.update { $0 = nil }
+                            streamState.update { $0 = .reconnecting }
+                        }
+                        continue
+                    }
                     let structural: ExchangeState
                     if let state = event.exchangeState,
                        hasInlineStructuralExchangeState(state) {
@@ -709,11 +753,17 @@ extension Arca {
                             continue
                         }
                     }
-                    structuralBox.update { $0 = structural }
-                    let currentMids = midsBox.value
-                    let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
-                    stateBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        current &+= 1
+                        guard armExpiry(structural, current) else { return }
+                        structuralBox.update { $0 = structural }
+                        let currentMids = midsBox.value
+                        let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
+                        stateBox.update { $0 = revalued }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(revalued)
+                    }
                 }
                 continuation.finish()
             }
@@ -723,10 +773,12 @@ extension Arca {
                     midsBox.update { current in
                         for (key, value) in mids { current[key] = value }
                     }
-                    guard let base = structuralBox.value else { continue }
-                    let revalued = base.revalued(with: midsBox.value)
-                    stateBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    observationEpoch.update { _ in
+                        guard let base = structuralBox.value else { return }
+                        let revalued = base.revalued(with: midsBox.value)
+                        stateBox.update { $0 = revalued }
+                        continuation.yield(revalued)
+                    }
                 }
             }
 
@@ -742,6 +794,7 @@ extension Arca {
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                expiryTask.update { $0?.cancel(); $0 = nil }
                 await ws.unwatchPath(objectPath)
                 await ws.releaseMids()
             }
