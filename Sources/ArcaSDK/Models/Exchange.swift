@@ -251,6 +251,8 @@ public struct ExchangeIntent: Codable, Sendable {
 }
 
 public struct ExchangeState: Codable, Sendable {
+    /// Optional Arca mirror allocation. Absent until this capability is enabled.
+    public let tradingAllocation: TradingAllocationState?
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
     public let crossMarginSummary: SimMarginSummary?
@@ -276,7 +278,8 @@ public struct ExchangeState: Codable, Sendable {
         positions: [SimPosition], openOrders: [SimOrder],
         feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?,
         pricingMode: PricingMode? = nil,
-        collateralModel: CollateralModel? = nil
+        collateralModel: CollateralModel? = nil,
+        tradingAllocation: TradingAllocationState? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -285,6 +288,7 @@ public struct ExchangeState: Codable, Sendable {
         self.feeRates = feeRates; self.pendingIntents = pendingIntents
         self.pricingMode = pricingMode
         self.collateralModel = collateralModel
+        self.tradingAllocation = tradingAllocation
     }
 
     public init(from decoder: Decoder) throws {
@@ -299,11 +303,12 @@ public struct ExchangeState: Codable, Sendable {
         pendingIntents = try container.decodeIfPresent([ExchangeIntent].self, forKey: .pendingIntents)
         pricingMode = try container.decodeIfPresent(PricingMode.self, forKey: .pricingMode)
         collateralModel = try container.decodeIfPresent(CollateralModel.self, forKey: .collateralModel)
+        tradingAllocation = try container.decodeIfPresent(TradingAllocationState.self, forKey: .tradingAllocation)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel
+        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation
     }
 }
 
@@ -1146,7 +1151,7 @@ extension ExchangeState {
     /// Structural data (orders, account, margins, intents) is preserved unchanged.
     public func revalued(with mids: [String: String]) -> ExchangeState {
         // Server-authoritative pricing: trust server equity/uPnL verbatim.
-        if pricingMode == .server { return self }
+        if pricingMode == .server || tradingAllocation != nil { return self }
         let newPositions = positions.map { $0.revalued(with: mids) }
         let newSummary = marginSummary.revalued(positions: newPositions)
         let newCross = crossMarginSummary?.revalued(positions: newPositions)
@@ -1162,6 +1167,6 @@ extension ExchangeState {
             // non-native market to "no reservation" — which reports the LARGER
             // native budget as spendable on a HIP-3 dex that may not spend it.
             // Any field added to ExchangeState must be carried through here.
-            collateralModel: collateralModel)
+            collateralModel: collateralModel, tradingAllocation: tradingAllocation)
     }
 }
