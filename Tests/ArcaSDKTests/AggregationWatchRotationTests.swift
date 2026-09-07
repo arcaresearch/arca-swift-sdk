@@ -1,11 +1,9 @@
 import XCTest
 @testable import ArcaSDK
 
-/// A standalone aggregation watch is per-connection server state: the server
-/// destroys it when the connection that created it closes. A rotation swaps
-/// the connection silently, so nothing in the status-driven recovery path
-/// runs — without an explicit rotation hook the stream goes permanently quiet
-/// with no error and no reconnecting state to explain it.
+/// An aggregation watch must be re-created after rotation because its
+/// replacement connection can reach another pod. Rotation preserves connected
+/// status, so recovery needs an explicit rotation hook.
 final class AggregationWatchRotationTests: XCTestCase {
 
     private var sessionConfig: URLSessionConfiguration!
@@ -49,7 +47,12 @@ final class AggregationWatchRotationTests: XCTestCase {
         try await waitFor { replacement.sentActions.contains("ping") }
         replacement.deliver(#"{"type":"pong"}"#)
 
-        try await waitFor(timeout: 2.0) { AggregationWatchProtocol.createCount == 2 }
+        // The mock records creation before its response reaches the SDK.
+        // Retiring the previous watch is a subsequent asynchronous request.
+        try await waitFor(timeout: 2.0) {
+            AggregationWatchProtocol.createCount == 2 &&
+                AggregationWatchProtocol.destroyedIds.contains(firstWatchId)
+        }
 
         XCTAssertEqual(AggregationWatchProtocol.createCount, 2,
                        "the aggregation watch must be re-created against the new connection")
