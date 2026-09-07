@@ -2,7 +2,7 @@ import Foundation
 
 /// Messages sent from client to server over the WebSocket.
 enum OutboundMessage: Encodable {
-    case auth(token: String, realmId: String, capabilities: [String])
+    case auth(token: String, realmId: String, capabilities: [String], foreground: Bool = true)
     case watch(path: String)
     case unwatch(path: String)
     case subscribeMids(exchange: String, coins: [String])
@@ -18,15 +18,17 @@ enum OutboundMessage: Encodable {
     case attachAggregationWatch(watchId: String)
     case detachAggregationWatch(watchId: String)
     case ping
+    case presence(foreground: Bool)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .auth(let token, let realmId, let capabilities):
+        case .auth(let token, let realmId, let capabilities, let foreground):
             try container.encode("auth", forKey: .action)
             try container.encode(token, forKey: .token)
             try container.encode(realmId, forKey: .realmId)
             try container.encode(capabilities, forKey: .capabilities)
+            try container.encode(foreground, forKey: .foreground)
         case .watch(let path):
             try container.encode("watch", forKey: .action)
             try container.encode(path, forKey: .path)
@@ -74,13 +76,16 @@ enum OutboundMessage: Encodable {
         case .detachAggregationWatch(let watchId):
             try container.encode("detach_aggregation_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
+        case .presence(let foreground):
+            try container.encode("ping", forKey: .action)
+            try container.encode(foreground, forKey: .foreground)
         case .ping:
             try container.encode("ping", forKey: .action)
         }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, token, realmId, capabilities, exchange, coins, intervals, path, batch
+        case action, token, realmId, capabilities, foreground, exchange, coins, intervals, path, batch
         case watchId, target, kind, objectId, projection, requestId
     }
 }
