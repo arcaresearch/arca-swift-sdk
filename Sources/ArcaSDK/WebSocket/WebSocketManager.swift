@@ -1504,11 +1504,13 @@ public actor WebSocketManager {
 
     private func handleAppDidEnterBackground() {
         hiddenAt = Date()
+        sendMessage(.presence(foreground: false))
     }
 
     private func handleAppWillEnterForeground() {
         guard let hiddenAt = hiddenAt else { return }
         self.hiddenAt = nil
+        sendMessage(.presence(foreground: true))
         let hiddenDuration = Date().timeIntervalSince(hiddenAt)
         guard hiddenDuration >= WebSocketManager.resumeHiddenThresholdS else { return }
         fireResume(hiddenDuration: hiddenDuration)
@@ -1781,7 +1783,14 @@ public actor WebSocketManager {
     private func sendMessage(_ message: OutboundMessage, generation: Int) {
         guard let task = transport(for: generation) else { return }
         do {
-            let data = try JSONEncoder().encode(message)
+            let outbound: OutboundMessage
+            switch message {
+            case .ping: outbound = .presence(foreground: hiddenAt == nil)
+            case .auth(let token, let realmId, let capabilities, _):
+                outbound = .auth(token: token, realmId: realmId, capabilities: capabilities, foreground: hiddenAt == nil)
+            default: outbound = message
+            }
+            let data = try JSONEncoder().encode(outbound)
             if let text = String(data: data, encoding: .utf8) {
                 task.sendText(text) { [log] err in
                     if let err = err {

@@ -3,6 +3,15 @@ import XCTest
 
 final class WebSocketManagerTests: XCTestCase {
 
+    func testForegroundPresenceEncoding() throws {
+        for foreground in [false, true] {
+            let data = try JSONEncoder().encode(OutboundMessage.presence(foreground: foreground))
+            let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            XCTAssertEqual(json["action"] as? String, "ping")
+            XCTAssertEqual(json["foreground"] as? Bool, foreground)
+        }
+    }
+
     // MARK: - WebSocket Message Encoding
 
     func testAuthMessageEncoding() throws {
