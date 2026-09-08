@@ -722,6 +722,7 @@ extension Arca {
         let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
 
+        let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ExchangeState.self, bufferingPolicy: .bufferingNewest(1)) { [weak self] continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
@@ -753,6 +754,7 @@ extension Arca {
                             continue
                         }
                     }
+                    guard !Task.isCancelled else { break }
                     observationEpoch.update { current in
                         guard current == epoch else { return }
                         current &+= 1
@@ -782,9 +784,32 @@ extension Arca {
                 }
             }
 
+            let refreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    let interval = min(60000, max(5000, structuralBox.value?.stateRefreshIntervalMs ?? 30000))
+                    do { try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000) } catch { break }
+                    guard (structuralBox.value?.stateRefreshIntervalMs ?? 0) > 0 else { continue }
+                    let epoch = observationEpoch.value
+                    guard let self, let fresh = try? await self.getExchangeState(objectId: objectId) else { continue }
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        current &+= 1
+                        guard armExpiry(fresh, current) else { return }
+                        structuralBox.update { $0 = fresh }
+                        let marked = fresh.revalued(with: midsBox.value)
+                        stateBox.update { $0 = marked }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(marked)
+                    }
+                }
+            }
+            stopUpdates.update { $0 = {
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                continuation.finish()
+            } }
             continuation.onTermination = { _ in
-                exchangeTask.cancel()
-                midsTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }
 
@@ -793,6 +818,7 @@ extension Arca {
             exchangeState: stateBox,
             updates: updates,
             stop: { [ws] in
+                stopUpdates.value?()
                 statusTask.cancel()
                 expiryTask.update { $0?.cancel(); $0 = nil }
                 await ws.unwatchPath(objectPath)

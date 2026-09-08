@@ -1595,6 +1595,7 @@ extension Arca {
         }
 
         let exchangeStateBox = SendableBox<ExchangeState?>(initialExchangeState)
+        let observationEpoch = SendableBox<UInt64>(0)
 
         func recompute() -> ActiveAssetData? {
             guard let exState = exchangeStateBox.value else { return nil }
@@ -1669,10 +1670,16 @@ extension Arca {
             }
         }
 
+        let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ActiveAssetData.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == opts.objectId || event.entityPath == objectPath else { continue }
+                    var epoch: UInt64 = 0
+                    observationEpoch.update { current in
+                        current &+= 1
+                        epoch = current
+                    }
                     let nextState: ExchangeState
                     if let state = event.exchangeState {
                         nextState = state
@@ -1681,14 +1688,23 @@ extension Arca {
                               let fetched = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
                         nextState = fetched
                     }
-                    exchangeStateBox.update { $0 = nextState }
+                    guard !Task.isCancelled else { break }
+                    var accepted = false
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        exchangeStateBox.update { $0 = nextState }
+                        accepted = true
+                    }
+                    guard accepted else { continue }
                     let data: ActiveAssetData?
                     if nextState.pricingMode == .server {
                         data = await fetchServerActiveAssetData()
                     } else {
                         data = recompute()
                     }
-                    if let data {
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { current in
+                        guard current == epoch, let data else { return }
                         activeAssetBox.update { $0 = data }
                         streamState.update { $0 = .connected }
                         continuation.yield(data)
@@ -1707,9 +1723,39 @@ extension Arca {
                     }
                 }
             }
+            let refreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    let interval = min(60000, max(5000, exchangeStateBox.value?.stateRefreshIntervalMs ?? 30000))
+                    do { try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000) } catch { break }
+                    guard (exchangeStateBox.value?.stateRefreshIntervalMs ?? 0) > 0 else { continue }
+                    // A REST refresh started before a newer exchange event must
+                    // not replace that event's state or its server-derived size.
+                    let epoch = observationEpoch.value
+                    guard let self, let fresh = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
+                    guard !Task.isCancelled else { break }
+                    var accepted = false
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        exchangeStateBox.update { $0 = fresh }
+                        accepted = true
+                    }
+                    guard accepted else { continue }
+                    let data = fresh.pricingMode == .server ? await fetchServerActiveAssetData() : recompute()
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { current in
+                        guard current == epoch, let data else { return }
+                        activeAssetBox.update { $0 = data }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(data)
+                    }
+                }
+            }
+            stopUpdates.update { $0 = {
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                continuation.finish()
+            } }
             continuation.onTermination = { _ in
-                exchangeTask.cancel()
-                midsTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }
 
@@ -1722,6 +1768,7 @@ extension Arca {
             activeAssetData: activeAssetBox,
             updates: updates,
             stop: { [ws] in
+                stopUpdates.value?()
                 statusTask.cancel()
                 await priceStream.stop()
                 await ws.unwatchPath(objectPath)

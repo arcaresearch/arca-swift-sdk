@@ -38,6 +38,8 @@ public struct SimPosition: Codable, Sendable {
     /// the leverage-implied margin after `updateIsolatedMargin`. `nil` for
     /// cross positions.
     public var isolatedMargin: String? = nil
+    /// Unsettled funding credit/debt; isolated funding becomes spendable on close.
+    public var unsettledFundingUsd: String? = nil
     public let liquidationPrice: String?
     public let unrealizedPnl: String?
     public let returnOnEquity: String?
@@ -92,6 +94,7 @@ extension SimPosition {
         self.marginUsed = try c.decode(String.self, forKey: .marginUsed)
         self.marginMode = try c.decodeIfPresent(MarginMode.self, forKey: .marginMode) ?? .cross
         self.isolatedMargin = try c.decodeIfPresent(String.self, forKey: .isolatedMargin)
+        self.unsettledFundingUsd = try c.decodeIfPresent(String.self, forKey: .unsettledFundingUsd)
         self.liquidationPrice = try c.decodeIfPresent(String.self, forKey: .liquidationPrice)
         self.unrealizedPnl = try c.decodeIfPresent(String.self, forKey: .unrealizedPnl)
         self.returnOnEquity = try c.decodeIfPresent(String.self, forKey: .returnOnEquity)
@@ -255,6 +258,7 @@ public struct ExchangeState: Codable, Sendable {
     public let tradingAllocation: TradingAllocationState?
     public let financialInputId: String?
     public let mirrorUnsettledFunding: String?
+    public let stateRefreshIntervalMs: Int?
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
     public let crossMarginSummary: SimMarginSummary?
@@ -282,7 +286,8 @@ public struct ExchangeState: Codable, Sendable {
         pricingMode: PricingMode? = nil,
         collateralModel: CollateralModel? = nil,
         tradingAllocation: TradingAllocationState? = nil,
-        financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil
+        financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil,
+        stateRefreshIntervalMs: Int? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -293,6 +298,7 @@ public struct ExchangeState: Codable, Sendable {
         self.collateralModel = collateralModel
         self.tradingAllocation = tradingAllocation
         self.financialInputId = financialInputId; self.mirrorUnsettledFunding = mirrorUnsettledFunding
+        self.stateRefreshIntervalMs = stateRefreshIntervalMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -310,11 +316,12 @@ public struct ExchangeState: Codable, Sendable {
         tradingAllocation = try container.decodeIfPresent(TradingAllocationState.self, forKey: .tradingAllocation)
         financialInputId = try container.decodeIfPresent(String.self, forKey: .financialInputId)
         mirrorUnsettledFunding = try container.decodeIfPresent(String.self, forKey: .mirrorUnsettledFunding)
+        stateRefreshIntervalMs = try container.decodeIfPresent(Int.self, forKey: .stateRefreshIntervalMs)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding
+        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding, stateRefreshIntervalMs
     }
 }
 
@@ -432,8 +439,8 @@ public struct AvailabilityBreakdown: Codable, Sendable {
 /// This is a venue rule, not a market property, and the two venues answer it
 /// differently over *identical* market ids: the live `hl` venue reserves
 /// `max(initialMargin, rate * totalNotional)` behind the open positions before
-/// collateral can move to another dex, while the `hl-sim` paper venue has a
-/// single pool and no transfer to gate. Both publish `hl:<dexIndex>:<symbol>`,
+/// collateral can move to another dex. The `hl-sim` paper venue defaults to
+/// one pool and can opt in per account or realm. Both publish `hl:<dexIndex>:<symbol>`,
 /// so a client inspecting the market id cannot tell them apart.
 ///
 /// Absent means no reservation — read it that way rather than guessing.
@@ -1122,7 +1129,7 @@ extension SimPosition {
         return SimPosition(
             id: id, accountId: accountId, realmId: realmId, market: market,
             side: side, size: size, entryPrice: entryPrice, leverage: leverage,
-            marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin,
+            marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin, unsettledFundingUsd: unsettledFundingUsd,
             liquidationPrice: liquidationPrice,
             unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
             positionValue: "\(posVal)", error: nil,
@@ -1142,9 +1149,8 @@ extension SimMarginSummary {
         let totalPnl = positions.reduce(Decimal(0)) { sum, pos in
             sum + (Decimal(string: pos.unrealizedPnl ?? "0") ?? 0)
         }
-        let rawUsd = Decimal(string: totalRawUsd ?? "") ?? 0
         let eq: Decimal
-        if rawUsd > 0 {
+        if let rawUsd = totalRawUsd.flatMap({ Decimal(string: $0) }) {
             eq = rawUsd + totalPnl
         } else {
             eq = Decimal(string: equity) ?? 0
@@ -1168,7 +1174,7 @@ extension ExchangeState {
         if pricingMode == .server || tradingAllocation != nil { return self }
         let newPositions = positions.map { $0.revalued(with: mids) }
         let newSummary = marginSummary.revalued(positions: newPositions)
-        let newCross = crossMarginSummary?.revalued(positions: newPositions)
+        let newCross = crossMarginSummary?.revalued(positions: newPositions.filter { $0.marginMode == .cross })
         return ExchangeState(
             account: account, marginSummary: newSummary,
             crossMarginSummary: newCross,
@@ -1182,6 +1188,6 @@ extension ExchangeState {
             // native budget as spendable on a HIP-3 dex that may not spend it.
             // Any field added to ExchangeState must be carried through here.
             collateralModel: collateralModel, tradingAllocation: tradingAllocation,
-            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding)
+            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding, stateRefreshIntervalMs: stateRefreshIntervalMs)
     }
 }
