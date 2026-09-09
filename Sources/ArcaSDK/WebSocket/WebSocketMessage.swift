@@ -3,7 +3,7 @@ import Foundation
 /// Messages sent from client to server over the WebSocket.
 enum OutboundMessage: Encodable {
     case auth(token: String, realmId: String, capabilities: [String], foreground: Bool = true)
-    case watch(path: String)
+    case watch(path: String, requestId: String? = nil)
     case unwatch(path: String)
     case subscribeMids(exchange: String, coins: [String])
     case unsubscribeMids
@@ -29,9 +29,10 @@ enum OutboundMessage: Encodable {
             try container.encode(realmId, forKey: .realmId)
             try container.encode(capabilities, forKey: .capabilities)
             try container.encode(foreground, forKey: .foreground)
-        case .watch(let path):
+        case .watch(let path, let requestId):
             try container.encode("watch", forKey: .action)
             try container.encode(path, forKey: .path)
+            try container.encodeIfPresent(requestId, forKey: .requestId)
         case .unwatch(let path):
             try container.encode("unwatch", forKey: .action)
             try container.encode(path, forKey: .path)

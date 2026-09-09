@@ -35,7 +35,9 @@ public protocol OperationResponse: Codable, Sendable {
 /// ```
 public final class OperationHandle<Response: OperationResponse>: @unchecked Sendable {
     private let _submitted: Task<Response, Error>
-    private let _settled: Task<Response, Error>
+    private let settlementLock = NSLock()
+    private var settlement: Task<Response, Error>?
+    private let waitForSettlement: @Sendable (String) async throws -> Operation
 
     init(
         submit: @escaping @Sendable () async throws -> Response,
@@ -43,12 +45,28 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
     ) {
         let submitted = Task { try await submit() }
         self._submitted = submitted
-        self._settled = Task {
+        self.waitForSettlement = waitForSettlement
+    }
+
+    // Creating/submitting a handle does not implicitly acquire a second
+    // operation watch. Settlement is independently requested by its API.
+    private func settlementTask() -> Task<Response, Error> {
+        settlementLock.lock()
+        defer { settlementLock.unlock() }
+        if let settlement { return settlement }
+        let submitted = _submitted
+        let wait = waitForSettlement
+        let task = Task {
             let response = try await submitted.value
+            if response.operation.state == .failed || response.operation.state == .expired {
+                throw ArcaError.operationFailed(operation: response.operation)
+            }
             guard response.operation.state == .pending else { return response }
-            let completed = try await waitForSettlement(response.operation.id.rawValue)
+            let completed = try await wait(response.operation.id.rawValue)
             return response.withOperation(completed)
         }
+        settlement = task
+        return task
     }
 
     /// The HTTP response (before settlement).
@@ -65,7 +83,7 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
     /// `failed`, or `expired`). Throws ``ArcaError/operationFailed(operation:)``
     /// if the terminal state is `failed` or `expired`.
     public var settled: Response {
-        get async throws { try await _settled.value }
+        get async throws { try await settlementTask().value }
     }
 
     /// Wait for full operation settlement (discardable).
@@ -75,7 +93,7 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
     /// "unused result" warning.
     @discardableResult
     public func settle() async throws -> Response {
-        try await _settled.value
+        try await settlementTask().value
     }
 
     /// Wait for settlement with an explicit timeout.
@@ -84,7 +102,7 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
     /// - Throws: ``ArcaError`` with code `TIMEOUT` if the deadline passes.
     public func settled(timeoutSeconds: TimeInterval) async throws -> Response {
         try await withThrowingTaskGroup(of: Response.self) { group in
-            group.addTask { try await self._settled.value }
+            group.addTask { try await self.settlementTask().value }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 throw ArcaError.unknown(

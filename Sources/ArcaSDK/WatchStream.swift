@@ -47,9 +47,7 @@ public struct OperationWatchStream: Sendable {
 
     /// Returns when the first snapshot has been received. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms poll
-        }
+        await state.wait(until: { $0 != .loading })
     }
 
     /// Track a mutation's operation: when the HTTP response arrives,
@@ -86,6 +84,18 @@ public final class SendableBox<T: Sendable>: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _value
+    }
+
+    /// Subscribe before inspecting the current value so readiness cannot race
+    /// a push. AsyncStream terminates on task cancellation; cleanup is explicit.
+    public func wait(until predicate: @escaping @Sendable (T) -> Bool) async {
+        let (stream, continuation) = AsyncStream<T>.makeStream()
+        let observer = onChange { continuation.yield($0) }
+        defer { removeObserver(observer); continuation.finish() }
+        continuation.yield(value)
+        for await snapshot in stream {
+            if predicate(snapshot) { return }
+        }
     }
 
     public func update(_ transform: (inout T) -> Void) {
@@ -161,9 +171,7 @@ public struct BalanceWatchStream: Sendable {
 
     /// Returns when the first snapshot has been received. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -199,9 +207,7 @@ public struct ObjectWatchStream: Sendable {
 
     /// Returns when the first valuation has been received. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -273,9 +279,7 @@ public struct AggregationWatchStream: Sendable {
 
     /// Returns when the first aggregation has been received. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -323,9 +327,7 @@ public struct ProjectionWatchStream: Sendable {
 
     /// Returns when the initial snapshot has loaded. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -344,9 +346,7 @@ public struct MarketPriceStream: Sendable {
 
     /// Returns when the first snapshot has been received. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -368,9 +368,7 @@ public struct EquityChartStream: Sendable {
 
     /// Returns when the first update has been emitted. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -391,9 +389,7 @@ public struct PnlChartStream: Sendable {
 
     /// Returns when the first update has been emitted. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -410,9 +406,7 @@ public struct CandleWatchStream: Sendable {
 
     /// Returns when the stream is connected. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -429,9 +423,7 @@ public struct OIWatchStream: Sendable {
 
     /// Returns when the stream is connected. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -501,9 +493,7 @@ public struct CandleChartStream: Sendable {
 
     /// Returns when the first historical data has loaded. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -562,9 +552,7 @@ public struct MaxOrderSizeWatchStream: Sendable {
 
     /// Returns when the first computation has completed. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -584,9 +572,7 @@ public struct ExchangeStateWatchStream: Sendable {
 
     /// Returns when the first state has been fetched. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -603,9 +589,7 @@ public struct FundingWatchStream: Sendable {
 
     /// Returns when the stream is connected. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }
 
@@ -640,12 +624,12 @@ public struct FillWatchStream: Sendable {
     /// Running list of fills, populated on initial fetch and updated live.
     /// **This is the merged view** — preview rows from `fill.previewed` are
     /// replaced in place by their authoritative `fill.recorded` counterparts
-    /// using `correlationId`. Use this for activity-feed UIs.
+    /// using stable `fillId` (row `id` fallback). Use this for activity-feed UIs.
     public let fills: SendableBox<[Fill]>
     /// Async stream of every fill transition.
     /// **Yields both phases**: the preview from `fill.previewed` and then the
     /// authoritative replacement from `fill.recorded`. Consuming this directly
-    /// without your own merge by `correlationId` will produce duplicate rows.
+    /// without your own merge by stable fill identity will produce duplicate rows.
     /// For an activity feed, prefer ``fills``.
     public let updates: AsyncStream<(Fill, RealmEvent)>
     /// Stop listening and unsubscribe from fill updates.
@@ -670,8 +654,6 @@ public struct FillWatchStream: Sendable {
 
     /// Returns when the initial fill list has been fetched. Never throws.
     public func ready() async {
-        while state.value == .loading {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await state.wait(until: { $0 != .loading })
     }
 }

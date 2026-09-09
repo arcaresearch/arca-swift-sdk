@@ -212,9 +212,12 @@ extension Arca {
         leverageMode: LeveragePreferenceMode? = nil,
         slippageBps: Int? = nil
     ) -> OrderHandle {
+        let capture = OrderEventCapture(ws: ws)
         let effectiveTolerance = sizeTolerance ?? maxSizeTolerance
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
-            try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
+            await capture.start()
+            do {
+            let response: OrderOperationResponse = try await client.post("/objects/\(objectId)/exchange/orders", body: PlaceOrderRequest(
                 realmId: realm,
                 path: path,
                 market: market,
@@ -237,15 +240,16 @@ extension Arca {
                 isolated: isolated == true ? true : nil,
                 ocoGroupId: ocoGroupId, leverageMode: leverageMode, slippageBps: slippageBps
             ))
+            await capture.submitted(response.operation, objectId: objectId)
+            return response
+            } catch { await capture.stop(); throw error }
         }
 
         let deps = OrderHandleDeps(
             getOrder: { [self] objId, orderId in
                 try await self.getOrder(objectId: objId, orderId: orderId)
             },
-            fillEvents: { [self] in
-                await self.ws.fillEvents()
-            },
+            fillEvents: { await capture.fillEvents() },
             cancelOrder: { [self] cancelPath, objId, orderId in
                 self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
             },
@@ -257,7 +261,13 @@ extension Arca {
             },
             listFills: { [self] objId in
                 try await self.listFills(objectId: objId)
-            }
+            },
+            releaseExecution: { await capture.stop() },
+            awaitExecutionReady: { try await capture.awaitReady() },
+            executionEvents: { await capture.events() },
+            getExecutionOperation: { [self] id in try await self.getOperation(operationId: id).operation },
+            executionGaps: { [self] in await self.orderExecutionGaps() },
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
         )
 
         return OrderHandle(
@@ -377,7 +387,9 @@ extension Arca {
             return position
         }
 
+        let capture = OrderEventCapture(ws: ws)
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
+            try await capture.submit(objectId: objectId) { [self] in
             let position = try await positionFetch.value
             let closingSide: OrderSide = position.side == .long ? .sell : .buy
             let closeSize: String
@@ -420,28 +432,10 @@ extension Arca {
                 sizeTolerance: nil,
                 isolated: effectiveIsolated ? true : nil
             ))
+            }
         }
 
-        let deps = OrderHandleDeps(
-            getOrder: { [self] objId, orderId in
-                try await self.getOrder(objectId: objId, orderId: orderId)
-            },
-            fillEvents: { [self] in
-                await self.ws.fillEvents()
-            },
-            cancelOrder: { [self] cancelPath, objId, orderId in
-                self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
-            },
-            modifyOrder: { [self] modifyPath, objId, orderId, newSize in
-                self.modifyOrder(path: modifyPath, objectId: objId, orderId: orderId, newSize: newSize)
-            },
-            waitForSettlement: { [self] operationId in
-                try await self.waitForSettlement(operationId)
-            },
-            listFills: { [self] objId in
-                try await self.listFills(objectId: objId)
-            }
-        )
+        let deps = makeOrderHandleDeps(capture: capture)
 
         return OrderHandle(
             inner: inner,
@@ -550,7 +544,9 @@ extension Arca {
         feeTargets: [FeeTarget]?,
         ocoGroupId: String?
     ) -> OrderHandle {
+        let capture = OrderEventCapture(ws: ws)
         let inner: OperationHandle<OrderOperationResponse> = operationHandle { [self] in
+            try await capture.submit(objectId: objectId) { [self] in
             let isMarketOrder = isMarket ?? true
             if !isMarketOrder, (limitPrice ?? "").isEmpty {
                 throw ArcaError.validation(
@@ -597,13 +593,14 @@ extension Arca {
                 isolated: effIsolated ? true : nil,
                 ocoGroupId: ocoGroupId
             ))
+            }
         }
 
         return OrderHandle(
             inner: inner,
             objectId: objectId,
             placementPath: path,
-            deps: makeOrderHandleDeps()
+            deps: makeOrderHandleDeps(capture: capture)
         )
     }
 
@@ -773,31 +770,41 @@ extension Arca {
 
         let body = PlaceOrderBatchBody(realmId: realm, path: path, grouping: grouping, orders: orders)
 
-        // One shared batch call: all three handles derive from this single Task,
-        // so the HTTP request fires exactly once.
+        let legTypes = [""] + ((takeProfitPx ?? "").isEmpty ? [] : ["tp"]) + ((stopLossPx ?? "").isEmpty ? [] : ["sl"])
+        let captures = Dictionary(uniqueKeysWithValues: legTypes.map { leg in
+            (leg, OrderEventCapture(ws: ws, mapOperation: { Self.selectLegOperation($0, tpsl: leg.isEmpty ? nil : leg) }))
+        })
+        // Install every leg's local observer before the one shared POST. Each
+        // terminal leg releases its own watch, leaving the other legs live.
         let batchCall = Task<OrderOperationResponse, Error> { [self] in
-            let resp: OrderOperationResponse = try await client.post(
-                "/objects/\(objectId)/exchange/orders/batch", body: body
-            )
-            try throwIfOperationFailed(resp.operation)
-            return resp
+            for capture in captures.values { await capture.start() }
+            do {
+                let resp: OrderOperationResponse = try await client.post(
+                    "/objects/\(objectId)/exchange/orders/batch", body: body
+                )
+                try throwIfOperationFailed(resp.operation)
+                for capture in captures.values { await capture.submitted(resp.operation, objectId: objectId) }
+                return resp
+            } catch {
+                for capture in captures.values { await capture.stop() }
+                throw error
+            }
         }
 
-        let deps = makeOrderHandleDeps()
         // Each leg gets its own OrderHandle backed by the SAME batch operation.
         // We rewrite the operation's outcome to the leg's own order summary
         // (which carries `orderId`) so the handle's orderId resolves to that leg
         // — letting `.filled()` / `.cancel()` target the right order even though
         // all legs share one operation. `tpsl == nil` selects the entry (orders[0]).
         func legHandle(_ tpsl: String?) -> OrderHandle {
+            let deps = makeOrderHandleDeps(capture: captures[tpsl ?? ""]!, projection: { Self.selectLegOperation($0, tpsl: tpsl) })
             let inner = OperationHandle<OrderOperationResponse>(
                 submit: {
                     let resp = try await batchCall.value
-                    let outcome = Self.selectLegOutcome(resp.operation.outcome, tpsl: tpsl)
-                    return resp.withOperation(resp.operation.withOutcome(outcome))
+                    return resp.withOperation(Self.selectLegOperation(resp.operation, tpsl: tpsl))
                 },
                 waitForSettlement: { [self] operationId in
-                    try await self.waitForSettlement(operationId)
+                    Self.selectLegOperation(try await self.waitForSettlement(operationId), tpsl: tpsl)
                 }
             )
             return OrderHandle(inner: inner, objectId: objectId, placementPath: path, deps: deps)
@@ -808,6 +815,19 @@ extension Arca {
             takeProfit: (takeProfitPx ?? "").isEmpty ? nil : legHandle("tp"),
             stopLoss: (stopLossPx ?? "").isEmpty ? nil : legHandle("sl")
         )
+    }
+
+    private static func selectLegOperation(_ operation: Operation, tpsl: String?) -> Operation {
+        var input = operation.input
+        if let data = input?.data(using: .utf8),
+           var parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let legs = parsed["orders"] as? [[String: Any]],
+           let leg = tpsl.map({ kind in legs.first { ($0["tpsl"] as? String) == kind } }) ?? legs.first {
+            parsed.removeValue(forKey: "orders")
+            parsed.merge(leg) { _, value in value }
+            if let encoded = JSONSafe.data(from: parsed) { input = String(data: encoded, encoding: .utf8) }
+        }
+        return operation.withOutcome(selectLegOutcome(operation.outcome, tpsl: tpsl), input: input)
     }
 
     /// Pick one leg's order summary out of a bracket operation's outcome and
@@ -904,13 +924,27 @@ extension Arca {
         }
     }
 
-    private func makeOrderHandleDeps() -> OrderHandleDeps {
+    private func orderExecutionGaps() async -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let gap = await ws.onGap { _ in continuation.yield(()) }
+        let auth = await ws.onAuthenticated { continuation.yield(()) }
+        let ws = self.ws
+        continuation.onTermination = { _ in Task {
+            await ws.removeGapHandler(gap)
+            await ws.removeAuthenticatedHandler(auth)
+        } }
+        return stream
+    }
+
+    private func makeOrderHandleDeps(capture: OrderEventCapture? = nil,
+        projection: @escaping @Sendable (Operation) -> Operation = { $0 }) -> OrderHandleDeps {
         OrderHandleDeps(
             getOrder: { [self] objId, orderId in
                 try await self.getOrder(objectId: objId, orderId: orderId)
             },
             fillEvents: { [self] in
-                await self.ws.fillEvents()
+                if let capture { return await capture.fillEvents() }
+                return await self.ws.fillEvents()
             },
             cancelOrder: { [self] cancelPath, objId, orderId in
                 self.cancelOrder(path: cancelPath, objectId: objId, orderId: orderId)
@@ -923,7 +957,16 @@ extension Arca {
             },
             listFills: { [self] objId in
                 try await self.listFills(objectId: objId)
-            }
+            },
+            releaseExecution: { await capture?.stop() },
+            awaitExecutionReady: { try await capture?.awaitReady() },
+            executionEvents: { [self] in
+                if let capture { return await capture.events() }
+                return await self.ws.orderExecutionEvents()
+            },
+            getExecutionOperation: { [self] id in projection(try await self.getOperation(operationId: id).operation) },
+            executionGaps: { [self] in await self.orderExecutionGaps() },
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
         )
     }
 

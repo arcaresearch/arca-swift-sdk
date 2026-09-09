@@ -15,6 +15,58 @@ final class WebSocketRotationTests: XCTestCase {
         super.tearDown()
     }
 
+    func testRecoveryRequiresFreshSnapshotAndPreservesExistingWatchOwner() async throws {
+        let manager = await makeConnectedManager()
+        await manager.watchPath("/")
+        try await settle()
+        func watchRequests() -> [[String: Any]] {
+            factory.socket(0)!.sent.compactMap { $0.data(using: .utf8) }
+                .compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                .filter { $0["action"] as? String == "watch" }
+        }
+        let original = watchRequests().last!["requestId"] as! String
+        factory.socket(0)?.deliver("{\"type\":\"watch_snapshot\",\"path\":\"/\",\"requestId\":\"\(original)\"}")
+        try await manager.awaitPathReady("/")
+        let completed = SendableBox(false)
+        let recovery = Task { try await manager.recoverPathReady("/"); completed.update { $0 = true } }
+        try await settle()
+        let fresh = watchRequests().last!["requestId"] as! String
+        XCTAssertNotEqual(original, fresh)
+        factory.socket(0)?.deliver("{\"type\":\"watch_snapshot\",\"path\":\"/\",\"requestId\":\"\(original)\"}")
+        try await settle()
+        XCTAssertFalse(completed.value)
+        factory.socket(0)?.deliver("{\"type\":\"watch_snapshot\",\"path\":\"/\",\"requestId\":\"\(fresh)\"}")
+        try await recovery.value
+        try await manager.awaitPathReady("/")
+        await manager.unwatchPath("/")
+        await manager.disconnect()
+    }
+
+    func testPathReadinessRequiresSnapshotAndCancellationPreservesOtherWatcher() async throws {
+        let manager = await makeConnectedManager()
+        await manager.watchPath("/")
+        await manager.watchPath("/")
+        let completed = SendableBox(false)
+        let first = Task { try await manager.awaitPathReady("/"); completed.update { $0 = true } }
+        try await settle()
+        XCTAssertFalse(completed.value, "auth/send alone is not a watch ACK")
+        first.cancel()
+        do { try await first.value; XCTFail("expected cancellation") } catch is CancellationError {} catch { XCTFail("\(error)") }
+        await manager.unwatchPath("/")
+        let secondReady = SendableBox(false)
+        let second = Task { try await manager.awaitPathReady("/"); secondReady.update { $0 = true } }
+        factory.socket(0)?.deliver(#"{"type":"watch_snapshot","path":"/","watchId":"old","requestId":"retired-request"}"#)
+        try await settle()
+        XCTAssertFalse(secondReady.value, "stale acknowledgements cannot satisfy a fresh watch")
+        let sent = factory.socket(0)!.sent.compactMap { $0.data(using: .utf8) }.compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let requestId = sent.last { $0["action"] as? String == "watch" }!["requestId"] as! String
+        factory.socket(0)?.deliver("{\"type\":\"watch_snapshot\",\"path\":\"/\",\"watchId\":\"ack\",\"requestId\":\"\(requestId)\"}")
+        try await second.value
+        XCTAssertFalse(completed.value)
+        await manager.unwatchPath("/")
+        await manager.disconnect()
+    }
+
     // MARK: - Warming
 
     func testWarmsReplacementWithoutClosingOriginalOrChangingStatus() async throws {

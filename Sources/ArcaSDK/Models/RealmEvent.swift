@@ -37,6 +37,7 @@ public struct RealmEvent: Codable, Sendable {
     public let bar: OIBar?
     /// True when an `oi.updated` bar is finalized (bucket rolled over).
     public let isClosed: Bool?
+    public let order: OrderExecutionUpdate?
     public let fill: SimFill?
     /// Platform-level fill data, present on `fill.recorded` events.
     /// Decoded from the same `fill` JSON key as `SimFill`, but with the
@@ -63,6 +64,7 @@ public struct RealmEvent: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        order = try container.decodeIfPresent(OrderExecutionUpdate.self, forKey: .order)
         realmId = try container.decodeIfPresent(String.self, forKey: .realmId)
         type = try container.decode(String.self, forKey: .type)
         entityId = try container.decodeIfPresent(String.self, forKey: .entityId)
@@ -112,7 +114,7 @@ public struct RealmEvent: Codable, Sendable {
         case realmId, type, entityId, entityPath, summary, operation, event, object
         case mids, exchangeStateUnavailable, exchangeState, exchange, deposit, valuation, path, watchId, aggregation
         case projection, valuations, removed
-        case market, interval, candle, bar, isClosed, fill, funding, trade, realm, twap, driftCorrected
+        case market, interval, candle, bar, isClosed, order, fill, funding, trade, realm, twap, driftCorrected
         case eventId, correlationId, sequence, timestamp, deliverySeq
     }
 
@@ -126,7 +128,7 @@ public struct RealmEvent: Codable, Sendable {
         projection: String? = nil, valuations: [String: ProjectedValuation]? = nil, removed: [String]? = nil,
         market: String? = nil, interval: String? = nil,
         candle: Candle? = nil, bar: OIBar? = nil, isClosed: Bool? = nil,
-        fill: SimFill? = nil, recordedFill: Fill? = nil,
+        fill: SimFill? = nil, recordedFill: Fill? = nil, order: OrderExecutionUpdate? = nil,
         funding: FundingPayment? = nil, trade: MarketTrade? = nil,
         realm: Realm? = nil, twap: Twap? = nil, driftCorrected: Bool? = nil,
         eventId: String? = nil, correlationId: String? = nil, sequence: Int? = nil,
@@ -141,9 +143,38 @@ public struct RealmEvent: Codable, Sendable {
         self.projection = projection; self.valuations = valuations; self.removed = removed
         self.market = market; self.interval = interval; self.candle = candle
         self.bar = bar; self.isClosed = isClosed
+        self.order = order
         self.fill = fill; self.recordedFill = recordedFill; self.funding = funding
         self.trade = trade; self.realm = realm; self.twap = twap; self.driftCorrected = driftCorrected
         self.eventId = eventId; self.correlationId = correlationId; self.sequence = sequence
         self.timestamp = timestamp; self.deliverySeq = deliverySeq
+    }
+}
+
+// Normalize a durable execution only when its required public fill fields exist.
+// The venue fill ID joins its preview to the later ledger row without counting twice.
+extension RealmEvent {
+    func withOperation(_ replacement: Operation) -> RealmEvent {
+        RealmEvent(realmId: realmId, type: type, entityId: entityId, entityPath: entityPath,
+            summary: summary, operation: replacement, event: event, object: object, mids: mids,
+            exchangeState: exchangeState, exchangeStateUnavailable: exchangeStateUnavailable,
+            exchange: exchange, deposit: deposit, valuation: valuation, path: path, watchId: watchId,
+            aggregation: aggregation, projection: projection, valuations: valuations, removed: removed,
+            market: market, interval: interval, candle: candle, bar: bar, isClosed: isClosed,
+            fill: fill, recordedFill: recordedFill, order: order, funding: funding, trade: trade,
+            realm: realm, twap: twap, driftCorrected: driftCorrected, eventId: eventId,
+            correlationId: correlationId, sequence: sequence, timestamp: timestamp, deliverySeq: deliverySeq)
+    }
+
+    var executionFill: SimFill? {
+        if let fill { return fill.isOptimistic == true ? nil : fill }
+        guard let recordedFill, let orderId = recordedFill.orderId,
+              let side = recordedFill.side, let size = recordedFill.size,
+              let price = recordedFill.price, let fee = recordedFill.fee,
+              let liquidation = recordedFill.isLiquidation,
+              let venueID = recordedFill.fillId, !venueID.isEmpty else { return nil }
+        var result = SimFill(id: SimFillID(venueID), orderId: SimOrderID(orderId), cloid: nil, accountId: nil, realmId: realmId.map { RealmID($0) }, market: recordedFill.market, side: side, price: price, size: size, fee: fee, builderFee: recordedFill.builderFee, platformFee: recordedFill.platformFee, realizedPnl: recordedFill.realizedPnl, isLiquidation: liquidation, createdAt: recordedFill.createdAt)
+        result.fillId = venueID
+        return result
     }
 }

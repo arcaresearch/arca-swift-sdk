@@ -166,14 +166,18 @@ public struct SimOrder: Codable, Sendable {
 }
 
 public extension SimOrder {
+    /// Strict wire decimal parsing: Foundation otherwise accepts numeric prefixes.
+    var executionQuantity: Decimal? {
+        guard filledSize.range(of: #"^[0-9]+(?:\.[0-9]+)?$"#, options: .regularExpression) != nil else { return nil }
+        return Decimal(string: filledSize, locale: Locale(identifier: "en_US_POSIX"))
+    }
+
     /// `true` when the order reached a terminal status and has at least one fill.
     /// Covers both fully filled orders and IOC orders whose unfilled remainder was cancelled.
     var isTerminalWithFills: Bool {
         switch status {
-        case .filled:
-            return true
-        case .cancelled:
-            return filledSize != "0" && !filledSize.isEmpty
+        case .filled, .cancelled:
+            return executionQuantity.map { $0 > 0 } ?? false
         case .failed, .pending, .open, .partiallyFilled, .waitingForTrigger, .triggered:
             return false
         }
@@ -181,7 +185,7 @@ public extension SimOrder {
 
     /// `true` when the order was partially filled and the remainder cancelled (IOC semantics).
     var isPartiallyFilled: Bool {
-        status == .cancelled && filledSize != "0" && !filledSize.isEmpty && filledSize != size
+        status == .cancelled && (executionQuantity.map { $0 > 0 } ?? false) && filledSize != size
     }
 
     /// `true` when this is a trigger (TP/SL) order.
@@ -191,6 +195,8 @@ public extension SimOrder {
 }
 
 public struct SimFill: Codable, Sendable {
+    public var fillId: String? = nil
+    public var isOptimistic: Bool? = nil
     public let id: SimFillID
     public let orderId: SimOrderID
     /// Client order id (Hyperliquid cloid). A `normalTpsl` bracket child is not
@@ -328,6 +334,7 @@ public struct ExchangeState: Codable, Sendable {
 public struct SimOrderWithFills: Codable, Sendable {
     public let order: SimOrder
     public let fills: [SimFill]
+    public var fillsComplete: Bool? = nil
 }
 
 // MARK: - Active Asset Data

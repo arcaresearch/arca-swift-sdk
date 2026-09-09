@@ -68,6 +68,41 @@ let completed = try await arca.waitForOperation(
 let balances = try await arca.getBalancesByPath(path: "/wallets/main")
 ```
 
+## Execution receipts and recorded prices
+
+`OrderHandle.executionReceipt(...)` confirms terminal execution from account-scoped
+pushes and the original operation. It preserves requested/executed/remainder quantities
+for partially filled IOC orders even when venue history rewrites the order size.
+Execution proof is independent of complete order metadata or journal settlement.
+A venue aggregate price is provisional and may be absent.
+
+Use the receipt's account-scoped `watchFills` merged list to refine the price:
+
+```swift
+let receipt = try await order.executionReceipt(timeoutSeconds: 30)
+let fills = try await arca.watchFills(objectId: receipt.objectId)
+let refined = receipt.refined(using: fills.fills.value)
+// Observe fills.fills changes and refine again; stop the owned watch when done.
+await fills.stop()
+```
+
+Refinement requires recorded fills whose `orderOperationId` and `orderId` match
+this receipt and whose deduplicated quantities equal its executed quantity.
+`Fill.operationId` identifies the recording operation; previews cannot finalize a
+price. Incomplete, conflicting, or foreign evidence leaves the receipt unchanged.
+A complete result sets `averagePriceFinal`, `fillsComplete`, and
+`averagePriceSource = "ledger_vwap"`; its VWAP is rounded to 18 fractional digits,
+half-even. Original execution and remainder fields never change.
+
+`watchFills` installs listeners before subscribing, merges by stable `fillId`
+(falling back to row `id`), and traverses history cursors up to 1,000 pages.
+Its `limit` is the page size. Startup and actual gap/reconnect recovery use a fresh
+watch acknowledgement plus a paginated snapshot, with at most three attempts per
+recovery. Failed recovery remains `reconnecting` until a later gap/reconnect;
+healthy watches perform no periodic history reads. Stop the watch on account
+change. A fill has no embedded account ID, so callers must retain the account
+scope of the watch used for refinement.
+
 ## Authentication
 
 The Swift SDK is designed for frontend/mobile apps. It authenticates exclusively with **scoped JWT tokens** minted by your backend via `POST /auth/token`. The realm is extracted from the token claims automatically.

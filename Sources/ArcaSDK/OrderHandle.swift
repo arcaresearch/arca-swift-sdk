@@ -8,6 +8,12 @@ public struct OrderHandleDeps: Sendable {
     let modifyOrder: @Sendable (String, String, String, String) -> OperationHandle<OrderOperationResponse>
     let waitForSettlement: @Sendable (String) async throws -> Operation
     let listFills: @Sendable (String) async throws -> FillListResponse
+    var releaseExecution: (@Sendable () async -> Void)? = nil
+    var awaitExecutionReady: (@Sendable () async throws -> Void)? = nil
+    var executionEvents: (@Sendable () async -> AsyncStream<RealmEvent>)? = nil
+    var getExecutionOperation: (@Sendable (String) async throws -> Operation)? = nil
+    var executionGaps: (@Sendable () async -> AsyncStream<Void>)? = nil
+    var recoverExecutionReady: (@Sendable () async throws -> Void)? = nil
 }
 
 /// Handle for exchange order lifecycle.
@@ -32,6 +38,7 @@ public final class OrderHandle: @unchecked Sendable {
     private let objectId: String
     private let placementPath: String
     private let deps: OrderHandleDeps
+    private let executionDetail = SendableBox<SimOrderWithFills?>(nil)
 
     init(
         inner: OperationHandle<OrderOperationResponse>,
@@ -43,6 +50,11 @@ public final class OrderHandle: @unchecked Sendable {
         self.objectId = objectId
         self.placementPath = placementPath
         self.deps = deps
+    }
+
+    deinit {
+        let release = deps.releaseExecution
+        Task { await release?() }
     }
 
     /// The HTTP response (before settlement).
@@ -70,50 +82,122 @@ public final class OrderHandle: @unchecked Sendable {
         try await inner.settled(timeoutSeconds: timeoutSeconds)
     }
 
+    /// Prompt terminal evidence, independent of full order metadata and ledger history.
+    public func executionReceipt(timeoutSeconds: TimeInterval = 30) async throws -> OrderExecutionReceipt {
+        do {
+            let receipt = try await waitExecutionReceipt(timeoutSeconds: timeoutSeconds)
+            await deps.releaseExecution?()
+            return receipt
+        } catch let error as ArcaError {
+            if case .operationFailed = error { await deps.releaseExecution?() }
+            throw error
+        }
+    }
+
+    private func waitExecutionReceipt(timeoutSeconds: TimeInterval) async throws -> OrderExecutionReceipt {
+        // Factory-owned capture supplies replay; register before reading submission.
+        let events = await deps.executionEvents?()
+        let submitted = try await inner.submitted
+        let operation = submitted.operation
+        if operation.state == .failed || operation.state == .expired { throw ArcaError.operationFailed(operation: operation) }
+        if let receipt = OrderExecutionReceipt.from(operation, objectId: objectId) { return receipt }
+        let gaps = await deps.executionGaps?()
+        let orderId = try? Self.extractOrderId(from: operation.outcome, allowStructuredFallback: false)
+        let evidence = OrderExecutionEvidence(operation: operation, objectId: objectId, orderId: orderId)
+        let (requests, request) = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let recoveryVersion = SendableBox(0)
+        request.yield(0)
+        return try await withThrowingTaskGroup(of: OrderExecutionReceipt?.self) { group in
+            defer { group.cancelAll(); request.finish() }
+            if let events {
+                group.addTask {
+                    for await event in events {
+                        if let receipt = try await evidence.receive(event) { return receipt }
+                    }
+                    return nil
+                }
+            }
+            if let gaps {
+                group.addTask {
+                    for await _ in gaps {
+                        recoveryVersion.update { $0 += 1 }
+                        request.yield(recoveryVersion.value)
+                    }
+                    return nil
+                }
+            }
+            group.addTask {
+                var attempts = 0
+                var consumedVersion = -1
+                for await version in requests {
+                    if version <= consumedVersion { continue }
+                    var retry = true
+                    while retry && attempts < 3 {
+                        attempts += 1
+                        retry = false
+                        do {
+                            if attempts == 1 { try await self.deps.awaitExecutionReady?() }
+                            else { try await self.deps.recoverExecutionReady?() }
+                            try Task.checkCancellation()
+                            consumedVersion = recoveryVersion.value
+                            if await evidence.orderId == nil, let getOperation = self.deps.getExecutionOperation {
+                                let recovered = try await getOperation(operation.id.rawValue)
+                                if let receipt = try await evidence.receive(RealmEvent(type: "operation.updated", operation: recovered)) { return receipt }
+                                // A healthy pending operation waits for push; its ID is
+                                // never substituted for a venue ID by modern factories.
+                                if await evidence.orderId == nil { break }
+                            }
+                            let id = await evidence.orderId ?? operation.id.rawValue
+                            let detail = try await self.deps.getOrder(self.objectId, id)
+                            let receipt = try await evidence.snapshot(detail)
+                            if await evidence.orderId == detail.order.id.rawValue { self.executionDetail.update { $0 = detail } }
+                            if let receipt { return receipt }
+                            // OPEN is healthy: no timer or repeated read.
+                        } catch let error as ArcaError {
+                            if case .operationFailed = error { throw error }
+                            retry = attempts < 3
+                        } catch {
+                            if Task.isCancelled { throw CancellationError() }
+                            retry = attempts < 3
+                        }
+                        if retry { try await Task.sleep(nanoseconds: UInt64(attempts) * 250_000_000) }
+                    }
+                }
+                return nil
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw ArcaError.unknown(code: "TIMEOUT", message: "Order execution timed out", errorId: nil)
+            }
+            while let candidate = try await group.next() { if let candidate { return candidate } }
+            throw ArcaError.unknown(code: "STREAM_ENDED", message: "Order execution evidence unavailable", errorId: nil)
+        }
+    }
+
     /// Wait for the order to be fully filled.
     ///
-    /// Polls the order state after settlement, returning the order with
-    /// all its fills once the status is `filled`.
+    /// Resolves execution evidence, then reads complete order metadata.
+    /// Fill history completeness is reported separately by the response.
     ///
     /// - Parameter timeoutSeconds: Maximum wait time (default: 30 seconds).
     /// - Returns: The order with all its fills.
     public func filled(timeoutSeconds: TimeInterval = 30) async throws -> SimOrderWithFills {
-        _ = try await inner.settled
-
-        let orderId = try await resolveOrderId()
-
-        return try await withThrowingTaskGroup(of: SimOrderWithFills.self) { group in
-            group.addTask {
-                let detail = try await self.deps.getOrder(self.objectId, orderId)
-                if detail.order.isTerminalWithFills { return detail }
-                try Self.throwIfTerminalWithoutFills(detail.order, orderId: orderId)
-
-                let fillStream = await self.deps.fillEvents()
-                for await (_, _) in fillStream {
-                    let detail = try await self.deps.getOrder(self.objectId, orderId)
-                    if detail.order.isTerminalWithFills { return detail }
-                    try Self.throwIfTerminalWithoutFills(detail.order, orderId: orderId)
-                }
-                throw ArcaError.unknown(
-                    code: "STREAM_ENDED",
-                    message: "Fill event stream ended before order was filled",
-                    errorId: nil
-                )
-            }
-
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                throw ArcaError.unknown(
-                    code: "TIMEOUT",
-                    message: "Order fill timed out after \(Int(timeoutSeconds))s",
-                    errorId: nil
-                )
-            }
-
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+        let receipt = try await executionReceipt(timeoutSeconds: timeoutSeconds)
+        let cached = executionDetail.value
+        let detail: SimOrderWithFills
+        if let cached, cached.order.id.rawValue == receipt.orderId, cached.order.isTerminalWithFills {
+            detail = cached
+        } else { detail = try await deps.getOrder(objectId, receipt.orderId) }
+        guard detail.order.id.rawValue == receipt.orderId else {
+            throw ArcaError.unknown(code: "ORDER_IDENTITY_MISMATCH", message: "Order details do not match execution", errorId: nil)
         }
+        try Self.throwIfTerminalWithoutFills(detail.order, orderId: receipt.orderId)
+        guard detail.order.isTerminalWithFills,
+              let materialized = detail.order.executionQuantity,
+              let executed = OrderExecutionReceipt.decimal(receipt.filledSize), materialized == executed else {
+            throw ArcaError.unknown(code: "ORDER_DETAILS_PENDING", message: "Execution completed; full order details are not available yet", errorId: nil)
+        }
+        return detail
     }
 
     /// An async stream of fills as they arrive via WebSocket.
@@ -125,55 +209,74 @@ public final class OrderHandle: @unchecked Sendable {
     /// ```
     ///
     /// - Parameter timeoutSeconds: Stream closes if no fill arrives within this duration (default: 300 seconds).
-    public func fills(timeoutSeconds: TimeInterval = 300) -> AsyncThrowingStream<SimFill, Error> {
-        let objectId = self.objectId
-        let inner = self.inner
-        let deps = self.deps
+    private enum FillMessage: Sendable { case fill(SimFill); case event(RealmEvent) }
 
-        return AsyncThrowingStream { continuation in
+    public func fills(timeoutSeconds: TimeInterval = 300) -> AsyncThrowingStream<SimFill, Error> {
+        AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let response = try await inner.submitted
-                    let orderId = try Self.extractOrderId(from: response.operation.outcome)
-                    let cloid = Self.extractCloid(from: response.operation.outcome)
-
-                    let fillStream = await deps.fillEvents()
-                    for await (fill, _) in fillStream {
-                        if Self.fillMatches(fill, orderId: orderId, cloid: cloid) {
-                            continuation.yield(fill)
-
-                            let detail = try await deps.getOrder(objectId, orderId)
-                            if detail.order.status == .filled ||
-                               detail.order.status == .cancelled ||
-                               detail.order.status == .failed {
-                                continuation.finish()
-                                return
+                    // Local collectors precede submission and the finite history seed.
+                    let live = await self.deps.fillEvents()
+                    let execution = await self.deps.executionEvents?()
+                    let (messages, input) = AsyncStream<FillMessage>.makeStream()
+                    try await withThrowingTaskGroup(of: Void.self) { group in
+                        defer { group.cancelAll(); input.finish() }
+                        group.addTask { for await (fill, _) in live { input.yield(.fill(fill)) } }
+                        if let execution { group.addTask { for await event in execution { input.yield(.event(event)) } } }
+                        let response = try await self.inner.submitted
+                        if response.operation.state == .failed || response.operation.state == .expired { throw ArcaError.operationFailed(operation: response.operation) }
+                        let orderId = try Self.extractOrderId(from: response.operation.outcome)
+                        let cloid = Self.extractCloid(from: response.operation.outcome)
+                        var receipt = OrderExecutionReceipt.from(response.operation, objectId: self.objectId)
+                        var seen: [String: SimFill] = [:]
+                        if let receipt, Self.fillTotalMatches([], receipt.filledSize) { return }
+                        group.addTask {
+                            if let detail = try? await self.deps.getOrder(self.objectId, orderId), detail.order.id.rawValue == orderId {
+                                for fill in detail.fills { input.yield(.fill(fill)) }
+                                let update = OrderExecutionUpdate(order: .init(id: orderId, orderId: orderId, status: detail.order.status.rawValue, filledSize: detail.order.filledSize, avgFillPrice: detail.order.avgFillPrice), fillsComplete: detail.fillsComplete)
+                                input.yield(.event(RealmEvent(type: "order.updated", entityId: self.objectId, order: update)))
                             }
+                        }
+                        for await message in messages {
+                            switch message {
+                            case .fill(let fill):
+                                let key = fill.fillId ?? fill.id.rawValue
+                                if fill.isOptimistic != true, !key.isEmpty, Self.fillMatches(fill, orderId: orderId, cloid: cloid), seen[key] == nil {
+                                    seen[key] = fill
+                                    continuation.yield(fill)
+                                }
+                            case .event(let event):
+                                if let op = event.operation, op.id == response.operation.id,
+                                   let candidate = OrderExecutionReceipt.from(op, objectId: self.objectId, originalInput: response.operation.input), candidate.orderId == orderId { receipt = candidate }
+                                if event.entityId == self.objectId, let update = event.order?.order, (update.orderId ?? update.id) == orderId,
+                                   let candidate = OrderExecutionReceipt.from(response.operation, objectId: self.objectId, update: update) { receipt = candidate }
+                            }
+                            if let receipt, Self.fillTotalMatches(Array(seen.values), receipt.filledSize) { return }
                         }
                     }
                     continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+                } catch { continuation.finish(throwing: error) }
             }
-
-            let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                if !task.isCancelled {
-                    continuation.finish(throwing: ArcaError.unknown(
-                        code: "TIMEOUT",
-                        message: "Fill stream timed out after \(Int(timeoutSeconds))s",
-                        errorId: nil
-                    ))
-                    task.cancel()
-                }
-            }
-
-            continuation.onTermination = { @Sendable _ in
+            let deadline = Task {
+                do { try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000)) }
+                catch { return }
+                continuation.finish(throwing: ArcaError.unknown(code: "TIMEOUT", message: "Fill stream timed out", errorId: nil))
                 task.cancel()
-                timeoutTask.cancel()
             }
+            continuation.onTermination = { _ in task.cancel(); deadline.cancel() }
         }
+    }
+
+    private static func fillTotalMatches(_ fills: [SimFill], _ executed: String) -> Bool {
+        guard let expected = OrderExecutionReceipt.decimal(executed) else { return false }
+        var total = Decimal.zero
+        for fill in fills {
+            guard var size = OrderExecutionReceipt.decimal(fill.size) else { return false }
+            var next = Decimal.zero
+            guard NSDecimalAdd(&next, &total, &size, .plain) == .noError else { return false }
+            total = next
+        }
+        return total == expected
     }
 
     /// Get the platform-side fill record for this order with P&L, fee breakdown,
@@ -208,13 +311,15 @@ public final class OrderHandle: @unchecked Sendable {
 
         let task = Task {
             do {
+                let fillStream = await deps.fillEvents()
                 let response = try await inner.submitted
                 let orderId = try Self.extractOrderId(from: response.operation.outcome)
                 let cloid = Self.extractCloid(from: response.operation.outcome)
 
-                let fillStream = await deps.fillEvents()
+                var seen = Set<String>()
                 for await (fill, _) in fillStream {
-                    if Self.fillMatches(fill, orderId: orderId, cloid: cloid) {
+                    let key = fill.fillId ?? fill.id.rawValue
+                    if !Task.isCancelled, fill.isOptimistic != true, !key.isEmpty, Self.fillMatches(fill, orderId: orderId, cloid: cloid), seen.insert(key).inserted {
                         callback(fill)
                     }
                 }
@@ -289,7 +394,7 @@ public final class OrderHandle: @unchecked Sendable {
                 message: "Order \(orderId) reached \(order.status.rawValue)",
                 errorId: nil
             )
-        case .cancelled where order.filledSize == "0" || order.filledSize.isEmpty:
+        case .cancelled where order.executionQuantity == 0:
             throw ArcaError.unknown(
                 code: "ORDER_\(order.status.rawValue)",
                 message: "Order \(orderId) was cancelled with no fills",
@@ -305,7 +410,7 @@ public final class OrderHandle: @unchecked Sendable {
         return try Self.extractOrderId(from: response.operation.outcome)
     }
 
-    private static func extractOrderId(from outcome: String?) throws -> String {
+    private static func extractOrderId(from outcome: String?, allowStructuredFallback: Bool = true) throws -> String {
         guard let raw = outcome, !raw.isEmpty else {
             throw ArcaError.unknown(
                 code: "NO_ORDER_ID",
@@ -317,6 +422,9 @@ public final class OrderHandle: @unchecked Sendable {
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let orderId = parsed["orderId"] as? String, !orderId.isEmpty {
             return orderId
+        }
+        if !allowStructuredFallback, raw.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") || raw.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[") {
+            throw ArcaError.unknown(code: "NO_ORDER_ID", message: "Operation outcome has no venue order ID yet", errorId: nil)
         }
         return raw
     }
