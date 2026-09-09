@@ -8,6 +8,7 @@ actor OrderEventCapture {
     private var consumer: Task<Void, Never>?
     private var operation: Operation?
     private var objectId: String?
+    private var learnedOrderId: String?
     private var acquired = false
     private var closed = false
     private var replay: [RealmEvent] = []
@@ -47,22 +48,39 @@ actor OrderEventCapture {
     func submitted(_ operation: Operation, objectId: String) async {
         let operation = mapOperation(operation)
         self.operation = operation; self.objectId = objectId
+        learnedOrderId = Self.orderIdentity(operation.outcome)
+        for event in replay { learnIdentity(event) }
         if OrderExecutionReceipt.from(operation, objectId: objectId) != nil || operation.state == .failed || operation.state == .expired || replay.contains(where: terminal) { await stop() }
+    }
+    private static func orderIdentity(_ outcome: String?) -> String? {
+        guard let outcome, !outcome.isEmpty else { return nil }
+        if let data = outcome.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) {
+            if let object = value as? [String: Any] { return (object["orderId"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+            if let id = value as? String { return id.isEmpty ? nil : id }
+        }
+        return outcome.first == "{" || outcome.first == "[" ? nil : outcome
+    }
+    private func scopedOperation(_ event: RealmEvent) -> Operation? {
+        guard let operation, let objectId, let update = event.operation, update.id == operation.id else { return nil }
+        if let raw = update.input {
+            guard let data = raw.data(using: .utf8), let input = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            if let account = input["exchangeObjectId"] as? String, account != objectId { return nil }
+        }
+        return update
+    }
+    private func learnIdentity(_ event: RealmEvent) {
+        guard learnedOrderId == nil, let update = scopedOperation(event) else { return }
+        learnedOrderId = Self.orderIdentity(update.outcome)
     }
     private func terminal(_ event: RealmEvent) -> Bool {
         guard let operation, let objectId else { return false }
-        struct Identity: Decodable { let orderId: String? }
-        let orderId = operation.outcome.flatMap { $0.data(using: .utf8) }.flatMap { try? JSONDecoder().decode(Identity.self, from: $0).orderId }
-        if let update = event.operation, update.id == operation.id {
-            if let raw = update.input {
-                guard let data = raw.data(using: .utf8), let input = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-                if let account = input["exchangeObjectId"] as? String, account != objectId { return false }
-            }
+        if let update = scopedOperation(event) {
             if update.state == .failed || update.state == .expired { return true }
             if let receipt = OrderExecutionReceipt.from(update, objectId: objectId, originalInput: operation.input),
-               orderId == nil || receipt.orderId == orderId { return true }
+               learnedOrderId == nil || receipt.orderId == learnedOrderId { return true }
         }
-        guard let orderId, event.entityId == objectId, let update = event.order?.order, (update.orderId ?? update.id) == orderId else { return false }
+        guard let orderId = learnedOrderId, event.entityId == objectId, let update = event.order?.order,
+              (update.orderId ?? update.id) == orderId else { return false }
         return OrderExecutionReceipt.from(operation, objectId: objectId, update: update) != nil
     }
     private func receive(_ event: RealmEvent) async {
@@ -71,7 +89,8 @@ actor OrderEventCapture {
         if replay.count == 256 { replay.removeFirst() }
         replay.append(event)
         for observer in observers.values { observer.yield(event) }
-        if terminal(event) { await stop() }
+        learnIdentity(event)
+        if replay.contains(where: terminal) { await stop() }
     }
     func fillEvents() async -> AsyncStream<(SimFill, RealmEvent)> {
         // Register live delivery before copying replay; overlapping delivery is
