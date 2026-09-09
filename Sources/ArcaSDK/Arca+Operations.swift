@@ -120,12 +120,22 @@ extension Arca {
         let recover: @Sendable () -> Void = { revision.update { $0 += 1; requests.continuation.yield($0) } }
         let gap = await ws.onGap { _ in recover() }
         let auth = await ws.onAuthenticated { recover() }
+        let rotated = await ws.onRotated { recover() }
+        let snapshotResults = AsyncStream<Operation>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let snapshots = await ws.onOperationSnapshot { operations in
+            if let operation = operations.first(where: { $0.id.rawValue == operationId && $0.state.isTerminal }) {
+                snapshotResults.continuation.yield(operation)
+            }
+        }
         await ws.watchPath("/")
         defer {
             requests.continuation.finish()
+            snapshotResults.continuation.finish()
             Task { [ws] in
                 await ws.removeGapHandler(gap)
                 await ws.removeAuthenticatedHandler(auth)
+                await ws.removeRotatedHandler(rotated)
+                await ws.removeOperationSnapshotHandler(snapshots)
                 await ws.unwatchPath("/")
             }
         }
@@ -143,6 +153,10 @@ extension Arca {
                 throw ArcaError.unknown(code: "STREAM_ENDED", message: "Operation event stream ended", errorId: nil)
             }
             group.addTask {
+                for await operation in snapshotResults.stream { return operation }
+                throw CancellationError()
+            }
+            group.addTask {
                 var completed = 0
                 for await requested in requests.stream {
                     try Task.checkCancellation()
@@ -150,7 +164,19 @@ extension Arca {
                     var covered = requested
                     for attempt in 0..<3 {
                         var acknowledged = false
-                        do { try await fillWatchReady(self.ws, path: "/"); acknowledged = true }
+                        do {
+                            let operations = try await withThrowingTaskGroup(of: [Operation].self) { ack in
+                                defer { ack.cancelAll() }
+                                ack.addTask { try await self.ws.recoverPathSnapshotOperations("/") }
+                                ack.addTask {
+                                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                                    throw ArcaError.unknown(code: "ACK_TIMEOUT", message: "Operation snapshot acknowledgement timed out", errorId: nil)
+                                }
+                                return try await ack.next()!
+                            }
+                            acknowledged = true
+                            if let operation = operations.first(where: { $0.id.rawValue == operationId && $0.state.isTerminal }) { return operation }
+                        }
                         catch { try Task.checkCancellation() }
                         covered = revision.value
                         do {
