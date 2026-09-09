@@ -92,7 +92,7 @@ extension Arca {
     /// Wait for a specific operation to reach a terminal state.
     ///
     /// Uses WebSocket `operation.updated` events for real-time settlement
-    /// detection with periodic HTTP polling as a safety net. Automatically
+    /// detection with bounded snapshot recovery on startup and actual gaps. Automatically
     /// ensures the WebSocket is connected and subscribed to operations.
     ///
     /// Throws ``ArcaError/operationFailed(operation:)`` if the terminal
@@ -114,53 +114,68 @@ extension Arca {
         timeoutSeconds: TimeInterval = 30
     ) async throws -> Operation {
         await ws.ensureConnected()
+        let events = await ws.events
+        let requests = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let revision = SendableBox(0)
+        let recover: @Sendable () -> Void = { revision.update { $0 += 1; requests.continuation.yield($0) } }
+        let gap = await ws.onGap { _ in recover() }
+        let auth = await ws.onAuthenticated { recover() }
         await ws.watchPath("/")
-        defer { Task { [ws] in await ws.unwatchPath("/") } }
-
-        return try await withThrowingTaskGroup(of: Operation.self) { group in
-            // WebSocket path: listen for matching operation.updated events
+        defer {
+            requests.continuation.finish()
+            Task { [ws] in
+                await ws.removeGapHandler(gap)
+                await ws.removeAuthenticatedHandler(auth)
+                await ws.unwatchPath("/")
+            }
+        }
+        recover()
+        let result = try await withThrowingTaskGroup(of: Operation.self) { group in
+            defer { group.cancelAll() }
             group.addTask {
-                let stream = await self.ws.operationEvents()
-                for await (op, _) in stream {
-                    if op.id.rawValue == operationId && op.state.isTerminal {
-                        try self.throwIfOperationFailed(op)
-                        return op
+                for await event in events {
+                    if let operation = event.operation, operation.id.rawValue == operationId {
+                        if operation.state.isTerminal { return operation }
+                    } else if event.operation == nil && event.entityId == operationId && (event.type == "operation.updated" || event.type == "operation.created") {
+                        recover() // a real sparse notification, never a healthy timer
                     }
                 }
-                throw ArcaError.unknown(
-                    code: "STREAM_ENDED",
-                    message: "Operation event stream ended",
-                    errorId: nil
-                )
+                throw ArcaError.unknown(code: "STREAM_ENDED", message: "Operation event stream ended", errorId: nil)
             }
-
-            // HTTP fallback: immediate first check, then periodic polling
             group.addTask {
-                while !Task.isCancelled {
-                    let detail = try await self.getOperation(operationId: operationId)
-                    if detail.operation.state.isTerminal {
-                        try self.throwIfOperationFailed(detail.operation)
-                        return detail.operation
+                var completed = 0
+                for await requested in requests.stream {
+                    try Task.checkCancellation()
+                    if requested <= completed { continue }
+                    var covered = requested
+                    for attempt in 0..<3 {
+                        var acknowledged = false
+                        do { try await fillWatchReady(self.ws, path: "/"); acknowledged = true }
+                        catch { try Task.checkCancellation() }
+                        covered = revision.value
+                        do {
+                            let operation = try await self.getOperation(operationId: operationId).operation
+                            try Task.checkCancellation()
+                            guard operation.id.rawValue == operationId else {
+                                throw ArcaError.unknown(code: "IDENTITY_MISMATCH", message: "Operation recovery identity mismatch", errorId: nil)
+                            }
+                            if operation.state.isTerminal { return operation }
+                            if acknowledged { break } // a healthy pending operation stays on the stream
+                        } catch { try Task.checkCancellation() }
+                        if attempt < 2 { try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 100_000_000) }
                     }
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    completed = covered
                 }
                 throw CancellationError()
             }
-
-            // Timeout
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                throw ArcaError.unknown(
-                    code: "TIMEOUT",
-                    message: "Timed out waiting for operation \(operationId) after \(Int(timeoutSeconds))s",
-                    errorId: nil
-                )
+                throw ArcaError.unknown(code: "TIMEOUT", message: "Timed out waiting for operation \(operationId) after \(Int(timeoutSeconds))s", errorId: nil)
             }
-
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            return try await group.next()!
         }
+        try throwIfOperationFailed(result)
+        return result
     }
 
     /// Throws ``ArcaError/operationFailed(operation:)`` when the operation
