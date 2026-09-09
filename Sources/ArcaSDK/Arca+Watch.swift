@@ -933,7 +933,7 @@ extension Arca {
         let events = await ws.events
         let eventTask = Task {
             for await event in events {
-                guard !stopped.value, event.entityId == objectId || (event.entityId == nil && event.entityPath == path) else { continue }
+                guard !stopped.value, event.entityPath == path || (event.entityPath == nil && event.entityId == objectId) else { continue }
                 let fill: Fill
                 if event.type == "fill.recorded", let recorded = event.recordedFill {
                     fill = recorded

@@ -113,7 +113,7 @@ final class FillWatchRecoveryTests: XCTestCase {
         ["id": id, "fillId": id, "operationId": "fill-\(id)", "orderOperationId": "original", "orderId": "order", "market": "gll:test:1", "size": "1", "price": "100", "side": "buy"]
     }
     private static func event(_ id: String, account: String = "account") -> String {
-        String(data: try! JSONSerialization.data(withJSONObject: ["type": "fill.recorded", "entityId": account, "fill": row(id)]), encoding: .utf8)!
+        String(data: try! JSONSerialization.data(withJSONObject: ["type": "fill.recorded", "entityId": id, "entityPath": "/" + account, "fill": row(id)]), encoding: .utf8)!
     }
 }
 
