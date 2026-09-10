@@ -420,9 +420,7 @@ extension Arca {
             let retryTask: Task<Void, Never>? = needsRetry ? Task { [weak self] in
                 var delay: UInt64 = 1_000_000_000
                 let maxDelay: UInt64 = 30_000_000_000
-                // Sparse bootstrap recovery is finite; further recovery is
-                // triggered by an actual stream gap or reconnect.
-                for _ in 0..<3 {
+                while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: delay)
                     guard !Task.isCancelled, let self = self else { return }
                     do {

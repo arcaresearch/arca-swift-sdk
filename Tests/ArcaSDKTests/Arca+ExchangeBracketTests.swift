@@ -25,40 +25,30 @@ final class ArcaExchangeBracketTests: XCTestCase {
     }
 
     func testEarlyEntryEvidencePreservesIndependentChildCaptureAndQuantity() async throws {
-        let arca = makeArca(), factory = MockTransportFactory()
-        await arca.ws.setTransportFactory(factory.make())
-        let bracket = try arca.openWithBracket(path:"/op/bracket/early",objectId:"obj_1",market:"hl:0:BTC",side:.buy,size:"0.02",takeProfitPx:"72000",takeProfitSz:"0.01")
-        let operation = try await bracket.entry.submitted.operation.id.rawValue
-        func wait(_ condition: ()->Bool) async throws {
-            let deadline=Date().addingTimeInterval(3)
-            while !condition() && Date()<deadline { try await Task.sleep(nanoseconds:5_000_000) }
-            XCTAssertTrue(condition()); if !condition() { throw CancellationError() }
+        let arca = makeArca()
+        BracketMockProtocol.beforeResponse = {
+            await arca.ws.injectMessage(#"{"type":"order.updated","entityId":"obj_1","order":{"order":{"id":"ord_entry","status":"FILLED","filledSize":"0.004"}}}"#)
         }
-        func requests(_ socket:MockWebSocketTransport)->[[String:Any]] {
-            socket.sent.compactMap { try? JSONSerialization.jsonObject(with:Data($0.utf8)) as? [String:Any] }.filter { $0["action"] as? String == "watch_order_lifecycle" }
-        }
-        func push(_ socket:MockWebSocketTransport,_ leg:String,_ order:String,_ size:String,_ filled:String,_ remaining:String,_ fulfillment:String) throws {
-            let request=requests(socket).last!
-            XCTAssertEqual(request["leg"] as? String,leg)
-            var view=LifecycleHandleFixture.view()
-            var intent=view["intent"] as! [String:Any]
-            intent["realmId"]=arca.realm;intent["objectId"]="obj_1";intent["operationId"]=operation;intent["leg"]=leg;intent["market"]="hl:0:BTC";intent["requestedSize"]=size;intent["side"]=leg=="0" ? "buy" : "sell"
-            var receipt=view["executionReceipt"] as! [String:Any]
-            receipt["objectId"]="obj_1";receipt["operationId"]=operation;receipt["leg"]=leg;receipt["market"]="hl:0:BTC";receipt["orderId"]=order;receipt["filledSize"]=filled;receipt["requestedSize"]=size;receipt["remainingSize"]=remaining;receipt["fulfillmentState"]=fulfillment
-            view["intent"]=intent;view["executionReceipt"]=receipt;view["venueOrderId"]=order;view["executedSize"]=filled;view["remainingSize"]=remaining
-            let frame:[String:Any]=["type":"order.lifecycle.updated","watchId":request["watchId"]!,"requestId":request["requestId"]!,"realmId":arca.realm,"objectId":"obj_1","operationId":operation,"leg":leg,"lifecycle":view]
-            socket.deliver(String(data:try JSONSerialization.data(withJSONObject:frame),encoding:.utf8)!)
-        }
-        let entry=Task {try await bracket.entry.executionReceipt(timeoutSeconds:3)}
-        try await wait {factory.socket(0)?.sentActions.contains("auth")==true}
-        let socket=factory.socket(0)!;socket.deliver(#"{"type":"authenticated"}"#)
-        try await wait {requests(socket).count==1};try push(socket,"0","ord_entry","0.02","0.004","0.016","partial")
-        let first=try await entry.value;XCTAssertEqual(first.requestedSize,"0.02");XCTAssertEqual(first.filledSize,"0.004")
-        let child=Task {try await bracket.takeProfit!.executionReceipt(timeoutSeconds:3)}
-        try await wait {requests(socket).count==2};try push(socket,"1","ord_tp","0.01","0.01","0","full")
-        let second=try await child.value;XCTAssertEqual(second.orderId,"ord_tp");XCTAssertEqual(second.requestedSize,"0.01");XCTAssertEqual(second.filledSize,"0.01")
-        XCTAssertEqual(BracketMockProtocol.capturedBatchPosts.count,1)
-        await arca.ws.disconnect()
+        let bracket = try arca.openWithBracket(path: "/op/bracket/early", objectId: "obj_1", market: "hl:0:BTC",
+            side: .buy, size: "0.02", takeProfitPx: "72000", takeProfitSz: "0.01")
+        let entry = try await bracket.entry.executionReceipt(timeoutSeconds: 1)
+        XCTAssertEqual(entry.orderId, "ord_entry")
+        XCTAssertEqual(entry.requestedSize, "0.02")
+        XCTAssertEqual(entry.filledSize, "0.004")
+        let childOperation = try await bracket.takeProfit!.submitted.operation
+        var foreign = try JSONSerialization.jsonObject(with: JSONEncoder().encode(childOperation)) as! [String: Any]
+        foreign["state"] = "failed"
+        foreign["input"] = #"{"exchangeObjectId":"foreign"}"#
+        let foreignEvent = try JSONSerialization.data(withJSONObject: ["type": "operation.updated", "operation": foreign])
+        await arca.ws.injectMessage(String(data: foreignEvent, encoding: .utf8)!)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let childTask = Task { try await bracket.takeProfit!.executionReceipt(timeoutSeconds: 1) }
+        await arca.ws.injectMessage(#"{"type":"order.updated","entityId":"obj_1","order":{"order":{"id":"ord_tp","status":"FILLED","filledSize":"0.01"}}}"#)
+        let child = try await childTask.value
+        XCTAssertEqual(child.orderId, "ord_tp")
+        XCTAssertEqual(child.requestedSize, "0.01")
+        XCTAssertEqual(child.filledSize, "0.01")
+        XCTAssertEqual(BracketMockProtocol.capturedBatchPosts.count, 1)
     }
 
     func testOpenWithBracketIssuesOneCallWithEntryAndTriggers() async throws {

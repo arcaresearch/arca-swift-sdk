@@ -267,8 +267,7 @@ extension Arca {
             executionEvents: { await capture.events() },
             getExecutionOperation: { [self] id in try await self.getOperation(operationId: id).operation },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
-            watchLifecycle: { [self] objectId, original, leg in try await self.watchOrderLifecycle(objectId: objectId, operation: original, leg: leg) }
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
         )
 
         return OrderHandle(
@@ -798,8 +797,7 @@ extension Arca {
         // — letting `.filled()` / `.cancel()` target the right order even though
         // all legs share one operation. `tpsl == nil` selects the entry (orders[0]).
         func legHandle(_ tpsl: String?) -> OrderHandle {
-            var deps = makeOrderHandleDeps(capture: captures[tpsl ?? ""]!, projection: { Self.selectLegOperation($0, tpsl: tpsl) })
-            deps.lifecycleLeg = tpsl == nil ? 0 : tpsl == "tp" ? 1 : ((takeProfitPx ?? "").isEmpty ? 1 : 2)
+            let deps = makeOrderHandleDeps(capture: captures[tpsl ?? ""]!, projection: { Self.selectLegOperation($0, tpsl: tpsl) })
             let inner = OperationHandle<OrderOperationResponse>(
                 submit: {
                     let resp = try await batchCall.value
@@ -968,8 +966,7 @@ extension Arca {
             },
             getExecutionOperation: { [self] id in projection(try await self.getOperation(operationId: id).operation) },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
-            watchLifecycle: { [self] objectId, original, leg in try await self.watchOrderLifecycle(objectId: objectId, operation: original, leg: leg) }
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
         )
     }
 

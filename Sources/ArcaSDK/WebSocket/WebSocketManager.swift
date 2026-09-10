@@ -94,7 +94,6 @@ public actor WebSocketManager {
     private var candleRefCoins: [String: Set<String>] = [:]
     private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
-    var orderLifecycleReaders: [String: OrderLifecycleRegistration] = [:]
     // Watches created out-of-band (REST POST /aggregations/watch) that this
     // socket registered for delivery. Delivery is ownership-gated
     // server-side, so these must be re-attached on every reconnect or the
@@ -225,7 +224,6 @@ public actor WebSocketManager {
 
     /// Disconnect and stop reconnecting.
     public func disconnect() {
-        stopOrderLifecycleWatches()
         shouldReconnect = false
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -581,15 +579,8 @@ public actor WebSocketManager {
     }
 
     private func hasAnyInterest() -> Bool {
-        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !oiRefCoins.isEmpty || !chartHistoryWatches.isEmpty || !orderLifecycleReaders.isEmpty
+        !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !oiRefCoins.isEmpty || !chartHistoryWatches.isEmpty
     }
-
-    func orderLifecycleInterestChanged(starting: Bool) {
-        if starting { cancelIdleTimer(); ensureConnected() }
-        else { maybeStartIdleTimer() }
-    }
-
-    func sendOrderLifecycleMessage(_ message: OutboundMessage) { sendMessage(message) }
 
     public func watchChartHistory(target: String, kind: String = "path", objectId: String? = nil) -> String {
         cancelIdleTimer()
@@ -1190,8 +1181,6 @@ public actor WebSocketManager {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let msgType = json["type"] as? String ?? ""
 
-            if deliverOrderLifecycle(data, json: json) { return }
-
             if msgType == "pong" {
                 return
             }
@@ -1210,7 +1199,6 @@ public actor WebSocketManager {
                     checkDeliveryGap(seq)
                 }
                 log.warning("websocket", "server announced event loss (stream.resync)")
-                recoverOrderLifecycleWatches()
                 for handler in gapHandlers.values {
                     handler(1)
                 }
@@ -1229,7 +1217,6 @@ public actor WebSocketManager {
                 resubscribeAll(generation: primaryGeneration)
                 // Flush projection-watch requests issued while disconnected.
                 flushPendingProjectionSends()
-                reattachOrderLifecycleWatches()
                 // Notify subscribers AFTER all subscriptions are re-issued so
                 // any chart-history watch IDs they depend on are already
                 // registered.
@@ -1424,7 +1411,7 @@ public actor WebSocketManager {
 
     // MARK: - Delivery gap detection
 
-    func checkDeliveryGap(_ seq: Int) {
+    private func checkDeliveryGap(_ seq: Int) {
         if lastDeliverySeq > 0 && seq > lastDeliverySeq + 1 {
             let missed = seq - lastDeliverySeq - 1
             log.warning("websocket", "delivery gap detected",
@@ -1433,7 +1420,6 @@ public actor WebSocketManager {
                             "previousSeq": String(lastDeliverySeq),
                             "currentSeq": String(seq),
                         ])
-            recoverOrderLifecycleWatches()
             for handler in gapHandlers.values {
                 handler(missed)
             }
@@ -1798,7 +1784,6 @@ public actor WebSocketManager {
         // state and run gap recovery for a gap that did not happen. State the
         // swap genuinely cannot carry over is re-established via `onRotated`.
         for handler in rotatedHandlers.values { handler() }
-        reattachOrderLifecycleWatches()
         for continuation in rotatedContinuations.values {
             continuation.yield(())
         }
