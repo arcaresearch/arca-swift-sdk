@@ -14,6 +14,8 @@ public struct OrderHandleDeps: Sendable {
     var getExecutionOperation: (@Sendable (String) async throws -> Operation)? = nil
     var executionGaps: (@Sendable () async -> AsyncStream<Void>)? = nil
     var recoverExecutionReady: (@Sendable () async throws -> Void)? = nil
+    var watchLifecycle: (@Sendable (String, OriginalOrderReference, Int) async throws -> OrderLifecycleWatch)? = nil
+    var lifecycleLeg: Int = 0
 }
 
 /// Handle for exchange order lifecycle.
@@ -84,6 +86,9 @@ public final class OrderHandle: @unchecked Sendable {
 
     /// Prompt terminal evidence, independent of full order metadata and ledger history.
     public func executionReceipt(timeoutSeconds: TimeInterval = 30) async throws -> OrderExecutionReceipt {
+        if deps.watchLifecycle != nil {
+            return try await serverLifecycleReceipt(timeoutSeconds: timeoutSeconds, accounting: false).receipt
+        }
         do {
             let receipt = try await waitExecutionReceipt(timeoutSeconds: timeoutSeconds)
             await deps.releaseExecution?()
@@ -174,6 +179,51 @@ public final class OrderHandle: @unchecked Sendable {
         }
     }
 
+    /// Follow this handle's retained operation and exact batch leg. Stopping
+    /// the returned watch releases its attachment; recovery never places again.
+    public func lifecycleUpdates(timeoutSeconds: TimeInterval = 30) async throws -> OrderLifecycleWatch {
+        guard let watch = deps.watchLifecycle else {
+            throw ArcaError.unknown(code: "ORDER_LIFECYCLE_UNAVAILABLE", message: "Original order lifecycle is unavailable", errorId: nil)
+        }
+        return try await withOrderLifecycleDeadline(timeoutSeconds) { [self] in
+            let original: OriginalOrderReference
+            do { original = .id(try await inner.submitted.operation.id.rawValue) }
+            catch { try Task.checkCancellation(); original = .path(placementPath) }
+            try Task.checkCancellation()
+            let attachment = try await watch(objectId, original, deps.lifecycleLeg)
+            do { try Task.checkCancellation() }
+            catch { await attachment.stop(); throw error }
+            return attachment
+        }
+    }
+
+    private func serverLifecycleReceipt(timeoutSeconds: TimeInterval, accounting: Bool) async throws -> OrderLifecycleReceipt {
+        do {
+            let receipt = try await withOrderLifecycleDeadline(timeoutSeconds) { [self] in
+                let watch = try await lifecycleUpdates(timeoutSeconds: timeoutSeconds)
+                do {
+                    for await update in watch.updates {
+                        try Task.checkCancellation()
+                        if update.unavailable {
+                            if !update.recoverable {
+                                throw ArcaError.unknown(code: "ORDER_LIFECYCLE_UNAVAILABLE", message: update.reason ?? "Original order unavailable", errorId: nil)
+                            }
+                            continue
+                        }
+                        if let receipt = update.lifecycle?.executionReceipt, !accounting || receipt.fillsComplete {
+                            await watch.stop()
+                            return receipt
+                        }
+                    }
+                    try Task.checkCancellation()
+                    throw ArcaError.unknown(code: "ORDER_LIFECYCLE_UNAVAILABLE", message: "Original order stream ended", errorId: nil)
+                } catch { await watch.stop(); throw error }
+            }
+            await deps.releaseExecution?()
+            return receipt
+        } catch { await deps.releaseExecution?(); throw error }
+    }
+
     /// Wait for the order to be fully filled.
     ///
     /// Resolves execution evidence, then reads complete order metadata.
@@ -182,6 +232,17 @@ public final class OrderHandle: @unchecked Sendable {
     /// - Parameter timeoutSeconds: Maximum wait time (default: 30 seconds).
     /// - Returns: The order with all its fills.
     public func filled(timeoutSeconds: TimeInterval = 30) async throws -> SimOrderWithFills {
+        if deps.watchLifecycle != nil {
+            let receipt = try await serverLifecycleReceipt(timeoutSeconds: timeoutSeconds, accounting: true)
+            guard !receipt.orderId.isEmpty else {
+                throw ArcaError.unknown(code: "ORDER_DETAILS_UNAVAILABLE", message: "Original execution has no venue order metadata", errorId: nil)
+            }
+            let detail = try await deps.getOrder(objectId, receipt.orderId)
+            guard detail.order.id.rawValue == receipt.orderId, detail.fillsComplete == true else {
+                throw ArcaError.unknown(code: "ORDER_DETAILS_PENDING", message: "Complete original order accounting is unavailable", errorId: nil)
+            }
+            return detail
+        }
         let receipt = try await executionReceipt(timeoutSeconds: timeoutSeconds)
         let cached = executionDetail.value
         let detail: SimOrderWithFills
@@ -212,6 +273,44 @@ public final class OrderHandle: @unchecked Sendable {
     private enum FillMessage: Sendable { case fill(SimFill); case event(RealmEvent) }
 
     public func fills(timeoutSeconds: TimeInterval = 300) -> AsyncThrowingStream<SimFill, Error> {
+        if deps.watchLifecycle != nil { return lifecycleFills(timeoutSeconds: timeoutSeconds) }
+        return legacyFills(timeoutSeconds: timeoutSeconds)
+    }
+
+    private func lifecycleFills(timeoutSeconds: TimeInterval) -> AsyncThrowingStream<SimFill, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await withOrderLifecycleDeadline(timeoutSeconds) { [self] in
+                        let watch = try await lifecycleUpdates(timeoutSeconds: timeoutSeconds)
+                        do {
+                            var seen = Set<String>()
+                            for await update in watch.updates {
+                                try Task.checkCancellation()
+                                if update.unavailable {
+                                    if !update.recoverable { throw ArcaError.unknown(code: "ORDER_LIFECYCLE_UNAVAILABLE", message: update.reason ?? "Original order unavailable", errorId: nil) }
+                                    continue
+                                }
+                                guard let view = update.lifecycle else { continue }
+                                guard let fills = view.committedFills else { throw ArcaError.unknown(code: "ORDER_FILLS_UNAVAILABLE", message: "Original order has no canonical fill snapshot", errorId: nil) }
+                                for fill in fills {
+                                    try Task.checkCancellation()
+                                    if seen.insert(fill.id).inserted { continuation.yield(fill.fill) }
+                                }
+                                if view.accountingComplete && !view.recoveryRequired { await watch.stop(); return }
+                            }
+                            try Task.checkCancellation()
+                            throw ArcaError.unknown(code: "ORDER_LIFECYCLE_UNAVAILABLE", message: "Original order stream ended", errorId: nil)
+                        } catch { await watch.stop(); throw error }
+                    }
+                    await deps.releaseExecution?(); continuation.finish()
+                } catch { await deps.releaseExecution?(); continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func legacyFills(timeoutSeconds: TimeInterval) -> AsyncThrowingStream<SimFill, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -306,6 +405,13 @@ public final class OrderHandle: @unchecked Sendable {
     /// ```
     @discardableResult
     public func onFill(_ callback: @escaping @Sendable (SimFill) -> Void) -> @Sendable () -> Void {
+        if deps.watchLifecycle != nil {
+            let task = Task {
+                do { for try await fill in fills() { try Task.checkCancellation(); callback(fill) } }
+                catch { /* Callback API has no error channel; cancellation releases its watch. */ }
+            }
+            return { task.cancel() }
+        }
         let inner = self.inner
         let deps = self.deps
 

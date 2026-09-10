@@ -49,14 +49,12 @@ final class WatchPnlChartSelfHealingTests: XCTestCase {
         let markers: [(label: String, marker: String)] = [
             ("resume task subscribes to ws.resumeStream",            "ws.resumeStream"),
             ("auth task subscribes to ws.authenticatedStream",       "ws.authenticatedStream"),
-            ("boundary timer guards on agg-silence factor",          "BOUNDARY_AGG_SILENCE_FACTOR"),
             ("multi-bucket gap detection refetches dense window",    "Multi-bucket gap"),
             ("live-tail sliding window helper",                      "slideIfLive"),
             ("window box for sliding cache key + window state",      "windowBox"),
             ("live-tail threshold check vs LIVE_TAIL_THRESHOLD_S",   "LIVE_TAIL_THRESHOLD_S"),
             ("resume task cancellation in onTermination",            "resumeTask.cancel()"),
             ("auth task cancellation in onTermination",              "authTask.cancel()"),
-            ("boundary task cancellation in onTermination",          "boundaryTask.cancel()"),
         ]
 
         for (label, marker) in markers {

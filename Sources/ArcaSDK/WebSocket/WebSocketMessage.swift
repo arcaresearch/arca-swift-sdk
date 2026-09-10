@@ -13,6 +13,8 @@ enum OutboundMessage: Encodable {
     case unsubscribeOI
     case watchChartHistory(watchId: String, target: String, kind: String, objectId: String?)
     case unwatchChartHistory(watchId: String)
+    case watchOrderLifecycle(watchId: String, requestId: String, objectId: String, operationId: String, leg: String)
+    case unwatchOrderLifecycle(watchId: String)
     case watchProjection(projection: String, requestId: String)
     case unwatchProjection(watchId: String)
     case attachAggregationWatch(watchId: String)
@@ -64,6 +66,16 @@ enum OutboundMessage: Encodable {
         case .unwatchChartHistory(let watchId):
             try container.encode("unwatch_chart_history", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
+        case .watchOrderLifecycle(let watchId, let requestId, let objectId, let operationId, let leg):
+            try container.encode("watch_order_lifecycle", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
+            try container.encode(requestId, forKey: .requestId)
+            try container.encode(objectId, forKey: .objectId)
+            try container.encode(operationId, forKey: .operationId)
+            try container.encode(leg, forKey: .leg)
+        case .unwatchOrderLifecycle(let watchId):
+            try container.encode("unwatch_order_lifecycle", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
         case .watchProjection(let projection, let requestId):
             try container.encode("watch_projection", forKey: .action)
             try container.encode(projection, forKey: .projection)
@@ -87,7 +99,7 @@ enum OutboundMessage: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case action, token, realmId, capabilities, foreground, exchange, coins, intervals, path, batch
-        case watchId, target, kind, objectId, projection, requestId
+        case watchId, target, kind, objectId, projection, requestId, operationId, leg
     }
 }
 

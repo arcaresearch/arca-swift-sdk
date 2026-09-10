@@ -6,13 +6,6 @@ import Foundation
 // the past are treated as fixed-window watches and stay pinned.
 internal let LIVE_TAIL_THRESHOLD_S: TimeInterval = 60
 
-// In the chart streams' boundary timer: if no aggregation event has arrived
-// for this much wall-clock time AND the bucket boundary has advanced, treat
-// it as a tab freeze / quiet realm and refetch the dense server window.
-// 1.5 x interval gives one grace bucket for ordinary network jitter before
-// we suspect the stream.
-internal let BOUNDARY_AGG_SILENCE_FACTOR: Double = 1.5
-
 // Helper: format a `Date` to RFC 3339 with fractional seconds. Each call
 // constructs a fresh formatter because `ISO8601DateFormatter` is non-Sendable.
 @inline(__always)
@@ -369,7 +362,6 @@ extension Arca {
         let chartBox = SendableBox<[EquityPoint]>(initialChart)
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
         let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
-        let lastAggAtBox = SendableBox<Date>(Date())
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
@@ -427,7 +419,6 @@ extension Arca {
 
             let task = Task {
                 for await agg in aggStream.updates {
-                    lastAggAtBox.update { $0 = Date() }
                     let previousLiveEquity = liveEquityBox.value
                     let liveEquity = agg.totalEquityUsd
                     let nowEpoch = Int64(Date().timeIntervalSince1970)
@@ -512,32 +503,14 @@ extension Arca {
                     await refreshHistory()
                 }
             }
-            // Wall-clock boundary timer for quiet realms: the materializer
-            // pushes chart snapshots only on data change, so a no-fill window
-            // produces no events. Refetch when the boundary advances without
-            // any agg activity.
-            let boundaryTask = Task {
-                let tickSeconds = max(min(Int64(30), resolutionSecondsBox.value), 1)
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: UInt64(tickSeconds) * 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    let nowEpoch = Int64(Date().timeIntervalSince1970)
-                    let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
-                    let lastBoundary = hourBoundaryBox.value
-                    let aggSilence = Date().timeIntervalSince(lastAggAtBox.value)
-                    if currentHourBoundary > lastBoundary,
-                       aggSilence > BOUNDARY_AGG_SILENCE_FACTOR * Double(resolutionSecondsBox.value) {
-                        await refreshHistory()
-                    }
-                }
-            }
+            // Quiet streams are valid. History changes arrive through the chart
+            // subscription; actual gaps and reconnects trigger recovery above.
             continuation.onTermination = { _ in
                 task.cancel()
                 chartTask.cancel()
                 statusTask.cancel()
                 resumeTask.cancel()
                 authTask.cancel()
-                boundaryTask.cancel()
             }
         }
 
@@ -685,7 +658,6 @@ extension Arca {
         let cumInflowsBox = SendableBox<Double>(currentCumInflows)
         let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
         let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
-        let lastAggAtBox = SendableBox<Date>(Date())
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
@@ -754,7 +726,6 @@ extension Arca {
 
             let aggTask = Task {
                 for await agg in aggStream.updates {
-                    lastAggAtBox.update { $0 = Date() }
                     // Capture the previous live values BEFORE absorbing the
                     // new agg, so a boundary cross emits the equity / pnl
                     // that was current right before the boundary (matching
@@ -874,25 +845,8 @@ extension Arca {
                     await refreshHistory()
                 }
             }
-            // Wall-clock boundary timer for quiet realms: the materializer
-            // pushes chart snapshots only on data change, so a no-fill window
-            // produces no events. Refetch when the boundary advances without
-            // any agg activity.
-            let boundaryTask = Task {
-                let tickSeconds = max(min(Int64(30), resolutionSecondsBox.value), 1)
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: UInt64(tickSeconds) * 1_000_000_000)
-                    guard !Task.isCancelled else { return }
-                    let nowEpoch = Int64(Date().timeIntervalSince1970)
-                    let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
-                    let lastBoundary = hourBoundaryBox.value
-                    let aggSilence = Date().timeIntervalSince(lastAggAtBox.value)
-                    if currentHourBoundary > lastBoundary,
-                       aggSilence > BOUNDARY_AGG_SILENCE_FACTOR * Double(resolutionSecondsBox.value) {
-                        await refreshHistory()
-                    }
-                }
-            }
+            // Quiet streams are valid. History changes arrive through the chart
+            // subscription; actual gaps and reconnects trigger recovery above.
 
             continuation.onTermination = { _ in
                 aggTask.cancel()
@@ -900,7 +854,6 @@ extension Arca {
                 statusTask.cancel()
                 resumeTask.cancel()
                 authTask.cancel()
-                boundaryTask.cancel()
             }
         }
 

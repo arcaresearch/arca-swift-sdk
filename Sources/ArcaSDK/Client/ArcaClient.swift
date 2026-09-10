@@ -157,6 +157,9 @@ public final class ArcaClient: @unchecked Sendable {
         body: (any Encodable)? = nil
     ) async throws -> T {
         var lastError: Error?
+        // A gateway failure can follow an accepted placement. The handle
+        // recovers its original operation instead of resending the order.
+        let originalOrder = method == "POST" && (path.hasSuffix("/exchange/orders") || path.hasSuffix("/exchange/orders/batch"))
 
         for attempt in 0...Self.maxRetries {
             try Task.checkCancellation()
@@ -164,7 +167,7 @@ public final class ArcaClient: @unchecked Sendable {
                 return try await requestOnce(method: method, path: path, query: query, body: body)
             } catch {
                 lastError = error
-                if !Self.isTransient(error) || attempt == Self.maxRetries {
+                if originalOrder || !Self.isTransient(error) || attempt == Self.maxRetries {
                     throw error
                 }
                 log.warning("network", "transient failure, retrying", error: error,
