@@ -236,6 +236,110 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    // MARK: - Late subscriber on a quiet market
+
+    /// Gobi's 2026-09-09 reproduction, with the outcome it should have had.
+    ///
+    /// An app-wide `watchPrices()` takes the 0→1 mids-subscription edge and so
+    /// is the only consumer registered when the server answers with its one
+    /// `mids.snapshot`. `watchMaxOrderSize` opens a second consumer, which used
+    /// to start from an empty map: for a market that does not tick between
+    /// subscribe and use, it returned "successfully" with no sizing and stayed
+    /// that way until that one market moved. On a quiet market (Palladium, in
+    /// their trace) that was the whole time the trader was on the ticket.
+    ///
+    /// The retained snapshot is replayed to the late consumer, so it starts
+    /// from the same prices the app-wide watcher already had.
+    func testLateSizingWatchInheritsRetainedSnapshotForQuietMarket() async throws {
+        let arca = makeArca()
+
+        let appPricesTask = Task { try await arca.watchPrices() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000","hl:0:ADA":"0.5"}}"#)
+        let appPrices = try await appPricesTask.value
+        XCTAssertEqual(appPrices.prices.value["hl:0:BTC"], "80000")
+
+        let sizingTask = Task {
+            try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+                objectId: "obj_1", market: "hl:0:BTC", side: .buy, leverage: 5, feeScale: 1.0))
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        // A tick for an unrelated, actively-moving market. It must not be what
+        // the quiet market's sizing depends on.
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:ADA":"0.51"}}"#)
+        let sizing = try await sizingTask.value
+
+        XCTAssertEqual(MaxOrderSizeMockProtocol.activeAssetDataRequestCount, 1)
+        XCTAssertNotNil(sizing.activeAssetData.value,
+                        "A late sizing watch must inherit the retained snapshot, not wait for its market to tick")
+        XCTAssertEqual(sizing.activeAssetData.value.flatMap { Double($0.markPx) }, 80000)
+        XCTAssertNil(sizing.pendingReason.value)
+        XCTAssertEqual(sizing.state.value, .connected)
+
+        await sizing.stop()
+        await appPrices.stop()
+        await arca.ws.disconnect()
+    }
+
+    /// The market is absent from the snapshot entirely (never ticked since the
+    /// socket opened), so the replay cannot supply its mark. The
+    /// `getActiveAssetData` response fetched at setup carries one, and it is
+    /// enough to return with sizing.
+    func testActiveAssetDataMarkSeedsSizingWhenMidsLackTheMarket() async throws {
+        let arca = makeArca()
+
+        let sizingTask = Task {
+            try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+                objectId: "obj_1", market: "hl:0:BTC", side: .buy, leverage: 5, feeScale: 1.0))
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        // A snapshot without the selected market: the inner watchPrices() can
+        // resolve, but there is no BTC mid anywhere in the price map.
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:ADA":"0.5"}}"#)
+        let sizing = try await sizingTask.value
+
+        XCTAssertNotNil(sizing.activeAssetData.value,
+                        "The setup active-asset-data read already carries a mark; sizing must use it")
+        XCTAssertEqual(sizing.activeAssetData.value.flatMap { Double($0.markPx) }, 80000)
+        XCTAssertNil(sizing.pendingReason.value)
+
+        // A live mid for the market supersedes the seed.
+        let repriced = expectation(description: "live mid overrides the seeded mark")
+        let observer = sizing.activeAssetData.onChange { data in
+            if let px = data.flatMap({ Double($0.markPx) }), px == 81000 { repriced.fulfill() }
+        }
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"81000"}}"#)
+        await fulfillment(of: [repriced], timeout: 2)
+        sizing.activeAssetData.removeObserver(observer)
+
+        await sizing.stop()
+        await arca.ws.disconnect()
+    }
+
+    /// Neither the price map nor the active-asset-data read can price the
+    /// market. The stream must say so rather than return a silent nil: `state`
+    /// stays `.loading` and `pendingReason` names the missing input.
+    func testPendingReasonReportsMissingMarkWhenNothingCanPriceTheMarket() async throws {
+        MaxOrderSizeMockProtocol.markPx = "0"
+        let arca = makeArca()
+
+        let sizingTask = Task {
+            try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+                objectId: "obj_1", market: "hl:0:BTC", side: .buy, leverage: 5, feeScale: 1.0))
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:ADA":"0.5"}}"#)
+        let sizing = try await sizingTask.value
+
+        XCTAssertNil(sizing.activeAssetData.value)
+        XCTAssertEqual(sizing.pendingReason.value, .awaitingMarkPrice,
+                       "An unpriced market is not a $0 account, and the stream has to be able to say which")
+        XCTAssertEqual(sizing.state.value, .loading)
+
+        await sizing.stop()
+        await arca.ws.disconnect()
+    }
+
     // MARK: - Helpers
 
     private func makeArca() -> Arca {
@@ -269,9 +373,18 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
     private static var _maintenanceMarginRate: String = "0.01"
     private static var _exchangePricingMode: String?
     private static var _refreshIntervalMs: Int?
+    private static var _markPx: String = "80000"
     static var refreshIntervalMs: Int? {
         get { lock.lock(); defer { lock.unlock() }; return _refreshIntervalMs }
         set { lock.lock(); _refreshIntervalMs = newValue; lock.unlock() }
+    }
+
+    /// `markPx` on the active-asset-data response. `"0"` models a market the
+    /// venue cannot price at all, which is the only case that should leave the
+    /// sizing stream without a value.
+    static var markPx: String {
+        get { lock.lock(); defer { lock.unlock() }; return _markPx }
+        set { lock.lock(); _markPx = newValue; lock.unlock() }
     }
 
     static var exchangePricingMode: String? {
@@ -295,6 +408,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
         _maintenanceMarginRate = "0.01"
         _exchangePricingMode = nil
         _refreshIntervalMs = nil
+        _markPx = "80000"
         lock.unlock()
     }
 
@@ -381,6 +495,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
             Self.lock.lock()
             Self._activeAssetDataRequestCount += 1
             let mmr = Self._maintenanceMarginRate
+            let mark = Self._markPx
             Self.lock.unlock()
             body = """
             {
@@ -393,7 +508,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
                 "maxBuyUsd": "0",
                 "maxSellUsd": "0",
                 "availableToTrade": "10000",
-                "markPx": "80000",
+                "markPx": "\(mark)",
                 "feeRate": "0.00045",
                 "maintenanceMarginRate": "\(mmr)"
               }

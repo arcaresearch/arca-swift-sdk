@@ -1492,9 +1492,11 @@ extension Arca {
     }
 
     /// Subscribe to real-time mid prices for all assets.
-    /// Resolves once the server sends the initial snapshot, so `prices`
-    /// is populated on return. Reconnections are handled automatically.
-    /// Call `stop()` when done.
+    /// Resolves once prices are available, so `prices` is populated on return —
+    /// for the first subscriber that is the server's snapshot, and for every
+    /// later one it is the map the manager retained from it (the subscription
+    /// is ref-counted, so the server only sends a snapshot per subscribe).
+    /// Reconnections are handled automatically. Call `stop()` when done.
     ///
     /// The `updates` stream is buffered to the latest snapshot only:
     /// slow consumers (e.g., publishing into SwiftUI `@Published` from a
@@ -1565,12 +1567,20 @@ extension Arca {
     /// consumers will drop intermediate recomputations rather than
     /// accumulating them in memory.
     ///
+    /// `activeAssetData` can still be `nil` when this returns — it needs both
+    /// an exchange state and a mark for the selected market, and a market the
+    /// venue prices nowhere has neither. `state` stays `.loading` and
+    /// ``MaxOrderSizeWatchStream/pendingReason`` says which input is missing.
+    /// Hold sizing controls in a loading state while it is set; an empty rail
+    /// reads to the user as an empty account.
+    ///
     /// - Parameter options: Trading parameters (object, coin, side, leverage, fees).
     public func watchMaxOrderSize(options opts: MaxOrderSizeWatchOptions) async throws -> MaxOrderSizeWatchStream {
         await ws.ensureConnected()
 
         let streamState = SendableBox<WatchStreamState>(.loading)
         let activeAssetBox = SendableBox<ActiveAssetData?>(nil)
+        let pendingReasonBox = SendableBox<MaxOrderSizePendingReason?>(.awaitingExchangeState)
 
         let priceStream = try await watchPrices()
 
@@ -1612,6 +1622,12 @@ extension Arca {
         let tiersBox = SendableBox<[MarginTier]?>(nil)
         let askRatioBox = SendableBox<Double>(1)
         let bidRatioBox = SendableBox<Double>(1)
+        // Fallback mark for the selected market, used only when the live mids
+        // map has no entry for it. The same response already supplies the
+        // spread ratios below; reading its `markPx` costs nothing and is the
+        // difference between a ticket that can size the order and one that
+        // waits for a quiet market to print its next mid.
+        let seedMarkBox = SendableBox<String?>(nil)
         if let data = try? await getActiveAssetData(
             objectId: opts.objectId,
             market: opts.market,
@@ -1628,6 +1644,7 @@ extension Arca {
             // live mid on each recompute so it stays stable as price moves. The
             // server returns bid == ask == mark when there's no book (ratio 1).
             if let mid = Double(data.markPx), mid > 0 {
+                seedMarkBox.update { $0 = data.markPx }
                 if let bid = data.bidPx.flatMap(Double.init), bid > 0 {
                     bidRatioBox.update { $0 = bid / mid }
                 }
@@ -1641,10 +1658,19 @@ extension Arca {
         let observationEpoch = SendableBox<UInt64>(0)
 
         func recompute() -> ActiveAssetData? {
-            guard let exState = exchangeStateBox.value else { return nil }
+            guard let exState = exchangeStateBox.value else {
+                pendingReasonBox.update { $0 = .awaitingExchangeState }
+                return nil
+            }
             let mids = priceStream.prices.value
-            let markStr = mids[opts.market]
+            // Live mid wins; the snapshot mark only covers a market the mids
+            // map has not carried yet.
+            let markStr = mids[opts.market] ?? seedMarkBox.value
             let markPx = markStr.flatMap(Double.init) ?? 0
+            guard markPx > 0 else {
+                pendingReasonBox.update { $0 = .awaitingMarkPrice }
+                return nil
+            }
             // Re-mark the book against current mids before deriving.
             //
             // Load-bearing for HIP-3 markets, not merely a freshness nicety:
@@ -1658,7 +1684,7 @@ extension Arca {
             // `totalCollateralUsd` is spot cash and price-invariant by
             // construction, so re-marking positions is the whole of what moves.
             let marked = mids.isEmpty ? exState : exState.revalued(with: mids)
-            return deriveActiveAssetData(
+            let derived = deriveActiveAssetData(
                 from: marked,
                 market: opts.market,
                 markPx: markPx,
@@ -1672,6 +1698,8 @@ extension Arca {
                 askRatio: askRatioBox.value,
                 bidRatio: bidRatioBox.value
             )
+            pendingReasonBox.update { $0 = derived == nil ? .awaitingExchangeState : nil }
+            return derived
         }
 
         // Server-authoritative pricing: when the object is priced by the server
@@ -1681,12 +1709,14 @@ extension Arca {
         // mid tick. Absent/`.client` ⇒ local derivation, exactly as before.
         let fetchServerActiveAssetData: @Sendable () async -> ActiveAssetData? = { [weak self] in
             guard let self else { return nil }
-            return try? await self.getActiveAssetData(
+            let data = try? await self.getActiveAssetData(
                 objectId: opts.objectId,
                 market: opts.market,
                 applicationFeeTenthsBps: opts.builderFeeBps,
                 leverage: opts.leverage
             )
+            pendingReasonBox.update { $0 = data == nil ? .awaitingExchangeState : nil }
+            return data
         }
 
         if initialExchangeState.pricingMode == .server {
@@ -1809,6 +1839,7 @@ extension Arca {
         let stream = MaxOrderSizeWatchStream(
             state: streamState,
             activeAssetData: activeAssetBox,
+            pendingReason: pendingReasonBox,
             updates: updates,
             stop: { [ws] in
                 stopUpdates.value?()

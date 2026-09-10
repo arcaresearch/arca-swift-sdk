@@ -337,14 +337,21 @@ public struct ProjectionWatchStream: Sendable {
 public struct MarketPriceStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
-    /// Current mid prices, populated on first snapshot and refreshed on reconnect.
+    /// Current mid prices, populated before this stream is returned and
+    /// refreshed on reconnect.
+    ///
+    /// Every subscriber starts from the same map, not only the first one on
+    /// the socket: the mids subscription is ref-counted and the server sends
+    /// its snapshot once per subscribe, so the manager retains that map and
+    /// replays it to each later subscriber.
     public let prices: SendableBox<[String: String]>
     /// Async stream of mid price updates (each update is a full snapshot of all prices).
     public let updates: AsyncStream<[String: String]>
     /// Stop listening and unsubscribe from mid price updates.
     public let stop: @Sendable () async -> Void
 
-    /// Returns when the first snapshot has been received. Never throws.
+    /// Returns when prices are available — the server's snapshot for the first
+    /// subscriber on the socket, the retained map for every later one. Never throws.
     public func ready() async {
         await state.wait(until: { $0 != .loading })
     }
@@ -543,17 +550,45 @@ public struct MaxOrderSizeWatchOptions: Sendable {
 public struct MaxOrderSizeWatchStream: Sendable {
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
-    /// Latest derived active asset data (nil until first computation).
+    /// Latest derived active asset data.
+    ///
+    /// `nil` until the first computation, which needs both an exchange state
+    /// and a mark for the selected market — so this can still be `nil` when
+    /// ``Arca/watchMaxOrderSize(options:)`` returns. Read ``pendingReason``
+    /// before treating an absent figure as zero.
     public let activeAssetData: SendableBox<ActiveAssetData?>
+    /// Why no ``activeAssetData`` is available yet, or `nil` when it is.
+    ///
+    /// `.awaitingMarkPrice` in particular means the account is fine and the
+    /// market is simply unpriced so far — a ticket should hold its sizing
+    /// controls in a loading state rather than render a $0 rail, which reads
+    /// to the user as "you have no money".
+    public let pendingReason: SendableBox<MaxOrderSizePendingReason?>
     /// Async stream of recomputed active asset data.
     public let updates: AsyncStream<ActiveAssetData>
     /// Stop listening and unsubscribe from all underlying streams.
     public let stop: @Sendable () async -> Void
 
     /// Returns when the first computation has completed. Never throws.
+    ///
+    /// A market the venue prices nowhere never completes one, so bound this
+    /// wait (or read ``pendingReason``) rather than awaiting it unconditionally
+    /// on a user-facing path.
     public func ready() async {
         await state.wait(until: { $0 != .loading })
     }
+}
+
+/// Why a ``MaxOrderSizeWatchStream`` has no ``ActiveAssetData`` yet.
+///
+/// Raw values match the TypeScript SDK's `MaxOrderSizePendingReason`.
+public enum MaxOrderSizePendingReason: String, Sendable, Equatable {
+    /// No usable account snapshot yet (or the venue quotes this account
+    /// through a mirror the client must not second-guess).
+    case awaitingExchangeState = "awaiting_exchange_state"
+    /// No mark price for the selected market yet — neither from the live mids
+    /// map nor from the setup `getActiveAssetData` read.
+    case awaitingMarkPrice = "awaiting_mark_price"
 }
 
 // MARK: - ExchangeStateWatchStream

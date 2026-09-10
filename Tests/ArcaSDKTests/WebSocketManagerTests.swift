@@ -239,6 +239,159 @@ final class WebSocketManagerTests: XCTestCase {
         XCTAssertEqual(received?["hl:0:BTC"], "97100")
     }
 
+    // MARK: - Retained mids replay
+
+    /// The mids subscription is ref-counted and the server answers each
+    /// `subscribe_mids` with exactly one `mids.snapshot`, so only the consumer
+    /// holding the 0→1 edge is registered when it lands. A consumer created
+    /// afterwards has to be handed the retained map, or it starts from nothing
+    /// and fills one market at a time as each one happens to tick.
+    func testMidsEventsReplaysRetainedSnapshotToALateConsumer() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        await manager.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000","hl:0:ADA":"0.5"}}"#)
+        // A delta after the snapshot: the replayed map must carry the merge, not
+        // just the snapshot.
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:ADA":"0.51"},"deliverySeq":1}"#)
+
+        let lateStream = await manager.midsEvents()
+        var received: [String: String]?
+        let consumer = Task {
+            for await mids in lateStream {
+                received = mids
+                break
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertEqual(received?["hl:0:BTC"], "80000",
+                       "A late mids consumer must inherit the quiet market's price")
+        XCTAssertEqual(received?["hl:0:ADA"], "0.51",
+                       "The retained map merges deltas over the snapshot")
+    }
+
+    /// The replay is a seed, not a substitute: live updates still arrive, and
+    /// they arrive after it.
+    func testMidsEventsDeliversLiveUpdatesAfterTheReplay() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        await manager.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+
+        let lateStream = await manager.midsEvents()
+        var received: [[String: String]] = []
+        let consumer = Task {
+            for await mids in lateStream {
+                received.append(mids)
+                if received.count == 2 { break }
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await manager.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"80100"},"deliverySeq":1}"#)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        consumer.cancel()
+
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.first?["hl:0:BTC"], "80000", "The replay comes first")
+        XCTAssertEqual(received.last?["hl:0:BTC"], "80100", "Then the live tick")
+    }
+
+    /// Nothing is retained before the first snapshot, and nothing is retained
+    /// once the subscription is dropped — a stale map must not outlive the
+    /// subscription it describes.
+    func testRetainedMidsAreNotReplayedBeforeSubscribeOrAfterUnsubscribe() async throws {
+        let manager = WebSocketManager(
+            baseURL: URL(string: "http://localhost:3052")!,
+            token: "test",
+            realmId: "rlm_test"
+        )
+
+        let coldStream = await manager.midsEvents()
+        var coldReceived: [String: String]?
+        let coldConsumer = Task {
+            for await mids in coldStream {
+                coldReceived = mids
+                break
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        coldConsumer.cancel()
+        XCTAssertNil(coldReceived, "There is nothing to replay before the first snapshot")
+
+        await manager.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+        await manager.unsubscribeMids()
+
+        let afterStream = await manager.midsEvents()
+        var afterReceived: [String: String]?
+        let afterConsumer = Task {
+            for await mids in afterStream {
+                afterReceived = mids
+                break
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        afterConsumer.cancel()
+        XCTAssertNil(afterReceived, "Unsubscribing drops the retained map")
+    }
+
+    /// The end-to-end shape of the bug: a second `watchPrices()` on the same
+    /// socket returns with its prices already populated.
+    func testSecondWatchPricesIsPopulatedOnReturn() async throws {
+        let arca = try Arca(
+            token: fakeJwt(),
+            baseURL: URL(string: "http://localhost:19998")!
+        )
+
+        let firstTask = Task { try await arca.watchPrices() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+        let first = try await firstTask.value
+        XCTAssertEqual(first.prices.value["hl:0:BTC"], "80000")
+
+        // No injection between here and the assertion: the second stream has
+        // to resolve off the retained map alone. Bounded, because the failure
+        // mode is a `watchPrices()` that never becomes ready — it waits on a
+        // snapshot the server has already sent to someone else. Cancelling
+        // releases `ready()` and the stream comes back empty, which is what
+        // the assertions below then catch.
+        let secondTask = Task { try await arca.watchPrices() }
+        let timeout = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            secondTask.cancel()
+        }
+        let second = try await secondTask.value
+        timeout.cancel()
+
+        XCTAssertEqual(second.prices.value["hl:0:BTC"], "80000",
+                       "A second watchPrices() must start from the retained snapshot")
+        XCTAssertEqual(second.state.value, .connected)
+
+        await second.stop()
+        await first.stop()
+        await arca.ws.disconnect()
+    }
+
+    private func fakeJwt() -> String {
+        func base64url(_ string: String) -> String {
+            Data(string.utf8)
+                .base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let header = base64url(#"{"alg":"HS256","typ":"JWT"}"#)
+        let payload = base64url(#"{"realmId":"rlm_test","sub":"usr_test"}"#)
+        return "\(header).\(payload).fakesig"
+    }
+
     func testExchangeNotificationsDeliverBareExchangeUpdated() async throws {
         let manager = WebSocketManager(
             baseURL: URL(string: "http://localhost:3052")!,

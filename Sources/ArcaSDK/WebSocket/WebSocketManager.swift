@@ -81,6 +81,16 @@ public actor WebSocketManager {
     private var pathRefs: [String: Int] = [:]
     private var midsRefs = 0
     private var midsExchange = "sim"
+    // Latest merged mid prices, held while the mids subscription is live.
+    //
+    // The server answers each `subscribe_mids` with one `mids.snapshot`, and
+    // the subscription is ref-counted, so only the consumer that took the 0→1
+    // edge is registered when that snapshot arrives. Without a retained copy
+    // every later `watchPrices()` starts empty and fills one delta at a time —
+    // so a market that does not tick stays unpriced for that consumer for as
+    // long as it stays quiet. `midsEvents()` replays this map to each new
+    // consumer as its first element.
+    private var retainedMids: [String: String]?
     private var candleRefCoins: [String: Set<String>] = [:]
     private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
@@ -243,6 +253,7 @@ public actor WebSocketManager {
     /// Unsubscribe from mid price updates.
     public func unsubscribeMids() {
         subscribedMids = nil
+        retainedMids = nil
         sendMessage(.unsubscribeMids)
     }
 
@@ -769,8 +780,14 @@ public actor WebSocketManager {
     }
 
     /// Stream of mid price updates.
+    ///
+    /// The current merged price map is replayed as the first element when one
+    /// is held, so a consumer that subscribes after the server's
+    /// `mids.snapshot` starts from the same prices as the one that received it
+    /// rather than from nothing. Registration and replay happen in the same
+    /// actor turn, so a live update cannot land between them.
     public func midsEvents() -> AsyncStream<[String: String]> {
-        filteredStream { event in
+        filteredStream(seed: retainedMids) { event in
             guard event.type == EventType.midsUpdated.rawValue,
                   let mids = event.mids else { return nil }
             return mids
@@ -1262,6 +1279,10 @@ public actor WebSocketManager {
             // the initial price map (mirrors TypeScript SDK behavior).
             if msgType == "mids.snapshot",
                let midsRaw = json["mids"] as? [String: String] {
+                // A snapshot is the authoritative current state for whatever
+                // the socket is subscribed to, so it replaces the retained map
+                // rather than merging into it.
+                retainedMids = midsRaw
                 let syntheticEvent = RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw)
                 for continuation in eventContinuations.values {
                     continuation.yield(syntheticEvent)
@@ -1379,6 +1400,9 @@ public actor WebSocketManager {
         }
 
         if let event = try? decoder.decode(RealmEvent.self, from: data) {
+            if event.type == EventType.midsUpdated.rawValue, let mids = event.mids {
+                retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
+            }
             for continuation in eventContinuations.values {
                 continuation.yield(event)
             }
@@ -1990,10 +2014,17 @@ public actor WebSocketManager {
     // MARK: - Private: Filtered Streams
 
     private func filteredStream<T>(
+        seed: T? = nil,
         transform: @Sendable @escaping (RealmEvent) -> T?
     ) -> AsyncStream<T> {
+        // `self.events` registers its continuation synchronously, and this
+        // method is actor-isolated and never suspends, so the parent
+        // registration and the seed below both complete before any inbound
+        // message can be handled. The seed is buffered ahead of whatever the
+        // pump task drains, so it is always delivered first.
         let parentEvents = self.events
         return AsyncStream { continuation in
+            if let seed { continuation.yield(seed) }
             let task = Task {
                 for await event in parentEvents {
                     if let value = transform(event) {
