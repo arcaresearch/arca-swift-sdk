@@ -172,11 +172,11 @@ extension Operation {
     /// per-leg views of a single shared batch operation (see
     /// ``Arca/openWithBracket``) so each order handle resolves its own
     /// `orderId` from the rewritten outcome while still sharing one operation.
-    func withOutcome(_ newOutcome: String?) -> Operation {
+    func withOutcome(_ newOutcome: String?, input newInput: String? = nil) -> Operation {
         Operation(
             id: id, realmId: realmId, path: path, type: type, state: state,
             sourceArcaPath: sourceArcaPath, targetArcaPath: targetArcaPath,
-            input: input, outcome: newOutcome, parsedOutcome: parsedOutcome,
+            input: newInput ?? input, outcome: newOutcome, parsedOutcome: parsedOutcome,
             failureMessage: failureMessage, actorType: actorType, actorId: actorId,
             tokenJti: tokenJti, createdAt: createdAt, updatedAt: updatedAt, context: context
         )

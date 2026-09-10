@@ -77,6 +77,99 @@ final class ExchangeStateWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    func testUnavailableStateClearsMoneyWithoutRefetchAndRecoversOnPush() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        let initial = try XCTUnwrap(stream.exchangeState.value)
+        let cleared = expectation(description: "previous observation cleared")
+        let observer = stream.exchangeState.onChange { state in
+            if state == nil { cleared.fulfill() }
+        }
+        await arca.ws.injectMessage(#"{"type":"exchange.updated","entityId":"obj_1","exchangeStateUnavailable":true}"#)
+        await fulfillment(of: [cleared], timeout: 1)
+        stream.exchangeState.removeObserver(observer)
+        XCTAssertNil(stream.exchangeState.value)
+        XCTAssertEqual(stream.state.value, .reconnecting)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+
+        let restored = expectation(description: "fresh observation restored")
+        let restoreObserver = stream.exchangeState.onChange { state in
+            if state != nil { restored.fulfill() }
+        }
+        let event = RealmEvent(type: "exchange.updated", entityId: "obj_1", exchangeState: initial)
+        let data = try JSONEncoder().encode(event)
+        await arca.ws.injectMessage(String(decoding: data, as: UTF8.self))
+        await fulfillment(of: [restored], timeout: 1)
+        XCTAssertEqual(stream.exchangeState.value?.marginSummary.equity, "1000")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        stream.exchangeState.removeObserver(restoreObserver)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testQuietMirrorObservationExpiresWithoutRefetch() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        let initial = try XCTUnwrap(stream.exchangeState.value)
+        var state = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(initial)) as? [String: Any])
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        state["tradingAllocation"] = ["revision": "1", "preferences": [:], "projectionUnavailable": false,
+                                      "asOf": formatter.string(from: now), "validUntil": formatter.string(from: now.addingTimeInterval(0.1))] as [String: Any]
+        let expired = expectation(description: "quiet mirror expired")
+        let observer = stream.exchangeState.onChange { state in if state == nil { expired.fulfill() } }
+        let data = try JSONSerialization.data(withJSONObject: ["type": "exchange.updated", "entityId": "obj_1", "exchangeState": state])
+        await arca.ws.injectMessage(String(decoding: data, as: UTF8.self))
+        await fulfillment(of: [expired], timeout: 1)
+        XCTAssertNil(stream.exchangeState.value)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        stream.exchangeState.removeObserver(observer)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testQuietPaperRefreshLearnsPolicyAndStopsAtTeardown() async throws {
+        ExchangeStateWatchProtocol.refreshScenario = .quiet
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        XCTAssertNil(stream.exchangeState.value?.collateralModel)
+        let refreshed = expectation(description: "quiet policy refresh")
+        let observer = stream.exchangeState.onChange { state in
+            if state?.collateralModel?.crossDexReservationEnforced == true { refreshed.fulfill() }
+        }
+        await fulfillment(of: [refreshed], timeout: 7)
+        stream.exchangeState.removeObserver(observer)
+        XCTAssertEqual(stream.exchangeState.value?.collateralModel?.crossDexAvailableUsd, "0")
+        await stream.stop()
+        let count = ExchangeStateWatchProtocol.stateRequestCount
+        try await Task.sleep(nanoseconds: 5_200_000_000)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, count)
+        await arca.ws.disconnect()
+    }
+
+    func testDelayedQuietRefreshCannotReplaceNewerExchangeEvent() async throws {
+        ExchangeStateWatchProtocol.refreshScenario = .delayed
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        let deadline = Date().addingTimeInterval(7)
+        while ExchangeStateWatchProtocol.stateRequestCount < 2 && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 2)
+        var state = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(stream.exchangeState.value!)) as? [String: Any])
+        var summary = state["marginSummary"] as! [String: Any]
+        summary["equity"] = "1200"
+        state["marginSummary"] = summary
+        let event = try JSONSerialization.data(withJSONObject: ["type": "exchange.updated", "entityId": "obj_1", "exchangeState": state])
+        await arca.ws.injectMessage(String(decoding: event, as: UTF8.self))
+        try await Task.sleep(nanoseconds: 1_300_000_000)
+        XCTAssertEqual(stream.exchangeState.value?.marginSummary.equity, "1200")
+        XCTAssertNil(stream.exchangeState.value?.collateralModel, "stale refresh must be discarded")
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     private func makeArca() -> Arca {
         try! Arca(
             token: fakeJwt(),
@@ -103,6 +196,14 @@ final class ExchangeStateWatchTests: XCTestCase {
 private final class ExchangeStateWatchProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _stateRequestCount = 0
+    enum RefreshScenario { case normal, quiet, delayed }
+    private static var _refreshScenario = RefreshScenario.normal
+    private let stopped = SendableBox(false)
+
+    static var refreshScenario: RefreshScenario {
+        get { lock.lock(); defer { lock.unlock() }; return _refreshScenario }
+        set { lock.lock(); _refreshScenario = newValue; lock.unlock() }
+    }
 
     static var stateRequestCount: Int {
         lock.lock()
@@ -113,6 +214,7 @@ private final class ExchangeStateWatchProtocol: URLProtocol {
     static func reset() {
         lock.lock()
         _stateRequestCount = 0
+        _refreshScenario = .normal
         lock.unlock()
     }
 
@@ -131,7 +233,8 @@ private final class ExchangeStateWatchProtocol: URLProtocol {
             return
         }
 
-        let body: String
+        var body: String
+        var delay: TimeInterval = 0
         switch url.path {
         case "/api/v1/objects/obj_1":
             body = #"""
@@ -191,6 +294,15 @@ private final class ExchangeStateWatchProtocol: URLProtocol {
             body = #"{"success":false,"error":{"code":"NOT_FOUND","message":"Not found"}}"#
         }
 
+        if url.path.hasSuffix("/exchange/state"), Self.refreshScenario != .normal {
+            body = body.replacingOccurrences(of: "\"account\":", with: "\"stateRefreshIntervalMs\":5000,\"account\":")
+            if Self.stateRequestCount > 1 {
+                let model = #""collateralModel":{"crossDexReservationEnforced":true,"crossDexReservationRate":"0.1","totalCollateralUsd":"1000","nativeAvailableUsd":"500","crossDexAvailableUsd":"0"},"#
+                body = body.replacingOccurrences(of: "\"account\":", with: model + "\"account\":")
+                if Self.refreshScenario == .delayed { delay = 1 }
+            }
+        }
+
         let statusCode = url.path == "/api/v1/objects/obj_1" || url.path == "/api/v1/objects/obj_1/exchange/state" ? 200 : 404
         let response = HTTPURLResponse(
             url: url,
@@ -198,10 +310,16 @@ private final class ExchangeStateWatchProtocol: URLProtocol {
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
         )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(body.utf8))
-        client?.urlProtocolDidFinishLoading(self)
+        let responseBody = Data(body.utf8)
+        let send: @Sendable () -> Void = { [self] in
+            guard !stopped.value else { return }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: responseBody)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if delay > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: send) }
+        else { send() }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() { stopped.update { $0 = true } }
 }

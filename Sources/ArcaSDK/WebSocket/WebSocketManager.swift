@@ -272,6 +272,96 @@ public actor WebSocketManager {
 
     // MARK: - Path Watch Management
 
+    private var acknowledgedPaths: [String: Int] = [:]
+    private var acknowledgedOperations: [String: [Operation]] = [:]
+    private var operationSnapshotHandlers: [UUID: @Sendable ([Operation]) -> Void] = [:]
+    private var pathWatchRequests: [Int: [String: String]] = [:]
+    private var pathReadyWaiters: [UUID: (String, CheckedContinuation<Void, Error>)] = [:]
+    private var pathSnapshotWaiters: [UUID: (String, CheckedContinuation<[Operation], Error>)] = [:]
+
+    /// A current-connection watch snapshot is the registration barrier. Merely
+    /// sending a watch or authenticating does not close the subscription gap.
+    func awaitPathReady(_ path: String) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if _status == .connected, pathRefs[path, default: 0] > 0, acknowledgedPaths[path] == primaryGeneration {
+                    continuation.resume()
+                } else { pathReadyWaiters[id] = (path, continuation) }
+            }
+        } onCancel: { Task { await self.cancelPathReady(id) } }
+    }
+
+    private func awaitPathSnapshotOperations(_ path: String) async throws -> [Operation] {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[Operation], Error>) in
+                if _status == .connected, pathRefs[path, default: 0] > 0, acknowledgedPaths[path] == primaryGeneration,
+                   let operations = acknowledgedOperations[path] {
+                    continuation.resume(returning: operations)
+                } else { pathSnapshotWaiters[id] = (path, continuation) }
+            }
+        } onCancel: { Task { await self.cancelPathSnapshot(id) } }
+    }
+
+    private func cancelPathReady(_ id: UUID) {
+        pathReadyWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
+    }
+
+    private func cancelPathSnapshot(_ id: UUID) {
+        pathSnapshotWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
+    }
+
+    /// Actual-gap recovery owns a temporary watch and requires a newly
+    /// correlated snapshot, even if an older owner has a cached ACK.
+    func recoverPathReady(_ path: String) async throws {
+        watchPath(path)
+        defer { unwatchPath(path) }
+        sendPathWatch(path, generation: primaryGeneration)
+        try await awaitPathReady(path)
+    }
+
+    func recoverPathSnapshotOperations(_ path: String) async throws -> [Operation] {
+        watchPath(path)
+        defer { unwatchPath(path) }
+        sendPathWatch(path, generation: primaryGeneration)
+        return try await awaitPathSnapshotOperations(path)
+    }
+
+    private func sendPathWatch(_ path: String, generation: Int) {
+        let requestId = "path-" + UUID().uuidString
+        pathWatchRequests[generation, default: [:]][path] = requestId
+        if generation == primaryGeneration { acknowledgedPaths.removeValue(forKey: path); acknowledgedOperations.removeValue(forKey: path) }
+        sendMessage(.watch(path: path, requestId: requestId), generation: generation)
+    }
+
+    private func acknowledgePath(_ path: String) {
+        guard _status == .connected, pathRefs[path, default: 0] > 0 else { return }
+        acknowledgedPaths[path] = primaryGeneration
+        let ready = pathReadyWaiters.filter { $0.value.0 == path }
+        for (id, value) in ready { pathReadyWaiters.removeValue(forKey: id); value.1.resume() }
+    }
+
+    /// Payload waiters require an actual correlated snapshot; a rotation pong
+    /// establishes transport readiness but carries no operation evidence.
+    private func acknowledgePathSnapshot(_ path: String, operations: [Operation]) {
+        guard _status == .connected, pathRefs[path, default: 0] > 0 else { return }
+        acknowledgePath(path)
+        acknowledgedOperations[path] = operations
+        // Every operation waiter needs rows buffered by another root-watch owner.
+        for handler in operationSnapshotHandlers.values { handler(operations) }
+        let ready = pathSnapshotWaiters.filter { $0.value.0 == path }
+        for (id, value) in ready { pathSnapshotWaiters.removeValue(forKey: id); value.1.resume(returning: operations) }
+    }
+
+    func onOperationSnapshot(_ handler: @escaping @Sendable ([Operation]) -> Void) -> UUID {
+        let id = UUID(); operationSnapshotHandlers[id] = handler; return id
+    }
+
+    func removeOperationSnapshotHandler(_ id: UUID) { operationSnapshotHandlers.removeValue(forKey: id) }
+
     /// Watch a path. Increments the ref count; sends a `watch` message on first interest.
     public func watchPath(_ path: String) {
         cancelIdleTimer()
@@ -283,7 +373,7 @@ public actor WebSocketManager {
                 task.cancel()
             } else {
                 ensureConnected()
-                sendMessage(.watch(path: path))
+                sendPathWatch(path, generation: primaryGeneration)
             }
         }
     }
@@ -307,6 +397,8 @@ public actor WebSocketManager {
     private func finishPathUnwatch(path: String, timerKey: String) {
         unsubTasks.removeValue(forKey: timerKey)
         if pathRefs[path] == nil {
+            acknowledgedPaths.removeValue(forKey: path); acknowledgedOperations.removeValue(forKey: path)
+            pathWatchRequests[primaryGeneration]?.removeValue(forKey: path)
             sendMessage(.unwatch(path: path))
         }
         maybeStartIdleTimer()
@@ -634,6 +726,13 @@ public actor WebSocketManager {
     }
 
     /// Stream of operation events (created or updated).
+    public func orderExecutionEvents() -> AsyncStream<RealmEvent> {
+        filteredStream { event in
+            guard ["order.updated", "operation.updated", "fill.previewed", "fill.recorded"].contains(event.type) else { return nil }
+            return event
+        }
+    }
+
     public func operationEvents() -> AsyncStream<(Operation, RealmEvent)> {
         filteredStream { event in
             guard event.type == EventType.operationCreated.rawValue
@@ -771,8 +870,8 @@ public actor WebSocketManager {
     /// Stream of exchange fill events (fill data + originating event).
     public func fillEvents() -> AsyncStream<(SimFill, RealmEvent)> {
         filteredStream { event in
-            guard event.type == EventType.fillPreviewed.rawValue,
-                  let fill = event.fill else { return nil }
+            guard event.type == EventType.fillPreviewed.rawValue || event.type == EventType.fillRecorded.rawValue,
+                  let fill = event.executionFill else { return nil }
             return (fill, event)
         }
     }
@@ -1090,6 +1189,7 @@ public actor WebSocketManager {
             }
 
             if msgType == "authenticated" {
+                acknowledgedPaths.removeAll(); acknowledgedOperations.removeAll()
                 log.info("websocket", "authenticated")
                 reconnectAttempt = 0
                 lastDeliverySeq = 0
@@ -1220,6 +1320,16 @@ public actor WebSocketManager {
                     continuation.yield(syntheticEvent)
                 }
                 return
+            }
+
+            if msgType == "watch_snapshot", let path = json["path"] as? String,
+               let requestId = json["requestId"] as? String, pathWatchRequests[primaryGeneration]?[path] == requestId {
+                let rows = (json["operations"] as? [Any] ?? []) + (json["bufferedOperations"] as? [Any] ?? [])
+                let operations = rows.compactMap { row -> Operation? in
+                    guard let data = JSONSafe.data(from: row) else { return nil }
+                    return try? decoder.decode(Operation.self, from: data)
+                }
+                acknowledgePathSnapshot(path, operations: operations)
             }
 
             // Normalize watch_snapshot → object.valuation so objectValuationEvents()
@@ -1618,6 +1728,19 @@ public actor WebSocketManager {
         receiveTask?.cancel()
         webSocketTask = promoted
         primaryGeneration = generation
+        acknowledgedOperations.removeAll()
+        // The pong barrier proves the warming batch was registered. Interests
+        // added after that batch need their own new-generation acknowledgement.
+        for path in pathRefs.keys {
+            if pathWatchRequests[generation]?[path] != nil { acknowledgePath(path) }
+            else { sendPathWatch(path, generation: generation) }
+        }
+        // A pending payload request belonged to the retiring connection.
+        // Restart it on the promoted socket, independent of the pong barrier.
+        for path in Set(pathSnapshotWaiters.values.map { $0.0 }) {
+            sendPathWatch(path, generation: generation)
+        }
+        pathWatchRequests = pathWatchRequests.filter { $0.key == generation }
         receiveTask = handoffReceiveTask
         handoffReceiveTask = nil
         retiring?.stop(reason: nil)
@@ -1828,7 +1951,7 @@ public actor WebSocketManager {
             sendMessage(message, generation: generation)
         }
         for path in pathRefs.keys {
-            sendMessage(.watch(path: path), generation: generation)
+            sendPathWatch(path, generation: generation)
         }
         for (watchId, req) in chartHistoryWatches {
             sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId),

@@ -211,6 +211,31 @@ final class MaxOrderSizeWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    func testQuietServerPricedMaxSizeRefreshesWithoutMarketTicks() async throws {
+        MaxOrderSizeMockProtocol.exchangePricingMode = "server"
+        MaxOrderSizeMockProtocol.refreshIntervalMs = 5000
+        let arca = makeArca()
+        let task = Task {
+            try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+                objectId: "obj_1", market: "hl:0:BTC", side: .buy, leverage: 5, feeScale: 1.0))
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+        let stream = try await task.value
+        XCTAssertEqual(stream.activeAssetData.value?.maintenanceMarginRate, "0.01")
+        MaxOrderSizeMockProtocol.maintenanceMarginRate = "0.025"
+        let refreshed = expectation(description: "quiet server size refresh")
+        let observer = stream.activeAssetData.onChange { data in
+            if data?.maintenanceMarginRate == "0.025" { refreshed.fulfill() }
+        }
+        await fulfillment(of: [refreshed], timeout: 7)
+        stream.activeAssetData.removeObserver(observer)
+        XCTAssertEqual(stream.activeAssetData.value?.maxBuySize, "0")
+        XCTAssertEqual(MaxOrderSizeMockProtocol.activeAssetDataRequestCount, 3)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     // MARK: - Helpers
 
     private func makeArca() -> Arca {
@@ -243,6 +268,11 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
     private static var _activeAssetDataRequestCount = 0
     private static var _maintenanceMarginRate: String = "0.01"
     private static var _exchangePricingMode: String?
+    private static var _refreshIntervalMs: Int?
+    static var refreshIntervalMs: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _refreshIntervalMs }
+        set { lock.lock(); _refreshIntervalMs = newValue; lock.unlock() }
+    }
 
     static var exchangePricingMode: String? {
         get { lock.lock(); defer { lock.unlock() }; return _exchangePricingMode }
@@ -264,6 +294,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
         _activeAssetDataRequestCount = 0
         _maintenanceMarginRate = "0.01"
         _exchangePricingMode = nil
+        _refreshIntervalMs = nil
         lock.unlock()
     }
 
@@ -280,7 +311,7 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
             return
         }
 
-        let body: String
+        var body: String
         var status = 200
 
         switch url.path {
@@ -372,6 +403,10 @@ private final class MaxOrderSizeMockProtocol: URLProtocol {
         default:
             body = #"{"success":false,"error":{"code":"NOT_FOUND","message":"Not found"}}"#
             status = 404
+        }
+
+        if url.path.hasSuffix("/exchange/state"), let interval = Self.refreshIntervalMs {
+            body = body.replacingOccurrences(of: "\"account\":", with: "\"stateRefreshIntervalMs\":\(interval),\"account\":")
         }
 
         let response = HTTPURLResponse(

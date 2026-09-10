@@ -68,6 +68,45 @@ let completed = try await arca.waitForOperation(
 let balances = try await arca.getBalancesByPath(path: "/wallets/main")
 ```
 
+## Execution receipts and recorded prices
+
+`OrderHandle.executionReceipt(...)` confirms terminal execution from account-scoped
+pushes and the original operation. It preserves requested/executed/remainder quantities
+for partially filled IOC orders even when venue history rewrites the order size.
+Execution proof is independent of complete order metadata or journal settlement.
+A venue aggregate price is provisional and may be absent.
+
+Use the receipt's account-scoped `watchFills` merged list to refine the price:
+
+```swift
+let receipt = try await order.executionReceipt(timeoutSeconds: 30)
+let fills = try await arca.watchFills(objectId: receipt.objectId)
+let refined = receipt.refined(using: fills.fills.value)
+// Observe fills.fills changes and refine again; stop the owned watch when done.
+await fills.stop()
+```
+
+Refinement requires recorded fills whose `orderOperationId` and `orderId` match
+this receipt and whose deduplicated quantities equal its executed quantity.
+`Fill.operationId` identifies the recording operation; previews cannot finalize a
+price. Incomplete, conflicting, or foreign evidence leaves the receipt unchanged.
+A complete result sets `averagePriceFinal`, `fillsComplete`, and
+`averagePriceSource = "ledger_vwap"`; its VWAP is rounded to 18 fractional digits,
+half-even. Original execution and remainder fields never change.
+
+Fill events use the exact account `entityPath` when present; `entityId` may be a
+fill ID. Object-ID matching is a fallback only for events without a path. Use
+v2.3.1 or later for this account-scope correction.
+
+`watchFills` installs listeners before subscribing, merges by stable `fillId`
+(falling back to row `id`), and traverses history cursors up to 1,000 pages.
+Its `limit` is the page size. Startup and actual gap/reconnect recovery use a fresh
+watch acknowledgement plus a paginated snapshot, with at most three attempts per
+recovery. Failed recovery remains `reconnecting` until a later gap/reconnect;
+healthy watches perform no periodic history reads. Stop the watch on account
+change. A fill has no embedded account ID, so callers must retain the account
+scope of the watch used for refinement.
+
 ## Authentication
 
 The Swift SDK is designed for frontend/mobile apps. It authenticates exclusively with **scoped JWT tokens** minted by your backend via `POST /auth/token`. The realm is extracted from the token claims automatically.
@@ -298,3 +337,20 @@ swift package clean
 ## API Surface
 
 All methods excluded from this SDK (admin/debug utilities like `checkInvariants`, `waitForQuiescence`, `listReconciliationState`, `ArcaAdmin`) are available through the TypeScript SDK or direct API calls from your backend.
+
+
+## Account capabilities and reduction sizing
+
+Use getExchangeCapabilities for account-authoritative optional controls. Use normalizedReductionSize with canonical market, exact size and fraction; it reads market lot precision and returns an exact rounded-down decimal, rejecting missing metadata and invalid/sub-lot values. Never infer precision or feature support from a venue prefix.
+## Operation wait recovery
+
+`waitForOperation` listens before acquiring its subscription. Startup and actual
+stream gaps, reauthentication, or sparse operation notifications request a fresh,
+correlated acknowledgement before reading the operation. A failed acknowledgement
+or read gets at most three attempts per recovery; a healthy pending operation
+stays on the stream without periodic reads. A terminal push can complete during
+acknowledgement or snapshot recovery. Timeout stops the wait and preserves the
+original operation identity; it never submits a replacement operation.
+
+Terminal operations in the initial or buffered subscription snapshot resolve the wait before any HTTP read, including typed failed/expired results. Socket rotation requests fresh operation evidence on the replacement connection; its pong only establishes transport readiness. Stale snapshot request IDs and unrelated operation IDs cannot settle the wait.
+Verified snapshot operations are shared with all live waiters, including results buffered while another caller refreshes the same root watch; each waiter still accepts only its original operation ID.

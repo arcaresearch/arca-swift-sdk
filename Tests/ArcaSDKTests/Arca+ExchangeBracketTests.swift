@@ -24,6 +24,33 @@ final class ArcaExchangeBracketTests: XCTestCase {
         super.tearDown()
     }
 
+    func testEarlyEntryEvidencePreservesIndependentChildCaptureAndQuantity() async throws {
+        let arca = makeArca()
+        BracketMockProtocol.beforeResponse = {
+            await arca.ws.injectMessage(#"{"type":"order.updated","entityId":"obj_1","order":{"order":{"id":"ord_entry","status":"FILLED","filledSize":"0.004"}}}"#)
+        }
+        let bracket = try arca.openWithBracket(path: "/op/bracket/early", objectId: "obj_1", market: "hl:0:BTC",
+            side: .buy, size: "0.02", takeProfitPx: "72000", takeProfitSz: "0.01")
+        let entry = try await bracket.entry.executionReceipt(timeoutSeconds: 1)
+        XCTAssertEqual(entry.orderId, "ord_entry")
+        XCTAssertEqual(entry.requestedSize, "0.02")
+        XCTAssertEqual(entry.filledSize, "0.004")
+        let childOperation = try await bracket.takeProfit!.submitted.operation
+        var foreign = try JSONSerialization.jsonObject(with: JSONEncoder().encode(childOperation)) as! [String: Any]
+        foreign["state"] = "failed"
+        foreign["input"] = #"{"exchangeObjectId":"foreign"}"#
+        let foreignEvent = try JSONSerialization.data(withJSONObject: ["type": "operation.updated", "operation": foreign])
+        await arca.ws.injectMessage(String(data: foreignEvent, encoding: .utf8)!)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let childTask = Task { try await bracket.takeProfit!.executionReceipt(timeoutSeconds: 1) }
+        await arca.ws.injectMessage(#"{"type":"order.updated","entityId":"obj_1","order":{"order":{"id":"ord_tp","status":"FILLED","filledSize":"0.01"}}}"#)
+        let child = try await childTask.value
+        XCTAssertEqual(child.orderId, "ord_tp")
+        XCTAssertEqual(child.requestedSize, "0.01")
+        XCTAssertEqual(child.filledSize, "0.01")
+        XCTAssertEqual(BracketMockProtocol.capturedBatchPosts.count, 1)
+    }
+
     func testOpenWithBracketIssuesOneCallWithEntryAndTriggers() async throws {
         let arca = makeArca()
 
@@ -190,13 +217,18 @@ final class ArcaExchangeBracketTests: XCTestCase {
 private final class BracketMockProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _posts: [[String: Any]] = []
+    private static var _beforeResponse: (@Sendable () async -> Void)?
+    static var beforeResponse: (@Sendable () async -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _beforeResponse }
+        set { lock.lock(); defer { lock.unlock() }; _beforeResponse = newValue }
+    }
 
     static var capturedBatchPosts: [[String: Any]] {
         lock.lock(); defer { lock.unlock() }; return _posts
     }
 
     static func reset() {
-        lock.lock(); _posts = []; lock.unlock()
+        lock.lock(); _posts = []; _beforeResponse = nil; lock.unlock()
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -238,9 +270,12 @@ private final class BracketMockProtocol: URLProtocol {
         let path = request.url?.path ?? ""
 
         if method == "POST", path.hasSuffix("/exchange/orders/batch") {
+            var input: String?
             if let data = Self.readBody(request),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 Self.lock.lock(); Self._posts.append(obj); Self.lock.unlock()
+                let original: [String: Any] = ["exchangeObjectId": "obj_1", "orders": obj["orders"] ?? []]
+                input = String(data: try! JSONSerialization.data(withJSONObject: original), encoding: .utf8)
             }
             // Bracket operation whose outcome lists one order summary per leg,
             // each carrying its own orderId — what lets each leg handle resolve
@@ -249,14 +284,18 @@ private final class BracketMockProtocol: URLProtocol {
                 "{\"orderId\":\"ord_entry\"}," +
                 "{\"orderId\":\"ord_tp\",\"tpsl\":\"tp\"}," +
                 "{\"orderId\":\"ord_sl\",\"tpsl\":\"sl\"}]}"
-            let op: [String: Any] = [
+            var op: [String: Any] = [
                 "id": "op_bracket", "realmId": "rlm_test", "path": "/op/bracket",
                 "type": "order", "state": "completed", "outcome": outcome,
                 "createdAt": "2026-01-01T00:00:00.000000Z", "updatedAt": "2026-01-01T00:00:00.000000Z",
             ]
+            op["input"] = input
             let env: [String: Any] = ["success": true, "data": ["operation": op]]
             let data = try! JSONSerialization.data(withJSONObject: env)
-            respond(String(data: data, encoding: .utf8)!)
+            let response = String(data: data, encoding: .utf8)!
+            if let callback = Self.beforeResponse {
+                Task { await callback(); self.respond(response) }
+            } else { respond(response) }
         } else {
             respond(#"{"success":true,"data":{}}"#)
         }

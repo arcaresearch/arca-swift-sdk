@@ -38,6 +38,8 @@ public struct SimPosition: Codable, Sendable {
     /// the leverage-implied margin after `updateIsolatedMargin`. `nil` for
     /// cross positions.
     public var isolatedMargin: String? = nil
+    /// Unsettled funding credit/debt; isolated funding becomes spendable on close.
+    public var unsettledFundingUsd: String? = nil
     public let liquidationPrice: String?
     public let unrealizedPnl: String?
     public let returnOnEquity: String?
@@ -92,6 +94,7 @@ extension SimPosition {
         self.marginUsed = try c.decode(String.self, forKey: .marginUsed)
         self.marginMode = try c.decodeIfPresent(MarginMode.self, forKey: .marginMode) ?? .cross
         self.isolatedMargin = try c.decodeIfPresent(String.self, forKey: .isolatedMargin)
+        self.unsettledFundingUsd = try c.decodeIfPresent(String.self, forKey: .unsettledFundingUsd)
         self.liquidationPrice = try c.decodeIfPresent(String.self, forKey: .liquidationPrice)
         self.unrealizedPnl = try c.decodeIfPresent(String.self, forKey: .unrealizedPnl)
         self.returnOnEquity = try c.decodeIfPresent(String.self, forKey: .returnOnEquity)
@@ -163,14 +166,18 @@ public struct SimOrder: Codable, Sendable {
 }
 
 public extension SimOrder {
+    /// Strict wire decimal parsing: Foundation otherwise accepts numeric prefixes.
+    var executionQuantity: Decimal? {
+        guard filledSize.range(of: #"^[0-9]+(?:\.[0-9]+)?$"#, options: .regularExpression) != nil else { return nil }
+        return Decimal(string: filledSize, locale: Locale(identifier: "en_US_POSIX"))
+    }
+
     /// `true` when the order reached a terminal status and has at least one fill.
     /// Covers both fully filled orders and IOC orders whose unfilled remainder was cancelled.
     var isTerminalWithFills: Bool {
         switch status {
-        case .filled:
-            return true
-        case .cancelled:
-            return filledSize != "0" && !filledSize.isEmpty
+        case .filled, .cancelled:
+            return executionQuantity.map { $0 > 0 } ?? false
         case .failed, .pending, .open, .partiallyFilled, .waitingForTrigger, .triggered:
             return false
         }
@@ -178,7 +185,7 @@ public extension SimOrder {
 
     /// `true` when the order was partially filled and the remainder cancelled (IOC semantics).
     var isPartiallyFilled: Bool {
-        status == .cancelled && filledSize != "0" && !filledSize.isEmpty && filledSize != size
+        status == .cancelled && (executionQuantity.map { $0 > 0 } ?? false) && filledSize != size
     }
 
     /// `true` when this is a trigger (TP/SL) order.
@@ -188,6 +195,8 @@ public extension SimOrder {
 }
 
 public struct SimFill: Codable, Sendable {
+    public var fillId: String? = nil
+    public var isOptimistic: Bool? = nil
     public let id: SimFillID
     public let orderId: SimOrderID
     /// Client order id (Hyperliquid cloid). A `normalTpsl` bracket child is not
@@ -251,6 +260,11 @@ public struct ExchangeIntent: Codable, Sendable {
 }
 
 public struct ExchangeState: Codable, Sendable {
+    /// Optional Arca mirror allocation. Absent until this capability is enabled.
+    public let tradingAllocation: TradingAllocationState?
+    public let financialInputId: String?
+    public let mirrorUnsettledFunding: String?
+    public let stateRefreshIntervalMs: Int?
     public let account: SimAccount
     public let marginSummary: SimMarginSummary
     public let crossMarginSummary: SimMarginSummary?
@@ -276,7 +290,10 @@ public struct ExchangeState: Codable, Sendable {
         positions: [SimPosition], openOrders: [SimOrder],
         feeRates: SimFeeRates?, pendingIntents: [ExchangeIntent]?,
         pricingMode: PricingMode? = nil,
-        collateralModel: CollateralModel? = nil
+        collateralModel: CollateralModel? = nil,
+        tradingAllocation: TradingAllocationState? = nil,
+        financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil,
+        stateRefreshIntervalMs: Int? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -285,6 +302,9 @@ public struct ExchangeState: Codable, Sendable {
         self.feeRates = feeRates; self.pendingIntents = pendingIntents
         self.pricingMode = pricingMode
         self.collateralModel = collateralModel
+        self.tradingAllocation = tradingAllocation
+        self.financialInputId = financialInputId; self.mirrorUnsettledFunding = mirrorUnsettledFunding
+        self.stateRefreshIntervalMs = stateRefreshIntervalMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -299,17 +319,22 @@ public struct ExchangeState: Codable, Sendable {
         pendingIntents = try container.decodeIfPresent([ExchangeIntent].self, forKey: .pendingIntents)
         pricingMode = try container.decodeIfPresent(PricingMode.self, forKey: .pricingMode)
         collateralModel = try container.decodeIfPresent(CollateralModel.self, forKey: .collateralModel)
+        tradingAllocation = try container.decodeIfPresent(TradingAllocationState.self, forKey: .tradingAllocation)
+        financialInputId = try container.decodeIfPresent(String.self, forKey: .financialInputId)
+        mirrorUnsettledFunding = try container.decodeIfPresent(String.self, forKey: .mirrorUnsettledFunding)
+        stateRefreshIntervalMs = try container.decodeIfPresent(Int.self, forKey: .stateRefreshIntervalMs)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
-        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel
+        case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding, stateRefreshIntervalMs
     }
 }
 
 public struct SimOrderWithFills: Codable, Sendable {
     public let order: SimOrder
     public let fills: [SimFill]
+    public var fillsComplete: Bool? = nil
 }
 
 // MARK: - Active Asset Data
@@ -421,8 +446,8 @@ public struct AvailabilityBreakdown: Codable, Sendable {
 /// This is a venue rule, not a market property, and the two venues answer it
 /// differently over *identical* market ids: the live `hl` venue reserves
 /// `max(initialMargin, rate * totalNotional)` behind the open positions before
-/// collateral can move to another dex, while the `hl-sim` paper venue has a
-/// single pool and no transfer to gate. Both publish `hl:<dexIndex>:<symbol>`,
+/// collateral can move to another dex. The `hl-sim` paper venue defaults to
+/// one pool and can opt in per account or realm. Both publish `hl:<dexIndex>:<symbol>`,
 /// so a client inspecting the market id cannot tell them apart.
 ///
 /// Absent means no reservation — read it that way rather than guessing.
@@ -651,15 +676,23 @@ public struct OrderBreakdown: Sendable {
 public struct UpdateLeverageResponse: Codable, Sendable {
     public let accountId: String
     public let market: String
-    public let leverage: Int
-    public let previousLeverage: Int
+    /// Nil when GLL's applied cap is unverified; never interpret nil as zero.
+    public let leverage: Int?
+    public let previousLeverage: Int?
+    public let mode: LeveragePreferenceMode?
+    public let intendedLeverage: Int?
+    public let revision: String?
+    public let projectionUnavailable: Bool?
+    public let commandId: String?
 }
 
 public struct LeverageSetting: Codable, Sendable {
     public let market: String
-    public let leverage: Int
-    /// Asset's configured margin mode.
+    public let leverage: Int?
     public let marginMode: MarginMode
+    public let mode: LeveragePreferenceMode?
+    public let intendedLeverage: Int?
+    public let inputId: String?
 }
 
 public struct UpdateIsolatedMarginResponse: Codable, Sendable {
@@ -1103,7 +1136,7 @@ extension SimPosition {
         return SimPosition(
             id: id, accountId: accountId, realmId: realmId, market: market,
             side: side, size: size, entryPrice: entryPrice, leverage: leverage,
-            marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin,
+            marginUsed: marginUsed, marginMode: marginMode, isolatedMargin: isolatedMargin, unsettledFundingUsd: unsettledFundingUsd,
             liquidationPrice: liquidationPrice,
             unrealizedPnl: "\(pnl)", returnOnEquity: "\(roe)",
             positionValue: "\(posVal)", error: nil,
@@ -1123,9 +1156,8 @@ extension SimMarginSummary {
         let totalPnl = positions.reduce(Decimal(0)) { sum, pos in
             sum + (Decimal(string: pos.unrealizedPnl ?? "0") ?? 0)
         }
-        let rawUsd = Decimal(string: totalRawUsd ?? "") ?? 0
         let eq: Decimal
-        if rawUsd > 0 {
+        if let rawUsd = totalRawUsd.flatMap({ Decimal(string: $0) }) {
             eq = rawUsd + totalPnl
         } else {
             eq = Decimal(string: equity) ?? 0
@@ -1146,10 +1178,10 @@ extension ExchangeState {
     /// Structural data (orders, account, margins, intents) is preserved unchanged.
     public func revalued(with mids: [String: String]) -> ExchangeState {
         // Server-authoritative pricing: trust server equity/uPnL verbatim.
-        if pricingMode == .server { return self }
+        if pricingMode == .server || tradingAllocation != nil { return self }
         let newPositions = positions.map { $0.revalued(with: mids) }
         let newSummary = marginSummary.revalued(positions: newPositions)
-        let newCross = crossMarginSummary?.revalued(positions: newPositions)
+        let newCross = crossMarginSummary?.revalued(positions: newPositions.filter { $0.marginMode == .cross })
         return ExchangeState(
             account: account, marginSummary: newSummary,
             crossMarginSummary: newCross,
@@ -1162,6 +1194,7 @@ extension ExchangeState {
             // non-native market to "no reservation" — which reports the LARGER
             // native budget as spendable on a HIP-3 dex that may not spend it.
             // Any field added to ExchangeState must be carried through here.
-            collateralModel: collateralModel)
+            collateralModel: collateralModel, tradingAllocation: tradingAllocation,
+            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding, stateRefreshIntervalMs: stateRefreshIntervalMs)
     }
 }

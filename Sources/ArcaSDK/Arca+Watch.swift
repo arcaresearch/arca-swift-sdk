@@ -653,11 +653,38 @@ extension Arca {
         let stateBox = SendableBox<ExchangeState?>(nil)
         let structuralBox = SendableBox<ExchangeState?>(nil)
         let midsBox = SendableBox<[String: String]>([:])
+        let observationEpoch = SendableBox<UInt64>(0)
+        let expiryTask = SendableBox<Task<Void, Never>?>(nil)
+        let armExpiry: @Sendable (ExchangeState, UInt64) -> Bool = { state, epoch in
+            expiryTask.update { $0?.cancel(); $0 = nil }
+            guard let delay = state.tradingAllocation?.remainingValidity() else { return true }
+            guard delay > 0 else {
+                structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
+                streamState.update { $0 = .reconnecting }
+                return false
+            }
+            expiryTask.update { task in
+                task = Task {
+                    do { try await Task.sleep(nanoseconds: UInt64(min(delay, 86_400) * 1_000_000_000)) }
+                    catch { return }
+                    observationEpoch.update { current in
+                        guard current == epoch, !Task.isCancelled else { return }
+                        current &+= 1
+                        structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
+                        streamState.update { $0 = .reconnecting }
+                    }
+                }
+            }
+            return true
+        }
+
 
         let initialState = try await getExchangeState(objectId: objectId)
-        structuralBox.update { $0 = initialState }
-        stateBox.update { $0 = initialState }
-        streamState.update { $0 = .connected }
+        if armExpiry(initialState, 0) {
+            structuralBox.update { $0 = initialState }
+            stateBox.update { $0 = initialState }
+            streamState.update { $0 = .connected }
+        }
 
         let statusStream = await ws.statusStream
         let statusTask = Task { [weak self] in
@@ -667,18 +694,24 @@ extension Arca {
                 } else if s == .connected && streamState.value == .reconnecting {
                     guard let self = self else { continue }
                     do {
+                        let epoch = observationEpoch.value
                         let refreshed = try await self.getExchangeState(objectId: objectId)
-                        structuralBox.update { $0 = refreshed }
-                        let currentMids = midsBox.value
-                        let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
-                        stateBox.update { $0 = revalued }
+                        observationEpoch.update { current in
+                            guard current == epoch else { return }
+                            current &+= 1
+                            guard armExpiry(refreshed, current) else { return }
+                            structuralBox.update { $0 = refreshed }
+                            let currentMids = midsBox.value
+                            let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
+                            stateBox.update { $0 = revalued }
+                            streamState.update { $0 = .connected }
+                        }
                     } catch {
                         self.log.warning("watch",
                                          "exchange state refresh on reconnect failed",
                                          error: error,
                                          metadata: ["objectId": objectId])
                     }
-                    streamState.update { $0 = .connected }
                 }
             }
         }
@@ -689,10 +722,22 @@ extension Arca {
         let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
 
+        let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ExchangeState.self, bufferingPolicy: .bufferingNewest(1)) { [weak self] continuation in
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == objectId || event.entityPath == objectPath else { continue }
+                    observationEpoch.update { $0 &+= 1 }
+                    let epoch = observationEpoch.value
+                    if event.exchangeStateUnavailable == true {
+                        expiryTask.update { $0?.cancel(); $0 = nil }
+                        observationEpoch.update { _ in
+                            structuralBox.update { $0 = nil }
+                            stateBox.update { $0 = nil }
+                            streamState.update { $0 = .reconnecting }
+                        }
+                        continue
+                    }
                     let structural: ExchangeState
                     if let state = event.exchangeState,
                        hasInlineStructuralExchangeState(state) {
@@ -709,11 +754,18 @@ extension Arca {
                             continue
                         }
                     }
-                    structuralBox.update { $0 = structural }
-                    let currentMids = midsBox.value
-                    let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
-                    stateBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        current &+= 1
+                        guard armExpiry(structural, current) else { return }
+                        structuralBox.update { $0 = structural }
+                        let currentMids = midsBox.value
+                        let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
+                        stateBox.update { $0 = revalued }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(revalued)
+                    }
                 }
                 continuation.finish()
             }
@@ -723,16 +775,41 @@ extension Arca {
                     midsBox.update { current in
                         for (key, value) in mids { current[key] = value }
                     }
-                    guard let base = structuralBox.value else { continue }
-                    let revalued = base.revalued(with: midsBox.value)
-                    stateBox.update { $0 = revalued }
-                    continuation.yield(revalued)
+                    observationEpoch.update { _ in
+                        guard let base = structuralBox.value else { return }
+                        let revalued = base.revalued(with: midsBox.value)
+                        stateBox.update { $0 = revalued }
+                        continuation.yield(revalued)
+                    }
                 }
             }
 
+            let refreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    let interval = min(60000, max(5000, structuralBox.value?.stateRefreshIntervalMs ?? 30000))
+                    do { try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000) } catch { break }
+                    guard (structuralBox.value?.stateRefreshIntervalMs ?? 0) > 0 else { continue }
+                    let epoch = observationEpoch.value
+                    guard let self, let fresh = try? await self.getExchangeState(objectId: objectId) else { continue }
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { current in
+                        guard current == epoch else { return }
+                        current &+= 1
+                        guard armExpiry(fresh, current) else { return }
+                        structuralBox.update { $0 = fresh }
+                        let marked = fresh.revalued(with: midsBox.value)
+                        stateBox.update { $0 = marked }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(marked)
+                    }
+                }
+            }
+            stopUpdates.update { $0 = {
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                continuation.finish()
+            } }
             continuation.onTermination = { _ in
-                exchangeTask.cancel()
-                midsTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }
 
@@ -741,7 +818,9 @@ extension Arca {
             exchangeState: stateBox,
             updates: updates,
             stop: { [ws] in
+                stopUpdates.value?()
                 statusTask.cancel()
+                expiryTask.update { $0?.cancel(); $0 = nil }
                 await ws.unwatchPath(objectPath)
                 await ws.releaseMids()
             }
@@ -812,7 +891,7 @@ extension Arca {
     ///
     /// - `fills` (`SendableBox<[Fill]>`) — the **already merged** activity-feed view.
     ///   Preview rows are replaced in place by the authoritative `fill.recorded`
-    ///   row using `correlationId` (orderId), so each fill appears exactly once.
+    ///   row using stable venue `fillId`, so each execution remains distinct.
     ///   **Use this for activity feeds, trade history tables, P&L cards, and any
     ///   UI that should show one row per fill.**
     /// - `updates` (`AsyncStream<(Fill, RealmEvent)>`) — the **raw transition
@@ -824,205 +903,119 @@ extension Arca {
     ///
     /// `id` differs between the two phases (preview's `id` is the venue's
     /// `simFillId`; recorded's `id` is the platform's position-ledger row), so
-    /// dedupe by `id` alone will not work — always merge by `correlationId`
-    /// (which is `orderId` server-side).
+    /// dedupe by stable `fillId` (falling back to row `id`), never by order ID.
     ///
     /// - Parameters:
     ///   - objectId: Exchange Arca object ID
     ///   - market: Optional market filter (canonical coin ID)
-    ///   - limit: Max fills for initial fetch (default 100)
+    ///   - limit: History page size (default 100; at most 1,000 pages per recovery)
     public func watchFills(
         objectId: String,
         market: String? = nil,
         limit: Int? = nil
     ) async throws -> FillWatchStream {
         await ws.ensureConnected()
-
+        let detail = try await getObjectDetail(objectId: objectId)
+        let path = detail.object.path
         let state = SendableBox<WatchStreamState>(.loading)
         let box = SendableBox<[Fill]>([])
-        let fillIdSet = SendableBox<Set<String>>(Set())
-        let previewCorrelations = SendableBox<[String: Task<Void, Never>]>([:])
-        let resolvedCorrelations = SendableBox<Set<String>>([])
-        let convergenceCallbacks = SendableBox<[UUID: @Sendable (String) -> Void]>([:])
-        let fetchInFlight = SendableBox<Bool>(false)
-
-        let detail = try await getObjectDetail(objectId: objectId)
-        let objectPath = detail.object.path
-
-        let matchesObject: @Sendable (RealmEvent) -> Bool = { event in
-            event.entityId == objectId
-                || event.entityPath == objectPath
+        let stopped = SendableBox(false)
+        let timers = SendableBox<[String: Task<Void, Never>]>([:])
+        let callbacks = SendableBox<[UUID: @Sendable (String) -> Void]>([:])
+        let revision = SendableBox(0)
+        let requests = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let transitions = AsyncStream<(Fill, RealmEvent)>.makeStream()
+        let requestRecovery: @Sendable () -> Void = {
+            guard !stopped.value else { return }
+            revision.update { $0 += 1; requests.continuation.yield($0) }
         }
-
-        let clearAllTimers: @Sendable () -> Void = {
-            previewCorrelations.update { map in
-                for (_, task) in map { task.cancel() }
-                map.removeAll()
+        // Register the raw listener before any watch or REST bootstrap can emit.
+        let events = await ws.events
+        let eventTask = Task {
+            for await event in events {
+                guard !stopped.value, event.entityPath == path || (event.entityPath == nil && event.entityId == objectId) else { continue }
+                let fill: Fill
+                if event.type == "fill.recorded", let recorded = event.recordedFill {
+                    fill = recorded
+                } else if event.type == "fill.previewed", let preview = event.executionFill {
+                    fill = Fill(id: preview.id.rawValue, operationId: nil, fillId: preview.id.rawValue,
+                        orderOperationId: nil, orderId: preview.orderId.rawValue, market: preview.market,
+                        side: preview.side, size: preview.size, price: preview.price, direction: nil,
+                        startPosition: nil, fee: preview.fee, exchangeFee: nil, platformFee: nil,
+                        builderFee: preview.builderFee, realizedPnl: preview.realizedPnl, resultingPosition: nil,
+                        isLiquidation: preview.isLiquidation, createdAt: preview.createdAt, isTrigger: nil,
+                        tpsl: nil, triggerPx: nil, liquidationKind: nil)
+                } else { continue }
+                guard market == nil || fill.market == market else { continue }
+                let key = fill.fillId ?? fill.id
+                box.update { $0 = mergeWatchedFills($0, [fill]) }
+                if fill.operationId?.isEmpty == false {
+                    timers.update { $0.removeValue(forKey: key)?.cancel() }
+                } else if !box.value.contains(where: { ($0.fillId ?? $0.id) == key && $0.operationId?.isEmpty == false }) {
+                    let correlation = event.correlationId ?? fill.orderId ?? key
+                    timers.update { map in
+                        guard map[key] == nil else { return }
+                        map[key] = Task {
+                            try? await Task.sleep(nanoseconds: FillWatchStream.convergenceTimeoutNs)
+                            guard !Task.isCancelled, !stopped.value else { return }
+                            for callback in callbacks.value.values { callback(correlation) }
+                        }
+                    }
+                }
+                transitions.continuation.yield((fill, event))
             }
         }
-
-        let fetchFills: @Sendable () async -> Void = { [weak self] in
-            guard let self else { return }
-            guard !fetchInFlight.value else { return }
-            fetchInFlight.update { $0 = true }
-            defer { fetchInFlight.update { $0 = false } }
-            let resp: FillListResponse
-            do {
-                resp = try await self.listFills(objectId: objectId, market: market, limit: limit)
-            } catch {
-                self.log.warning("watch",
-                                 "fills snapshot refetch failed",
-                                 error: error,
-                                 metadata: [
-                                     "objectId": objectId,
-                                     "market": market ?? "",
-                                 ])
-                return
-            }
-            box.update { $0 = resp.fills }
-            fillIdSet.update { ids in
-                ids.removeAll()
-                for f in resp.fills { ids.insert(f.id) }
-            }
-            clearAllTimers()
-            resolvedCorrelations.update { $0.removeAll() }
-            state.update { $0 = .connected }
-        }
-
-        let statusStream = await ws.statusStream
+        let statuses = await ws.statusStream
         let statusTask = Task {
-            for await s in statusStream {
-                if s == .disconnected && state.value != .loading {
-                    state.update { $0 = .reconnecting }
-                } else if s == .connected && !box.value.isEmpty {
-                    await fetchFills()
-                }
+            for await status in statuses where status == .disconnected {
+                if !stopped.value && state.value != .loading { state.update { $0 = .reconnecting } }
             }
         }
-
-        let gapId = await ws.onGap { _ in
-            Task { await fetchFills() }
-        }
-
-        await ws.watchPath(objectPath)
-
-        let previewStream = await ws.fillEvents()
-        let recordedStream = await ws.fillRecordedEvents()
-
-        let updates = AsyncStream<(Fill, RealmEvent)> { continuation in
-            let previewTask = Task {
-                for await (simFill, event) in previewStream {
-                    guard matchesObject(event) else { continue }
-                    let orderId = simFill.orderId.rawValue
-                    let correlationKey = event.correlationId ?? orderId
-
-                    if previewCorrelations.value[correlationKey] != nil || resolvedCorrelations.value.contains(correlationKey) {
-                        continue
+        let gap = await ws.onGap { _ in requestRecovery() }
+        let auth = await ws.onAuthenticated { requestRecovery() }
+        await ws.watchPath(path)
+        let worker = Task { [weak self] in
+            var completed = 0
+            for await requested in requests.stream {
+                guard let self, !Task.isCancelled, !stopped.value else { break }
+                guard requested > completed else { continue }
+                var covered = requested
+                for attempt in 0..<3 {
+                    var acknowledged = false
+                    do { try await fillWatchReady(self.ws, path: path); acknowledged = true }
+                    catch { if Task.isCancelled { return } }
+                    covered = revision.value
+                    do {
+                        let snapshot = try await self.fillWatchSnapshot(objectId: objectId, market: market, limit: limit)
+                        try Task.checkCancellation()
+                        guard !stopped.value else { return }
+                        box.update { $0 = mergeWatchedFills($0, snapshot) }
+                        let recorded = Set(box.value.filter { $0.operationId?.isEmpty == false }.map { $0.fillId ?? $0.id })
+                        timers.update { map in for key in recorded { map.removeValue(forKey: key)?.cancel() } }
+                        if acknowledged { state.update { $0 = .connected }; break }
+                    } catch {
+                        if Task.isCancelled { return }
+                        self.log.warning("watch", "fills recovery snapshot failed", error: error, metadata: ["objectId": objectId])
                     }
-
-                    let preview = Fill(
-                        id: simFill.id.rawValue,
-                        operationId: nil,
-                        fillId: nil,
-                        orderOperationId: nil,
-                        orderId: orderId,
-                        market: simFill.market,
-                        side: simFill.side,
-                        size: simFill.size,
-                        price: simFill.price,
-                        direction: nil,
-                        startPosition: nil,
-                        fee: simFill.fee,
-                        exchangeFee: nil,
-                        platformFee: nil,
-                        builderFee: simFill.builderFee,
-                        realizedPnl: simFill.realizedPnl,
-                        resultingPosition: nil,
-                        isLiquidation: simFill.isLiquidation,
-                        createdAt: simFill.createdAt,
-                        isTrigger: nil,
-                        tpsl: nil,
-                        triggerPx: nil,
-                        liquidationKind: nil
-                    )
-
-                    let timerTask = Task {
-                        try? await Task.sleep(nanoseconds: FillWatchStream.convergenceTimeoutNs)
-                        guard !Task.isCancelled else { return }
-                        let stillPending = previewCorrelations.value[correlationKey] != nil
-                        guard stillPending else { return }
-                        let cbs = convergenceCallbacks.value
-                        for (_, cb) in cbs { cb(correlationKey) }
-                    }
-
-                    previewCorrelations.update { $0[correlationKey] = timerTask }
-                    box.update { $0.insert(preview, at: 0) }
-                    continuation.yield((preview, event))
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 100_000_000) }
+                    else { state.update { $0 = .reconnecting } }
                 }
-            }
-            let recordedTask = Task {
-                for await (fill, event) in recordedStream {
-                    guard matchesObject(event) else { continue }
-                    let correlationKey = event.correlationId ?? fill.orderId
-
-                    var replaced = false
-                    if let key = correlationKey {
-                        let hadPreview = previewCorrelations.value[key] != nil
-                        if hadPreview {
-                            box.update { fills in
-                                if let idx = fills.firstIndex(where: { ($0.orderId == key || $0.orderId == fill.orderId) && $0.operationId == nil }) {
-                                    fills[idx] = fill
-                                    replaced = true
-                                }
-                            }
-                        } else {
-                            box.update { fills in
-                                if let idx = fills.firstIndex(where: { $0.orderId == key && $0.operationId == nil }) {
-                                    fills[idx] = fill
-                                    replaced = true
-                                }
-                            }
-                        }
-
-                        previewCorrelations.update { map in
-                            map[key]?.cancel()
-                            map.removeValue(forKey: key)
-                        }
-                        resolvedCorrelations.update { $0.insert(key) }
-                    }
-
-                    if !replaced {
-                        guard !fillIdSet.value.contains(fill.id) else { continue }
-                        box.update { $0.insert(fill, at: 0) }
-                    }
-
-                    fillIdSet.update { $0.insert(fill.id) }
-                    continuation.yield((fill, event))
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in
-                previewTask.cancel()
-                recordedTask.cancel()
-                clearAllTimers()
+                completed = covered
             }
         }
-
-        await fetchFills()
-
-        let stream = FillWatchStream(
-            state: state,
-            fills: box,
-            updates: updates,
-            stop: { [ws] in
-                statusTask.cancel()
-                clearAllTimers()
-                await ws.removeGapHandler(gapId)
-                await ws.unwatchPath(objectPath)
-            },
-            convergenceCallbacks: convergenceCallbacks
-        )
-        return stream
+        let stop: @Sendable () async -> Void = { [ws] in
+            stopped.update { $0 = true }
+            requests.continuation.finish(); worker.cancel(); eventTask.cancel(); statusTask.cancel()
+            transitions.continuation.finish()
+            timers.update { map in for timer in map.values { timer.cancel() }; map.removeAll() }
+            await ws.removeGapHandler(gap)
+            await ws.removeAuthenticatedHandler(auth)
+            await ws.unwatchPath(path)
+        }
+        requestRecovery()
+        await state.wait(until: { $0 != .loading })
+        if Task.isCancelled { await stop(); throw CancellationError() }
+        return FillWatchStream(state: state, fills: box, updates: transitions.stream, stop: stop, convergenceCallbacks: callbacks)
     }
 
     /// Subscribe to raw real-time candle events (no history blending).
