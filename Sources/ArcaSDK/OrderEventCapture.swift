@@ -27,6 +27,15 @@ actor OrderEventCapture {
             return response
         } catch { await stop(); throw error }
     }
+    /// Adopt an order someone else submitted, reading it rather than placing it.
+    ///
+    /// Ordering is the same as ``submit(objectId:action:)`` and that is the
+    /// point: observers are installed before the read, so an execution push
+    /// that lands while the read is in flight is replayed to the handle
+    /// instead of being missed.
+    func adopt(objectId: String, read: @Sendable () async throws -> OrderOperationResponse) async throws -> OrderOperationResponse {
+        try await submit(objectId: objectId, action: read)
+    }
     func start() async {
         if setup == nil { setup = Task { await install() } }
         await setup?.value

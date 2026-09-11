@@ -281,6 +281,85 @@ extension Arca {
         )
     }
 
+    /// Attach to an order this client did not place.
+    ///
+    /// Every other factory here is a mutation: it submits an order and hands
+    /// back a handle to it. An integration whose orders are submitted by its
+    /// own backend holds an operation id and nothing else, and calling
+    /// `placeOrder` again to obtain a handle would be a second submission, not
+    /// a read. This performs one `getOperation` read and returns a handle bound
+    /// to that existing order, so ``OrderHandle/accounted(timeoutSeconds:)``,
+    /// ``OrderHandle/executionReceipt(timeoutSeconds:)``, `filled`, `fills` and
+    /// `onFill` work on it exactly as they do on a placed order.
+    ///
+    /// Attaching is read-only: it places nothing, cancels nothing and resizes
+    /// nothing. `cancel()` and `resize()` remain on the returned handle and
+    /// are, as always, explicit mutations the caller opts into.
+    ///
+    /// An order that already completed its accounting resolves immediately; one
+    /// still in flight converges on the same pushes a placed handle sees,
+    /// because execution observers are installed before the read.
+    ///
+    /// ```swift
+    /// let order = try await arca.orderHandle(objectId: accountId, operationId: opId)
+    /// _ = try await order.accounted()
+    /// let state = try await arca.getExchangeState(objectId: accountId)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - objectId: Exchange Arca object ID the order belongs to.
+    ///   - operationId: The order operation's ID.
+    /// - Throws: `ORDER_IDENTITY_MISMATCH` when the operation is not an order,
+    ///   or records a different exchange account — an id from another account
+    ///   must never resolve into a handle on this one.
+    public func orderHandle(objectId: String, operationId: String) async throws -> OrderHandle {
+        let capture = OrderEventCapture(ws: ws)
+        let response = try await capture.adopt(objectId: objectId) { [self] in
+            try await readOrderOperation(objectId: objectId, operationId: operationId)
+        }
+        // Built directly rather than through `operationHandle`, which registers
+        // an optimistic submission with auto-tracking. This operation already
+        // exists; announcing it as newly submitted would be a lie to every
+        // tracked operation stream.
+        let inner = OperationHandle<OrderOperationResponse>(
+            submit: { response },
+            waitForSettlement: { [self] id in try await waitForSettlement(id) }
+        )
+        return OrderHandle(
+            inner: inner,
+            objectId: objectId,
+            placementPath: response.operation.path,
+            deps: makeOrderHandleDeps(capture: capture)
+        )
+    }
+
+    /// Read an existing order operation and refuse anything that is not this
+    /// account's order.
+    private func readOrderOperation(objectId: String, operationId: String) async throws -> OrderOperationResponse {
+        let operation = try await getOperation(operationId: operationId).operation
+        guard operation.type == .order else {
+            throw ArcaError.unknown(code: "ORDER_IDENTITY_MISMATCH",
+                                    message: "Operation \(operationId) is a \(operation.type.rawValue) operation, not an order",
+                                    errorId: nil)
+        }
+        if let account = Self.recordedExchangeObjectId(operation.input), account != objectId {
+            throw ArcaError.unknown(code: "ORDER_IDENTITY_MISMATCH",
+                                    message: "Operation \(operationId) belongs to a different exchange account",
+                                    errorId: nil)
+        }
+        return OrderOperationResponse(operation: operation)
+    }
+
+    /// The exchange account an order operation recorded in its immutable input.
+    /// Absent input is not a mismatch — older operations may not carry it — but
+    /// a present and different account is.
+    private static func recordedExchangeObjectId(_ input: String?) -> String? {
+        guard let input, !input.isEmpty, let data = input.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = parsed["exchangeObjectId"] as? String, !account.isEmpty else { return nil }
+        return account
+    }
+
     /// List orders for an exchange Arca object.
     public func listOrders(objectId: String, status: String? = nil) async throws -> [SimOrder] {
         var query: [String: String] = [:]
