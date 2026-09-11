@@ -267,7 +267,10 @@ extension Arca {
             executionEvents: { await capture.events() },
             getExecutionOperation: { [self] id in try await self.getOperation(operationId: id).operation },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
+            recordedFillEvents: { [self] in await self.ws.fillRecordedEvents() },
+            holdAccountWatch: { [self] in await self.holdRootWatch() },
+            exchangeStateChanged: { [self] objectId in self.refreshExchangeStateWatches(objectId: objectId) }
         )
 
         return OrderHandle(
@@ -936,6 +939,16 @@ extension Arca {
         return stream
     }
 
+    /// Hold the realm-root path watch until the returned release runs. Used
+    /// by ``OrderHandle/accounted(timeoutSeconds:)`` so `fill.recorded` frames
+    /// reach this socket even when the app holds no other watch covering the
+    /// account. Ref-counted with every other owner of `/`.
+    private func holdRootWatch() async -> @Sendable () async -> Void {
+        await ws.watchPath("/")
+        let ws = self.ws
+        return { await ws.unwatchPath("/") }
+    }
+
     private func makeOrderHandleDeps(capture: OrderEventCapture? = nil,
         projection: @escaping @Sendable (Operation) -> Operation = { $0 }) -> OrderHandleDeps {
         OrderHandleDeps(
@@ -966,7 +979,10 @@ extension Arca {
             },
             getExecutionOperation: { [self] id in projection(try await self.getOperation(operationId: id).operation) },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") }
+            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
+            recordedFillEvents: { [self] in await self.ws.fillRecordedEvents() },
+            holdAccountWatch: { [self] in await self.holdRootWatch() },
+            exchangeStateChanged: { [self] objectId in self.refreshExchangeStateWatches(objectId: objectId) }
         )
     }
 

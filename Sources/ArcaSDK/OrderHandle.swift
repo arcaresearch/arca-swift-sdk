@@ -14,7 +14,24 @@ public struct OrderHandleDeps: Sendable {
     var getExecutionOperation: (@Sendable (String) async throws -> Operation)? = nil
     var executionGaps: (@Sendable () async -> AsyncStream<Void>)? = nil
     var recoverExecutionReady: (@Sendable () async throws -> Void)? = nil
+    /// Platform-recorded fills (`fill.recorded`), the accounting-time event.
+    /// Optional so partial bundles keep working; without it
+    /// ``OrderHandle/accounted(timeoutSeconds:)`` converges through its
+    /// bounded reads alone.
+    var recordedFillEvents: (@Sendable () async -> AsyncStream<(Fill, RealmEvent)>)? = nil
+    /// Keep the realm root watched until the returned release runs, so
+    /// `fill.recorded` frames for this order reach the socket even when the
+    /// application holds no other watch covering the account.
+    var holdAccountWatch: (@Sendable () async -> @Sendable () async -> Void)? = nil
+    /// Tell any live exchange-state watch for the object that its account
+    /// changed, so it re-reads. Called when accounting completion was learned
+    /// through a REST read — the moment a lost account push is most likely.
+    var exchangeStateChanged: (@Sendable (String) -> Void)? = nil
 }
+
+/// Bounded fallback-read schedule for ``OrderHandle/accounted(timeoutSeconds:)``.
+private let accountedReadInitialSeconds: TimeInterval = 0.5
+private let accountedReadMaxSeconds: TimeInterval = 8
 
 /// Handle for exchange order lifecycle.
 ///
@@ -172,6 +189,167 @@ public final class OrderHandle: @unchecked Sendable {
             while let candidate = try await group.next() { if let candidate { return candidate } }
             throw ArcaError.unknown(code: "STREAM_ENDED", message: "Order execution evidence unavailable", errorId: nil)
         }
+    }
+
+    /// Wait until the account reflects this order's execution.
+    ///
+    /// ``executionReceipt(timeoutSeconds:)`` proves terminal execution at the
+    /// venue; the ledger commit that updates the account's positions and
+    /// balances happens afterwards, and an exchange-state read taken in
+    /// between returns the pre-accounting snapshot. This resolves once every
+    /// executed quantity is recorded — the platform's `fillsComplete` — so a
+    /// `getExchangeState` / `watchExchangeState` observation taken after it
+    /// includes the execution. A live `watchExchangeState` for the account is
+    /// refreshed when completion had to be learned through a read.
+    ///
+    /// Push-first: each `fill.recorded` for this order triggers one order
+    /// read, as do delivery gaps and reconnects. A lost push is covered by a
+    /// bounded backoff read (500ms doubling to 8s) until the deadline. On
+    /// venues whose order read carries no `fillsComplete`, completion is the
+    /// recorded fills for the order covering its executed size exactly.
+    ///
+    /// Resolves for a zero-fill terminal order too (nothing to account).
+    /// Throws the placement failure, or `TIMEOUT` when accounting has not
+    /// completed within `timeoutSeconds`.
+    ///
+    /// ```swift
+    /// let receipt = try await order.executionReceipt()   // show the receipt
+    /// let detail = try await order.accounted()           // then trust the account
+    /// let state = try await arca.getExchangeState(objectId: id)
+    /// ```
+    public func accounted(timeoutSeconds: TimeInterval = 30) async throws -> SimOrderWithFills {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        // Register recorded-fill delivery and hold the root watch BEFORE the
+        // receipt, so a fill recorded between the two cannot be missed.
+        let recorded = await deps.recordedFillEvents?()
+        let release = await deps.holdAccountWatch?()
+        do {
+            let detail = try await accountedDetail(deadline: deadline, recorded: recorded)
+            await release?()
+            return detail
+        } catch {
+            await release?()
+            throw error
+        }
+    }
+
+    private func accountedDetail(deadline: Date, recorded: AsyncStream<(Fill, RealmEvent)>?) async throws -> SimOrderWithFills {
+        let receipt = try await executionReceipt(timeoutSeconds: max(0, deadline.timeIntervalSinceNow))
+        let orderId = receipt.orderId
+        let operationId = receipt.operationId
+        if let cached = executionDetail.value, cached.order.id.rawValue == orderId, cached.fillsComplete == true {
+            return cached
+        }
+        let gaps = await deps.executionGaps?()
+        let (requests, request) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        request.yield(())
+        let detail: SimOrderWithFills = try await withThrowingTaskGroup(of: SimOrderWithFills?.self) { group in
+            defer { group.cancelAll(); request.finish() }
+            if let recorded {
+                group.addTask {
+                    for await (fill, _) in recorded {
+                        if Self.recordedFillMatches(fill, orderId: orderId, operationId: operationId) { request.yield(()) }
+                    }
+                    return nil
+                }
+            }
+            if let gaps {
+                group.addTask {
+                    for await _ in gaps { request.yield(()) }
+                    return nil
+                }
+            }
+            group.addTask {
+                // The fallback for a lost push: exchange.updated / fill.recorded
+                // have no durable log, and a deferred enrichment is dropped
+                // without a deliverySeq, so a quiet socket proves nothing.
+                var attempt = 0
+                while !Task.isCancelled {
+                    let delay = min(accountedReadMaxSeconds, accountedReadInitialSeconds * pow(2.0, Double(attempt)))
+                    attempt += 1
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    request.yield(())
+                }
+                return nil
+            }
+            group.addTask {
+                for await _ in requests {
+                    try Task.checkCancellation()
+                    do {
+                        let current = try await self.deps.getOrder(self.objectId, orderId)
+                        guard current.order.id.rawValue == orderId else { continue }
+                        if try await self.isAccounted(current, orderId: orderId, operationId: operationId) {
+                            return current
+                        }
+                    } catch let error as ArcaError {
+                        if case .operationFailed = error { throw error }
+                        // Transient read failure: the next trigger re-reads.
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // Transient read failure: the next trigger re-reads.
+                    }
+                }
+                return nil
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000))
+                throw ArcaError.unknown(code: "TIMEOUT", message: "Order accounting timed out", errorId: nil)
+            }
+            while let candidate = try await group.next() { if let candidate { return candidate } }
+            throw ArcaError.unknown(code: "STREAM_ENDED", message: "Order accounting evidence unavailable", errorId: nil)
+        }
+        // Completion was established by a read. The account push for this
+        // commit travels a different path (the mirror relay) from the
+        // `fill.recorded` push that may have triggered the read, so seeing one
+        // proves nothing about the other: always nudge the account watch. Its
+        // re-read coalesces with any push-triggered read already in flight.
+        deps.exchangeStateChanged?(objectId)
+        return detail
+    }
+
+    /// Completion check with the venue-read fallback: when the order read
+    /// does not carry the platform's accounting view, the platform-recorded
+    /// fills for the order must cover its executed size exactly (a zero-fill
+    /// terminal order is trivially covered).
+    private func isAccounted(_ detail: SimOrderWithFills, orderId: String, operationId: String) async throws -> Bool {
+        if let complete = detail.fillsComplete { return complete }
+        switch detail.order.status {
+        case .filled, .cancelled, .failed: break
+        default: return false
+        }
+        let executed = detail.order.filledSize
+        if Self.recordedSizesCover([], executed) { return true }
+        let recorded = try await deps.listFills(objectId)
+        let sizes = recorded.fills
+            .filter { $0.operationId?.isEmpty == false && ($0.orderId == orderId || $0.orderOperationId == operationId) }
+            .compactMap { $0.size }
+        return !sizes.isEmpty && Self.recordedSizesCover(sizes, executed)
+    }
+
+    /// Whether a platform-recorded fill belongs to this order. Recorded fills
+    /// carry the venue order id and the placement operation id; a
+    /// bracket child that was still pending when it filled is matched by the
+    /// latter.
+    static func recordedFillMatches(_ fill: Fill, orderId: String, operationId: String) -> Bool {
+        if let id = fill.orderId, !id.isEmpty, id == orderId { return true }
+        if let op = fill.orderOperationId, !op.isEmpty, op == operationId { return true }
+        return false
+    }
+
+    /// Exact decimal comparison: the recorded sizes must sum to the executed
+    /// size. Sizes cross the wire as decimal strings and never round-trip
+    /// through a binary float here — `0.1 + 0.2` must cover `0.3`.
+    static func recordedSizesCover(_ sizes: [String], _ executed: String) -> Bool {
+        guard let expected = OrderExecutionReceipt.decimal(executed) else { return false }
+        var total = Decimal.zero
+        for raw in sizes {
+            guard var size = OrderExecutionReceipt.decimal(raw) else { return false }
+            var next = Decimal.zero
+            guard NSDecimalAdd(&next, &total, &size, .plain) == .noError else { return false }
+            total = next
+        }
+        return total == expected
     }
 
     /// Wait for the order to be fully filled.

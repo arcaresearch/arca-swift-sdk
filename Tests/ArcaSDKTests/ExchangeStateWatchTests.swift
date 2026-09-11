@@ -129,6 +129,84 @@ final class ExchangeStateWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    /// `exchange.updated` has no durable log and a deferred enrichment is
+    /// dropped without a deliverySeq, so after an invalidation the next push
+    /// is not guaranteed. The bounded recovery read is the only way back.
+    func testInvalidatedObservationRecoversThroughBoundedReadWhenNoPushArrives() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        let cleared = expectation(description: "observation cleared")
+        let observer = stream.exchangeState.onChange { state in if state == nil { cleared.fulfill() } }
+        await arca.ws.injectMessage(#"{"type":"exchange.updated","entityId":"obj_1","exchangeStateUnavailable":true}"#)
+        await fulfillment(of: [cleared], timeout: 1)
+        stream.exchangeState.removeObserver(observer)
+        // Not immediate: the first attempt waits ~1s.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        XCTAssertEqual(stream.state.value, .reconnecting)
+
+        let deadline = Date().addingTimeInterval(3)
+        while stream.exchangeState.value == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(stream.exchangeState.value, "recovery read must restore the observation")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 2)
+        // A restored state cancels the schedule: no further reads.
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 2)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testServerResyncMarkerTriggersReRead() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        let reapplied = expectation(description: "re-read applied after the resync marker")
+        reapplied.assertForOverFulfill = false
+        let observer = stream.exchangeState.onChange { state in if state != nil { reapplied.fulfill() } }
+        await arca.ws.injectMessage(#"{"type":"stream.resync"}"#)
+        await fulfillment(of: [reapplied], timeout: 2)
+        stream.exchangeState.removeObserver(observer)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 2)
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
+    func testRefreshHookAndRegistryReReadUntilStop() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1)
+        XCTAssertEqual(arca.exchangeStateRefreshers.value["obj_1"]?.count, 1)
+
+        stream.refresh()
+        var deadline = Date().addingTimeInterval(2)
+        while ExchangeStateWatchProtocol.stateRequestCount < 2 && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 2)
+
+        // The client-level nudge an accounted order uses.
+        arca.refreshExchangeStateWatches(objectId: "obj_1")
+        deadline = Date().addingTimeInterval(2)
+        while ExchangeStateWatchProtocol.stateRequestCount < 3 && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 3)
+        arca.refreshExchangeStateWatches(objectId: "obj_other")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 3)
+
+        await stream.stop()
+        XCTAssertTrue(arca.exchangeStateRefreshers.value.isEmpty, "stop must unregister the hook")
+        arca.refreshExchangeStateWatches(objectId: "obj_1")
+        stream.refresh()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 3, "a stopped stream never reads")
+        await arca.ws.disconnect()
+    }
+
     func testQuietPaperRefreshLearnsPolicyAndStopsAtTeardown() async throws {
         ExchangeStateWatchProtocol.refreshScenario = .quiet
         let arca = makeArca()

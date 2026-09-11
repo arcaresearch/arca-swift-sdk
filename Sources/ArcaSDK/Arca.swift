@@ -60,6 +60,12 @@ public final class Arca: Sendable {
     let autoTracking = SendableBox(AutoTrackingState())
     let metaCache = SendableBox(MetaCacheState())
 
+    /// Live `watchExchangeState` re-read hooks by object id, so an order handle
+    /// that learns its accounting completed through a read (the moment the
+    /// account push for that commit is most likely to have been lost) can ask
+    /// the account's watch to re-read. Streams unregister themselves on stop.
+    let exchangeStateRefreshers = SendableBox<[String: [UUID: @Sendable () -> Void]]>([:])
+
     private let realmId: String
 
     /// Initialize the SDK from a scoped JWT token, with optional automatic refresh.

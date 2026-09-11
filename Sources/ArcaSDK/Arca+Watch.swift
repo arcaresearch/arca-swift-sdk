@@ -638,6 +638,15 @@ extension Arca {
     /// event matching the object. Reconnections are handled automatically.
     /// Call `stop()` when done.
     ///
+    /// Loss handling: a delivery gap or server resync marker, a reconnect, and
+    /// an invalidated observation (`exchangeStateUnavailable` / an expired
+    /// `validUntil`) each trigger a bounded REST re-read guarded by the
+    /// observation epoch, so an older read can never overwrite a newer push.
+    /// An invalidated observation is re-read on a backoff (1s doubling to a
+    /// 30s ceiling) until a state is restored: `exchange.updated` has no
+    /// durable log and the server drops an enrichment that exceeds its budget
+    /// without a `deliverySeq`, so the next push is not guaranteed to arrive.
+    ///
     /// The `updates` stream is buffered to the latest snapshot only: slow
     /// consumers will drop intermediate revaluations rather than accumulating
     /// them in memory.
@@ -655,14 +664,29 @@ extension Arca {
         let midsBox = SendableBox<[String: String]>([:])
         let observationEpoch = SendableBox<UInt64>(0)
         let expiryTask = SendableBox<Task<Void, Never>?>(nil)
+        let recoveryTask = SendableBox<Task<Void, Never>?>(nil)
+        let recoveryAttempt = SendableBox<Int>(0)
+        let stopped = SendableBox<Bool>(false)
+        let continuationBox = SendableBox<AsyncStream<ExchangeState>.Continuation?>(nil)
+        // scheduleRecovery and refetch refer to each other; the box breaks the cycle.
+        let scheduleRecoveryBox = SendableBox<(@Sendable () -> Void)?>(nil)
+
+        let clearRecovery: @Sendable () -> Void = {
+            recoveryTask.update { $0?.cancel(); $0 = nil }
+            recoveryAttempt.update { $0 = 0 }
+        }
+        /// Drop the current observation and arm the fallback re-read.
+        /// Callers hold the epoch lock; nothing here re-enters it.
+        let invalidate: @Sendable () -> Void = {
+            expiryTask.update { $0?.cancel(); $0 = nil }
+            structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
+            streamState.update { $0 = .reconnecting }
+            scheduleRecoveryBox.value?()
+        }
         let armExpiry: @Sendable (ExchangeState, UInt64) -> Bool = { state, epoch in
             expiryTask.update { $0?.cancel(); $0 = nil }
             guard let delay = state.tradingAllocation?.remainingValidity() else { return true }
-            guard delay > 0 else {
-                structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
-                streamState.update { $0 = .reconnecting }
-                return false
-            }
+            guard delay > 0 else { invalidate(); return false }
             expiryTask.update { task in
                 task = Task {
                     do { try await Task.sleep(nanoseconds: UInt64(min(delay, 86_400) * 1_000_000_000)) }
@@ -670,14 +694,77 @@ extension Arca {
                     observationEpoch.update { current in
                         guard current == epoch, !Task.isCancelled else { return }
                         current &+= 1
-                        structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
-                        streamState.update { $0 = .reconnecting }
+                        invalidate()
                     }
                 }
             }
             return true
         }
-
+        /// Apply a structural state observed at `epoch`, unless a newer
+        /// observation has landed since. The single write path for pushes,
+        /// re-reads and the periodic refresh.
+        let apply: @Sendable (ExchangeState, UInt64) -> Void = { structural, epoch in
+            observationEpoch.update { current in
+                guard current == epoch else { return }
+                current &+= 1
+                guard armExpiry(structural, current) else { return }
+                clearRecovery()
+                structuralBox.update { $0 = structural }
+                let currentMids = midsBox.value
+                let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
+                stateBox.update { $0 = revalued }
+                streamState.update { $0 = .connected }
+                continuationBox.value?.yield(revalued)
+            }
+        }
+        /// Coalesced REST re-read. A request while one is in flight runs once
+        /// more after it lands — the in-flight read belongs to an older epoch
+        /// and would otherwise be the only read of that burst.
+        struct RefetchGate { var inFlight = false; var queued = false }
+        let gate = SendableBox(RefetchGate())
+        let refetch: @Sendable () async -> Void = { [weak self] in
+            var run = false
+            gate.update { g in
+                if g.inFlight { g.queued = true } else { g.inFlight = true; run = true }
+            }
+            guard run else { return }
+            while true {
+                if stopped.value { break }
+                let epoch = observationEpoch.value
+                if let self {
+                    do {
+                        let fresh = try await self.getExchangeState(objectId: objectId)
+                        if !stopped.value { apply(fresh, epoch) }
+                    } catch {
+                        self.log.warning("watch", "exchange state refetch failed",
+                                         error: error, metadata: ["objectId": objectId])
+                    }
+                }
+                var again = false
+                gate.update { g in
+                    if g.queued && !stopped.value { g.queued = false; again = true } else { g.inFlight = false }
+                }
+                if !again { break }
+            }
+        }
+        let scheduleRecovery: @Sendable () -> Void = {
+            guard !stopped.value else { return }
+            recoveryTask.update { $0?.cancel(); $0 = nil }
+            let attempt = recoveryAttempt.value
+            let base = min(30.0, pow(2.0, Double(attempt)))
+            let delay = max(0, base + base * 0.2 * Double.random(in: -1...1))
+            recoveryAttempt.update { $0 = min($0 + 1, 10) }
+            recoveryTask.update { task in
+                task = Task {
+                    do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
+                    guard !Task.isCancelled, !stopped.value, structuralBox.value == nil else { return }
+                    await refetch()
+                    guard !Task.isCancelled, !stopped.value, structuralBox.value == nil else { return }
+                    scheduleRecoveryBox.value?()
+                }
+            }
+        }
+        scheduleRecoveryBox.update { $0 = scheduleRecovery }
 
         let initialState = try await getExchangeState(objectId: objectId)
         if armExpiry(initialState, 0) {
@@ -687,34 +774,20 @@ extension Arca {
         }
 
         let statusStream = await ws.statusStream
-        let statusTask = Task { [weak self] in
+        let statusTask = Task {
             for await s in statusStream {
                 if s == .disconnected && streamState.value != .loading {
                     streamState.update { $0 = .reconnecting }
                 } else if s == .connected && streamState.value == .reconnecting {
-                    guard let self = self else { continue }
-                    do {
-                        let epoch = observationEpoch.value
-                        let refreshed = try await self.getExchangeState(objectId: objectId)
-                        observationEpoch.update { current in
-                            guard current == epoch else { return }
-                            current &+= 1
-                            guard armExpiry(refreshed, current) else { return }
-                            structuralBox.update { $0 = refreshed }
-                            let currentMids = midsBox.value
-                            let revalued = currentMids.isEmpty ? refreshed : refreshed.revalued(with: currentMids)
-                            stateBox.update { $0 = revalued }
-                            streamState.update { $0 = .connected }
-                        }
-                    } catch {
-                        self.log.warning("watch",
-                                         "exchange state refresh on reconnect failed",
-                                         error: error,
-                                         metadata: ["objectId": objectId])
-                    }
+                    await refetch()
                 }
             }
         }
+        // A hole in the server-assigned deliverySeq, or a server resync
+        // marker, means at least one frame for this connection was lost, and
+        // there is no durable log to replay `exchange.updated` from.
+        let gapId = await ws.onGap { _ in Task { await refetch() } }
+        let refresherId = registerExchangeStateRefresher(objectId: objectId) { Task { await refetch() } }
 
         await ws.acquireMids(exchange: exchange)
         await ws.watchPath(objectPath)
@@ -724,18 +797,14 @@ extension Arca {
 
         let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ExchangeState.self, bufferingPolicy: .bufferingNewest(1)) { [weak self] continuation in
+            continuationBox.update { $0 = continuation }
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == objectId || event.entityPath == objectPath else { continue }
                     observationEpoch.update { $0 &+= 1 }
                     let epoch = observationEpoch.value
                     if event.exchangeStateUnavailable == true {
-                        expiryTask.update { $0?.cancel(); $0 = nil }
-                        observationEpoch.update { _ in
-                            structuralBox.update { $0 = nil }
-                            stateBox.update { $0 = nil }
-                            streamState.update { $0 = .reconnecting }
-                        }
+                        observationEpoch.update { _ in invalidate() }
                         continue
                     }
                     let structural: ExchangeState
@@ -755,17 +824,7 @@ extension Arca {
                         }
                     }
                     guard !Task.isCancelled else { break }
-                    observationEpoch.update { current in
-                        guard current == epoch else { return }
-                        current &+= 1
-                        guard armExpiry(structural, current) else { return }
-                        structuralBox.update { $0 = structural }
-                        let currentMids = midsBox.value
-                        let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
-                        stateBox.update { $0 = revalued }
-                        streamState.update { $0 = .connected }
-                        continuation.yield(revalued)
-                    }
+                    apply(structural, epoch)
                 }
                 continuation.finish()
             }
@@ -784,24 +843,12 @@ extension Arca {
                 }
             }
 
-            let refreshTask = Task { [weak self] in
+            let refreshTask = Task {
                 while !Task.isCancelled {
                     let interval = min(60000, max(5000, structuralBox.value?.stateRefreshIntervalMs ?? 30000))
                     do { try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000) } catch { break }
                     guard (structuralBox.value?.stateRefreshIntervalMs ?? 0) > 0 else { continue }
-                    let epoch = observationEpoch.value
-                    guard let self, let fresh = try? await self.getExchangeState(objectId: objectId) else { continue }
-                    guard !Task.isCancelled else { break }
-                    observationEpoch.update { current in
-                        guard current == epoch else { return }
-                        current &+= 1
-                        guard armExpiry(fresh, current) else { return }
-                        structuralBox.update { $0 = fresh }
-                        let marked = fresh.revalued(with: midsBox.value)
-                        stateBox.update { $0 = marked }
-                        streamState.update { $0 = .connected }
-                        continuation.yield(marked)
-                    }
+                    await refetch()
                 }
             }
             stopUpdates.update { $0 = {
@@ -817,14 +864,42 @@ extension Arca {
             state: streamState,
             exchangeState: stateBox,
             updates: updates,
-            stop: { [ws] in
+            stop: { [ws, weak self] in
+                stopped.update { $0 = true }
                 stopUpdates.value?()
                 statusTask.cancel()
                 expiryTask.update { $0?.cancel(); $0 = nil }
+                recoveryTask.update { $0?.cancel(); $0 = nil }
+                await ws.removeGapHandler(gapId)
+                self?.unregisterExchangeStateRefresher(objectId: objectId, id: refresherId)
                 await ws.unwatchPath(objectPath)
                 await ws.releaseMids()
-            }
+            },
+            refresh: { Task { await refetch() } }
         )
+    }
+
+    /// Register a re-read hook for a live `watchExchangeState` on `objectId`.
+    /// Returns the id to pass to ``unregisterExchangeStateRefresher``.
+    func registerExchangeStateRefresher(objectId: String, _ refresh: @escaping @Sendable () -> Void) -> UUID {
+        let id = UUID()
+        exchangeStateRefreshers.update { $0[objectId, default: [:]][id] = refresh }
+        return id
+    }
+
+    func unregisterExchangeStateRefresher(objectId: String, id: UUID) {
+        exchangeStateRefreshers.update { table in
+            table[objectId]?.removeValue(forKey: id)
+            if table[objectId]?.isEmpty == true { table.removeValue(forKey: objectId) }
+        }
+    }
+
+    /// Ask every live `watchExchangeState` for `objectId` to re-read. Called
+    /// when an order's accounting completion was learned through a read — the
+    /// moment the account push for that commit is most likely to have been lost.
+    func refreshExchangeStateWatches(objectId: String) {
+        let hooks = exchangeStateRefreshers.value[objectId] ?? [:]
+        for hook in hooks.values { hook() }
     }
 
     /// Watch real-time funding payment events for an exchange Arca object.

@@ -763,3 +763,154 @@ final class OrderHandleTests: XCTestCase {
         XCTAssertFalse(open.isTerminalWithFills)
     }
 }
+
+// MARK: - accounted()
+
+private func makeRecordedFill(orderId: String, size: String, operationId: String? = "op_fill") throws -> Fill {
+    let opField = operationId.map { "\"operationId\":\"\($0)\"," } ?? ""
+    let json = "{\"id\":\"pl_1\",\(opField)\"fillId\":\"f_\(size)\",\"orderId\":\"\(orderId)\",\"market\":\"ETH\",\"size\":\"\(size)\"}"
+    return try JSONDecoder().decode(Fill.self, from: Data(json.utf8))
+}
+
+/// A terminal placement whose receipt comes straight from the operation
+/// outcome, so `accounted()` never has to wait for execution itself.
+private func makeTerminalOrderHandle(deps: OrderHandleDeps, filledSize: String = "1.0") -> OrderHandle {
+    let op = makeOrderOperation(
+        outcome: "{\"orderId\":\"ord_abc\",\"status\":\"filled\",\"filledSize\":\"\(filledSize)\",\"avgFillPrice\":\"2000\"}",
+        input: "{\"exchangeObjectId\":\"obj_exchange\",\"size\":\"\(filledSize)\"}")
+    let inner = OperationHandle<OrderOperationResponse>(submit: { OrderOperationResponse(operation: op) }, waitForSettlement: { _ in op })
+    return OrderHandle(inner: inner, objectId: "obj_exchange", placementPath: "/order", deps: deps)
+}
+
+private func makeAccountedDeps(getOrder: @escaping @Sendable (String, String) async throws -> SimOrderWithFills,
+                               listFills: @escaping @Sendable (String) async throws -> FillListResponse = { _ in FillListResponse(fills: [], total: 0, cursor: nil) }) -> OrderHandleDeps {
+    OrderHandleDeps(getOrder: getOrder, fillEvents: { AsyncStream { $0.finish() } }, cancelOrder: { _, _, _ in fatalError() },
+                    modifyOrder: { _, _, _, _ in fatalError() }, waitForSettlement: { _ in fatalError() }, listFills: listFills)
+}
+
+final class OrderHandleAccountedTests: XCTestCase {
+
+    func testResolvesAtOnceWhenTheReadCarriesFillsComplete() async throws {
+        let reads = SendableBox(0)
+        let nudged = SendableBox<[String]>([])
+        let held = SendableBox(0), released = SendableBox(0)
+        var deps = makeAccountedDeps(getOrder: { _, _ in
+            reads.update { $0 += 1 }
+            return SimOrderWithFills(order: makeSimOrder(), fills: [], fillsComplete: true)
+        })
+        deps.exchangeStateChanged = { objectId in nudged.update { $0.append(objectId) } }
+        deps.holdAccountWatch = { held.update { $0 += 1 }; return { released.update { $0 += 1 } } }
+        let detail = try await makeTerminalOrderHandle(deps: deps).accounted(timeoutSeconds: 2)
+        XCTAssertEqual(detail.fillsComplete, true)
+        XCTAssertEqual(reads.value, 1)
+        XCTAssertEqual(nudged.value, ["obj_exchange"], "the account watch is nudged once accounting is known complete")
+        XCTAssertEqual(held.value, 1)
+        XCTAssertEqual(released.value, 1)
+    }
+
+    func testWaitsForTheRecordedFillPushThenReReads() async throws {
+        let reads = SendableBox(0)
+        var deps = makeAccountedDeps(getOrder: { _, _ in
+            reads.update { $0 += 1 }
+            // Execution known, ledger not caught up — the state Home read at receipt time.
+            return SimOrderWithFills(order: makeSimOrder(), fills: [], fillsComplete: reads.value >= 2)
+        })
+        let recorded = try makeRecordedFill(orderId: "ord_abc", size: "1.0")
+        let foreign = try makeRecordedFill(orderId: "ord_other", size: "1.0")
+        deps.recordedFillEvents = { AsyncStream { continuation in
+            Task {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                continuation.yield((foreign, RealmEvent(type: "fill.recorded")))
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continuation.yield((recorded, RealmEvent(type: "fill.recorded")))
+            }
+        } }
+        let started = Date()
+        let detail = try await makeTerminalOrderHandle(deps: deps).accounted(timeoutSeconds: 5)
+        XCTAssertEqual(detail.fillsComplete, true)
+        XCTAssertEqual(reads.value, 2, "one read at start, one after the matching recorded fill")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.45, "the push, not the 500ms backoff, drove the re-read")
+    }
+
+    func testFallsBackToABoundedBackoffReadWhenNoPushArrives() async throws {
+        let reads = SendableBox(0)
+        let deps = makeAccountedDeps(getOrder: { _, _ in
+            reads.update { $0 += 1 }
+            return SimOrderWithFills(order: makeSimOrder(), fills: [], fillsComplete: reads.value >= 3)
+        })
+        let started = Date()
+        let detail = try await makeTerminalOrderHandle(deps: deps).accounted(timeoutSeconds: 5)
+        XCTAssertEqual(detail.fillsComplete, true)
+        XCTAssertEqual(reads.value, 3)
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertGreaterThan(elapsed, 1.3, "0.5s + 1s backoff before the third read")
+        XCTAssertLessThan(elapsed, 3.0)
+    }
+
+    func testVenueReadWithoutFillsCompleteRequiresRecordedFillsToCoverExecutedSizeExactly() async throws {
+        let listCalls = SendableBox(0)
+        let deps = makeAccountedDeps(
+            getOrder: { _, _ in SimOrderWithFills(order: makeSimOrder(filledSize: "0.3"), fills: []) },
+            listFills: { _ in
+                listCalls.update { $0 += 1 }
+                var fills = [try makeRecordedFill(orderId: "ord_abc", size: "0.1")]
+                if listCalls.value >= 2 { fills.append(try makeRecordedFill(orderId: "ord_abc", size: "0.2")) }
+                // A preview (no operationId) never counts.
+                fills.append(try makeRecordedFill(orderId: "ord_abc", size: "9", operationId: nil))
+                return FillListResponse(fills: fills, total: fills.count, cursor: nil)
+            })
+        let detail = try await makeTerminalOrderHandle(deps: deps, filledSize: "0.3").accounted(timeoutSeconds: 5)
+        XCTAssertEqual(detail.order.filledSize, "0.3")
+        XCTAssertEqual(listCalls.value, 2, "0.1 alone does not cover 0.3; 0.1 + 0.2 does, compared as exact decimals")
+    }
+
+    func testZeroFillTerminalOrderIsAccountedTrivially() async throws {
+        let listed = SendableBox(false)
+        let deps = makeAccountedDeps(
+            getOrder: { _, _ in SimOrderWithFills(order: makeSimOrder(status: .cancelled, filledSize: "0"), fills: []) },
+            listFills: { _ in listed.update { $0 = true }; return FillListResponse(fills: [], total: 0, cursor: nil) })
+        let op = makeOrderOperation(outcome: "{\"orderId\":\"ord_abc\",\"status\":\"cancelled\",\"filledSize\":\"0\"}",
+                                    input: "{\"exchangeObjectId\":\"obj_exchange\",\"size\":\"1\"}")
+        let inner = OperationHandle<OrderOperationResponse>(submit: { OrderOperationResponse(operation: op) }, waitForSettlement: { _ in op })
+        let detail = try await OrderHandle(inner: inner, objectId: "obj_exchange", placementPath: "/order", deps: deps).accounted(timeoutSeconds: 2)
+        XCTAssertEqual(detail.order.status, .cancelled)
+        XCTAssertFalse(listed.value)
+    }
+
+    func testTimesOutAndReleasesTheWatchWhenAccountingNeverCompletes() async throws {
+        let released = SendableBox(0)
+        var deps = makeAccountedDeps(getOrder: { _, _ in SimOrderWithFills(order: makeSimOrder(), fills: [], fillsComplete: false) })
+        deps.holdAccountWatch = { { released.update { $0 += 1 } } }
+        let nudged = SendableBox(false)
+        deps.exchangeStateChanged = { _ in nudged.update { $0 = true } }
+        do {
+            _ = try await makeTerminalOrderHandle(deps: deps).accounted(timeoutSeconds: 0.7)
+            XCTFail("expected TIMEOUT")
+        } catch let error as ArcaError {
+            guard case .unknown(let code, _, _) = error else { return XCTFail("unexpected \(error)") }
+            XCTAssertEqual(code, "TIMEOUT")
+        }
+        XCTAssertEqual(released.value, 1)
+        XCTAssertFalse(nudged.value)
+    }
+
+    func testRecordedSizesCoverIsExactDecimalArithmetic() {
+        XCTAssertTrue(OrderHandle.recordedSizesCover(["0.1", "0.2"], "0.3"))
+        XCTAssertTrue(OrderHandle.recordedSizesCover(["0.1", "0.2"], "0.30000"))
+        XCTAssertFalse(OrderHandle.recordedSizesCover(["0.1"], "0.3"))
+        XCTAssertFalse(OrderHandle.recordedSizesCover(["0.1", "0.2", "0.000000001"], "0.3"))
+        XCTAssertTrue(OrderHandle.recordedSizesCover([], "0"))
+        XCTAssertFalse(OrderHandle.recordedSizesCover([], "1"))
+        XCTAssertFalse(OrderHandle.recordedSizesCover(["abc"], "0"))
+    }
+
+    func testRecordedFillMatchesByOrderIdOrPlacementOperation() throws {
+        let byOrder = try makeRecordedFill(orderId: "ord_abc", size: "1")
+        XCTAssertTrue(OrderHandle.recordedFillMatches(byOrder, orderId: "ord_abc", operationId: "op_x"))
+        XCTAssertFalse(OrderHandle.recordedFillMatches(byOrder, orderId: "ord_other", operationId: "op_x"))
+        let json = #"{"id":"pl_2","operationId":"op_fill","orderOperationId":"op_order_1","market":"ETH","size":"1"}"#
+        let byPlacement = try JSONDecoder().decode(Fill.self, from: Data(json.utf8))
+        XCTAssertTrue(OrderHandle.recordedFillMatches(byPlacement, orderId: "ord_abc", operationId: "op_order_1"))
+        XCTAssertFalse(OrderHandle.recordedFillMatches(byPlacement, orderId: "ord_abc", operationId: "op_other"))
+    }
+}

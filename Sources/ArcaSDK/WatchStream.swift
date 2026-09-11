@@ -604,6 +604,13 @@ public struct ExchangeStateWatchStream: Sendable {
     public let updates: AsyncStream<ExchangeState>
     /// Stop listening and unsubscribe.
     public let stop: @Sendable () async -> Void
+    /// Re-read the exchange state now, guarded by the observation epoch.
+    ///
+    /// For callers that learned out of band that the account changed — e.g.
+    /// ``OrderHandle/accounted(timeoutSeconds:)`` resolving through a REST read
+    /// after the account push for that commit was lost. Coalesces with any
+    /// in-flight read; a push that lands first wins and the read is discarded.
+    public var refresh: @Sendable () -> Void = {}
 
     /// Returns when the first state has been fetched. Never throws.
     public func ready() async {
