@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Display facts only. A projected row deliberately has no authoritative position,
 /// entry price, fees, P&L, margin, collateral or trading-eligibility fields.
@@ -15,7 +16,7 @@ public struct PositionExecutionCoverage: Sendable {
     public let orderId: String
     public let market: String
     public let filledSize: String
-    public let status: String // execution | accounted | unavailable
+    public let status: String // execution | accounted | no_execution | unavailable
 }
 
 public struct PositionViewSnapshot: Sendable {
@@ -63,6 +64,7 @@ public final class PositionView: @unchecked Sendable {
         var quantity = Decimal.zero
         var received = false
         var accounted = false
+        var noExecution = false
     }
     private var entries: [UUID: Entry] = [:]
     private var baselines: [String: Decimal] = [:]
@@ -116,14 +118,64 @@ public final class PositionView: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard !closed, var entry = entries[token.id], receipt.objectId == objectId,
               entry.operationId == receipt.operationId,
-              entry.orderId == nil || entry.orderId == receipt.orderId,
+              entry.orderId == nil || entry.orderId == receipt.orderId || entry.noExecution,
               !receipt.orderId.isEmpty,
               ["FILLED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "REJECTED"].contains(receipt.status.uppercased()),
               let quantity = Self.decimal(receipt.filledSize), quantity >= entry.quantity else { return }
         if entry.received && quantity == entry.quantity { return }
+        if entry.noExecution { entry.noExecution = false; unavailable.insert(entry.market) }
         entry.orderId = receipt.orderId; entry.quantity = quantity; entry.received = true; entry.accounted = false
         entries[token.id] = entry
         revision &+= 1; publish()
+    }
+
+    /// Accept only server-proven terminal zero execution for this bound operation.
+    /// The zero delta stays in the shared baseline until the account-wide read succeeds.
+    func retireNoExecution(_ token: PositionUpdate, operation: Operation, detail: SimOrderWithFills? = nil) async -> Bool {
+        let result = markNoExecution(token, operation: operation, detail: detail)
+        if let ticket = result.ticket { await recover(ticket: ticket) }
+        return result.accepted
+    }
+
+    private func markNoExecution(_ token: PositionUpdate, operation: Operation, detail: SimOrderWithFills?) -> (accepted: Bool, ticket: UInt64?) {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, var entry = entries[token.id], entry.operationId == operation.id.rawValue,
+              operation.type == .order, [.failed, .expired, .completed].contains(operation.state),
+              let inputData = operation.input?.data(using: .utf8),
+              let input = try? JSONSerialization.jsonObject(with: inputData) as? [String: Any],
+              input["exchangeObjectId"] as? String == objectId, input["market"] as? String == entry.market,
+              input["side"] as? String == entry.side.rawValue, entry.quantity == 0 else { return (false, nil) }
+        let outcome: [String: Any]
+        if let raw = operation.outcome {
+            guard let data = raw.data(using: .utf8), let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (false, nil) }
+            outcome = parsed
+        } else { outcome = [:] }
+        if let size = outcome["filledSize"], (size as? String).flatMap(Self.decimal) != 0 { return (false, nil) }
+        if let final = outcome["executionQuantityFinal"], !Self.isTrue(final) { return (false, nil) }
+        if outcome["venueOutcome"] as? String == "unknown" { return (false, nil) }
+        if let orderId = outcome["orderId"], !(orderId is String) { return (false, nil) }
+        var orderId = outcome["orderId"] as? String ?? entry.orderId ?? ""
+        if let detail {
+            guard detail.order.market == entry.market, detail.order.side == entry.side,
+                  [.failed, .cancelled].contains(detail.order.status), Self.decimal(detail.order.filledSize) == 0,
+                  detail.fillsComplete == true, detail.fills.isEmpty,
+                  orderId.isEmpty || orderId == detail.order.id.rawValue else { return (false, nil) }
+            orderId = detail.order.id.rawValue
+        } else {
+            guard Self.isTrue(outcome["definitiveRejection"]) else { return (false, nil) }
+            for key in ["status", "venueStatus"] {
+                if let status = outcome[key], (status as? String).map({ ["FAILED", "REJECTED", "CANCELLED", "CANCELED", "EXPIRED"].contains($0.uppercased()) }) != true { return (false, nil) }
+            }
+        }
+        guard entry.orderId == nil || entry.orderId == orderId,
+              !observedFills.contains(where: { $0.0 == entry.market && ($0.1 == entry.operationId || (!orderId.isEmpty && $0.2 == orderId)) }) else { return (false, nil) }
+        if !entry.noExecution {
+            entry.noExecution = true; entry.received = true; entry.accounted = true; entry.orderId = orderId
+            entries[token.id] = entry; revision &+= 1; publish()
+        }
+        guard entries.values.allSatisfy(\.accounted), !reconciliationInFlight else { return (true, nil) }
+        reconciliationInFlight = true
+        return (true, revision)
     }
 
     func accounted(_ token: PositionUpdate, detail: SimOrderWithFills? = nil) async {
@@ -185,6 +237,11 @@ public final class PositionView: @unchecked Sendable {
         guard baselines[market] != nil else { return }
         if let committed = Self.timestamp(recordedAt), let baseline = entries.values.filter({ $0.market == market }).map(\.baselineAsOf).min(), committed <= baseline { return }
         if observedFills.contains(where: { $0.0 == market && $0.1 == operationId && $0.2 == orderId }) { return }
+        for (id, var entry) in entries where entry.market == market && entry.noExecution &&
+            ((operationId != nil && entry.operationId == operationId) || (orderId != nil && entry.orderId == orderId)) {
+            entry.noExecution = false; entry.received = false; entry.accounted = false; entries[id] = entry
+            unavailable.insert(market); revision &+= 1
+        }
         if observedFills.count >= 256 { unavailable.formUnion(baselines.keys) }
         else { observedFills.append((market, operationId, orderId)) }
         publish()
@@ -241,7 +298,7 @@ public final class PositionView: @unchecked Sendable {
         return entries.values.compactMap { entry in
             guard entry.received, let op = entry.operationId, let order = entry.orderId else { return nil }
             return PositionExecutionCoverage(operationId: op, orderId: order, market: entry.market,
-                filledSize: Self.text(entry.quantity), status: status ?? (ambiguous.contains(entry.market) ? "unavailable" : "execution"))
+                filledSize: Self.text(entry.quantity), status: entry.noExecution ? "no_execution" : status ?? (ambiguous.contains(entry.market) ? "unavailable" : "execution"))
         }.sorted { $0.operationId < $1.operationId }
     }
 
@@ -293,6 +350,10 @@ public final class PositionView: @unchecked Sendable {
               raw.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$"#, options: .regularExpression) != nil else { return nil }
         let parts = raw.dropLast().split(separator: ".")
         return String(parts[0]) + "." + ((parts.count == 2 ? String(parts[1]) : "") + String(repeating: "0", count: 9)).prefix(9) + "Z"
+    }
+    private static func isTrue(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID() && number.boolValue
     }
     private static func decimal(_ raw: String) -> Decimal? {
         guard (raw.split(separator: ".").dropFirst().first?.count ?? 0) <= 38 else { return nil }

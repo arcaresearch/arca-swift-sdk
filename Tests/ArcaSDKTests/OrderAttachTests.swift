@@ -106,6 +106,38 @@ final class OrderAttachTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    func testFailedReceiptAutomaticallyRetiresVerifiedRejection() async throws {
+        OrderAttachProtocol.rejectionOutcome = #"{\"definitiveRejection\":true,\"filledSize\":\"0\",\"status\":\"FAILED\"}"#
+        let arca = makeArca(), view = arca.positionView(objectId: "obj-1")
+        view.observe(try PositionViewTests.snapshot("0", market: "hl:0:BTC"))
+        let token = try view.begin(market: "hl:0:BTC", side: .buy)
+        let order = try await arca.orderHandle(objectId: "obj-1", operationId: "op_place")
+        try await order.trackPositionUpdate(token)
+        do { _ = try await order.executionReceipt(timeoutSeconds: 2); XCTFail("rejection must still fail") }
+        catch let error as ArcaError { guard case .operationFailed = error else { return XCTFail("unexpected \(error)") } }
+        XCTAssertEqual(view.current.value.coverage.first?.status, "no_execution")
+        XCTAssertEqual(view.current.value.coverage.first?.orderId, "")
+        XCTAssertTrue(OrderAttachProtocol.requests.allSatisfy { $0.hasPrefix("GET ") })
+        arca.resetPositionView(objectId: "obj-1"); await arca.ws.disconnect()
+    }
+
+    func testOriginalOperationReadMustProveTerminalZeroExecution() async throws {
+        OrderAttachProtocol.rejectionOutcome = #"{\"error\":\"response timeout\"}"#
+        let arca = makeArca(), view = arca.positionView(objectId: "obj-1")
+        view.observe(try PositionViewTests.snapshot("0", market: "hl:0:BTC"))
+        let token = try view.begin(market: "hl:0:BTC", side: .buy)
+        let order = try await arca.orderHandle(objectId: "obj-1", operationId: "op_place")
+        try await order.trackPositionUpdate(token)
+        let ambiguous = try await order.retirePositionUpdateIfNoExecution()
+        XCTAssertFalse(ambiguous); XCTAssertEqual(view.current.value.pendingMarkets, ["hl:0:BTC"])
+        OrderAttachProtocol.originalNoExecution = true
+        let proven = try await order.retirePositionUpdateIfNoExecution()
+        XCTAssertTrue(proven); XCTAssertEqual(view.current.value.coverage.first?.status, "no_execution")
+        XCTAssertTrue(OrderAttachProtocol.requests.contains("GET /api/v1/objects/obj-1/exchange/orders/op_place"))
+        XCTAssertTrue(OrderAttachProtocol.requests.allSatisfy { $0.hasPrefix("GET ") })
+        arca.resetPositionView(objectId: "obj-1"); await arca.ws.disconnect()
+    }
+
     private func makeArca() -> Arca {
         try! Arca(
             token: fakeJwt(),
@@ -135,6 +167,16 @@ private final class OrderAttachProtocol: URLProtocol {
     private static var _fillsComplete: [Bool] = [true]
     private static var _operationType = "order"
     private static var _includeInput = true
+    private static var _rejectionOutcome: String?
+    private static var _originalNoExecution = false
+    static var rejectionOutcome: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _rejectionOutcome }
+        set { lock.lock(); _rejectionOutcome = newValue; lock.unlock() }
+    }
+    static var originalNoExecution: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _originalNoExecution }
+        set { lock.lock(); _originalNoExecution = newValue; lock.unlock() }
+    }
 
     static var requests: [String] {
         lock.lock(); defer { lock.unlock() }
@@ -162,6 +204,7 @@ private final class OrderAttachProtocol: URLProtocol {
         _fillsComplete = [true]
         _operationType = "order"
         _includeInput = true
+        _rejectionOutcome = nil; _originalNoExecution = false
         lock.unlock()
     }
 
@@ -188,7 +231,7 @@ private final class OrderAttachProtocol: URLProtocol {
         Self.lock.unlock()
 
         let input = #"{\"exchangeObjectId\":\"obj-1\",\"market\":\"hl:0:BTC\",\"side\":\"buy\",\"size\":\"0.01\",\"orderType\":\"MARKET\"}"#
-        let outcome = #"{\"orderId\":\"ord_abc\",\"status\":\"filled\",\"filledSize\":\"0.01\",\"avgFillPrice\":\"50000\"}"#
+        let outcome = Self.rejectionOutcome ?? #"{\"orderId\":\"ord_abc\",\"status\":\"filled\",\"filledSize\":\"0.01\",\"avgFillPrice\":\"50000\"}"#
         let body: String
         var status = 200
         switch url.path {
@@ -196,11 +239,15 @@ private final class OrderAttachProtocol: URLProtocol {
             body = """
             {"success": true, "data": {"operation": {
               "id": "op_place", "realmId": "rlm_test", "path": "/op/order/btc-1",
-              "type": "\(Self.operationType)", "state": "completed",
+              "type": "\(Self.operationType)", "state": "\(Self.rejectionOutcome == nil ? "completed" : "failed")",
               \(Self.includeInput ? "\"input\": \"\(input)\"," : "")
               "outcome": "\(outcome)",
               "createdAt": "2026-09-11T10:00:01.000000Z", "updatedAt": "2026-09-11T10:00:01.000000Z"
             }, "events": [], "deltas": []}}
+            """
+        case "/api/v1/objects/obj-1/exchange/orders/op_place":
+            body = """
+            {"success":true,"data":{"order":{"id":"","market":"hl:0:BTC","side":"buy","orderType":"MARKET","size":"1","filledSize":"0","status":"\(Self.originalNoExecution ? "FAILED" : "PENDING")","reduceOnly":false,"timeInForce":"IOC","leverage":1,"createdAt":"","updatedAt":""},"fills":[],"fillsComplete":\(Self.originalNoExecution)}}
             """
         case "/api/v1/objects/obj-1/exchange/orders/ord_abc":
             body = """

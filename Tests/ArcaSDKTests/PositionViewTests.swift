@@ -125,4 +125,97 @@ final class PositionViewTests: XCTestCase {
         await ws.disconnect()
     }
 
+    private func failed(_ outcome: String, id: String = "rejected") throws -> ArcaSDK.Operation {
+        let base = try JSONEncoder().encode(operation(id, side: .buy))
+        var json = try JSONSerialization.jsonObject(with: base) as! [String: Any]
+        json["state"] = "failed"; json["outcome"] = outcome
+        return try JSONDecoder().decode(ArcaSDK.Operation.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testRejectedScopeUnblocksAlreadyAccountedPeerWithoutDroppingItsExecution() async throws {
+        let reads = SendableBox(0)
+        let view = PositionView(objectId: "a") { reads.update { $0 += 1 }; return try Self.snapshot("3", tick: 4) }
+        view.observe(try Self.snapshot("2"))
+        let rejected = try bind(view, .buy, "rejected"), successful = try bind(view, .buy, "successful")
+        receipt(view, successful, "1", "successful"); await view.accounted(successful)
+        XCTAssertEqual(reads.value, 0); XCTAssertEqual(size(view), "3")
+        let proof = try failed(#"{"definitiveRejection":true,"filledSize":"0","status":"FAILED"}"#)
+        let retired = await view.retireNoExecution(rejected, operation: proof)
+        XCTAssertTrue(retired); XCTAssertEqual(reads.value, 1); XCTAssertEqual(view.current.value.pendingMarkets, [])
+        XCTAssertEqual(size(view), "3")
+        XCTAssertEqual(view.current.value.coverage.first { $0.operationId == "rejected" }?.status, "no_execution")
+        XCTAssertEqual(view.current.value.coverage.first { $0.operationId == "rejected" }?.orderId, "")
+        XCTAssertEqual(view.current.value.coverage.first { $0.operationId == "successful" }?.status, "accounted")
+        let again = await view.retireNoExecution(rejected, operation: proof)
+        XCTAssertFalse(again); XCTAssertEqual(reads.value, 1)
+    }
+
+    func testAmbiguousOrContradictoryFailureCannotRetire() async throws {
+        for outcome in [#"{"error":"response timeout"}"#, #"{"definitiveRejection":true,"filledSize":"1"}"#,
+            #"{"definitiveRejection":true,"filledSize":"garbage"}"#, #"{"definitiveRejection":true,"executionQuantityFinal":false}"#,
+            #"{"definitiveRejection":true,"venueOutcome":"unknown"}"#, #"{"definitiveRejection":true,"status":"FILLED"}"#,
+            #"{"definitiveRejection":true,"status":{}}"#, #"{"definitiveRejection":"true"}"#, #"{"definitiveRejection":1}"#, #"{"definitiveRejection":true,"orderId":7}"#] {
+            let view = PositionView(objectId: "a") { XCTFail("unsafe reconciliation"); return try Self.snapshot("2") }
+            view.observe(try Self.snapshot("2")); let token = try bind(view, .buy, "rejected")
+            let retired = await view.retireNoExecution(token, operation: try failed(outcome))
+            XCTAssertFalse(retired, outcome); XCTAssertEqual(view.current.value.pendingMarkets, ["BTC"])
+        }
+        for recorded in [false, true] {
+            let view = PositionView(objectId: "a") { XCTFail("contradictory execution"); return try Self.snapshot("2") }
+            view.observe(try Self.snapshot("2")); let token = try bind(view, .buy, "rejected")
+            if recorded { view.observeFill(market: "BTC", operationId: "rejected", orderId: "venue") }
+            else { receipt(view, token, "0.1", "rejected") }
+            let retired = await view.retireNoExecution(token, operation: try failed(#"{"definitiveRejection":true}"#))
+            XCTAssertFalse(retired)
+        }
+    }
+
+    func testNewScopeDuringRetirementReadRemainsPending() async throws {
+        let started = expectation(description: "read started")
+        let response = SendableBox<CheckedContinuation<ExchangeState, Never>?>(nil)
+        let actual = PositionView(objectId: "a") {
+            await withCheckedContinuation { continuation in response.update { $0 = continuation }; started.fulfill() }
+        }
+        actual.observe(try Self.snapshot("2")); let token = try bind(actual, .buy, "rejected")
+        let proof = try failed(#"{"definitiveRejection":true}"#)
+        let retirement = Task { await actual.retireNoExecution(token, operation: proof) }
+        await fulfillment(of: [started], timeout: 2)
+        let later = try bind(actual, .buy, "later"); receipt(actual, later, "1", "later")
+        response.value?.resume(returning: try Self.snapshot("2", tick: 2))
+        let retired = await retirement.value
+        XCTAssertTrue(retired); XCTAssertEqual(size(actual), "3"); XCTAssertEqual(actual.current.value.pendingMarkets, ["BTC"])
+        XCTAssertEqual(actual.current.value.coverage.first { $0.operationId == "later" }?.status, "execution")
+    }
+
+    func testOriginalOrderProofRequiresMatchingTerminalCompleteZero() async throws {
+        for variant in 0..<7 {
+            let view = PositionView(objectId: "a") { try Self.snapshot("2", tick: 4) }; view.observe(try Self.snapshot("2"))
+            let token = try bind(view, .buy, "rejected")
+            var order: [String: Any] = ["id":"venue", "market":"BTC", "side":"buy", "orderType":"MARKET", "size":"1", "filledSize":"0", "status":"CANCELLED", "reduceOnly":false, "timeInForce":"IOC", "leverage":1, "createdAt":"", "updatedAt":""]
+            if variant == 1 { order["status"] = "PENDING" }
+            if variant == 2 { order["filledSize"] = "0.1" }
+            if variant == 3 { order["market"] = "ETH" }
+            if variant == 4 { order["side"] = "sell" }
+            let json: [String: Any] = ["order":order, "fills":[], "fillsComplete": variant != 5]
+            let detail = try JSONDecoder().decode(SimOrderWithFills.self, from: JSONSerialization.data(withJSONObject: json))
+            let proof = try failed(variant == 6 ? #"{"orderId":"other"}"# : #"{"error":"response timeout"}"#)
+            let retired = await view.retireNoExecution(token, operation: proof, detail: detail)
+            XCTAssertEqual(retired, variant == 0, "variant \(variant)")
+        }
+    }
+
+    func testLateContradictionFencesRetirementRead() async throws {
+        let started = expectation(description: "read started")
+        let response = SendableBox<CheckedContinuation<ExchangeState, Never>?>(nil)
+        let view = PositionView(objectId: "a") { await withCheckedContinuation { c in response.update { $0 = c }; started.fulfill() } }
+        view.observe(try Self.snapshot("2")); let token = try bind(view, .buy, "rejected")
+        let proof = try failed(#"{"definitiveRejection":true}"#)
+        let retirement = Task { await view.retireNoExecution(token, operation: proof) }
+        await fulfillment(of: [started], timeout: 2)
+        view.observeFill(market: "BTC", operationId: "rejected", orderId: "venue")
+        response.value?.resume(returning: try Self.snapshot("2", tick: 4)); _ = await retirement.value
+        XCTAssertEqual(view.current.value.unavailableMarkets, ["BTC"]); XCTAssertEqual(view.current.value.pendingMarkets, ["BTC"])
+        XCTAssertFalse(view.current.value.coverage.contains { $0.status == "no_execution" })
+    }
+
 }

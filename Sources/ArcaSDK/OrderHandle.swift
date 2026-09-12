@@ -82,6 +82,23 @@ public final class OrderHandle: @unchecked Sendable {
         positionUpdate.update { $0 = update }
     }
 
+    /// Retire this display scope only after server proof of terminal zero execution.
+    /// Read-only and retryable. False leaves the scope active; errors leave it unchanged.
+    /// This is not ledger completion and does not turn a rejected order into success.
+    public func retirePositionUpdateIfNoExecution() async throws -> Bool {
+        guard let update = positionUpdate.value else { return false }
+        let original = try await inner.submitted.operation
+        let operation: Operation
+        if let read = deps.getExecutionOperation { operation = try await read(original.id.rawValue) }
+        else { operation = original }
+        guard operation.id == original.id else { return false }
+        if await update.view.retireNoExecution(update, operation: operation) { return true }
+        // The lifecycle endpoint explicitly accepts the original operation ID,
+        // including rejections that never acquired a venue order ID.
+        let detail = try await deps.getOrder(objectId, original.id.rawValue)
+        return await update.view.retireNoExecution(update, operation: operation, detail: detail)
+    }
+
     /// The HTTP response (before settlement).
     public var submitted: OrderOperationResponse {
         get async throws { try await inner.submitted }
@@ -115,7 +132,10 @@ public final class OrderHandle: @unchecked Sendable {
             await deps.releaseExecution?()
             return receipt
         } catch let error as ArcaError {
-            if case .operationFailed = error { await deps.releaseExecution?() }
+            if case .operationFailed = error {
+                _ = try? await retirePositionUpdateIfNoExecution()
+                await deps.releaseExecution?()
+            }
             throw error
         }
     }
