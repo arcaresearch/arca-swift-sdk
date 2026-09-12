@@ -112,4 +112,17 @@ final class PositionViewTests: XCTestCase {
         view.observe(try Self.snapshot("4",tick:2)); XCTAssertEqual(view.current.value.unavailableMarkets,["BTC"])
     }
 
+    func testDirectFillTapDrainsWithoutAsyncBufferAndUnregisters() async {
+        let ws = WebSocketManager(baseURL: URL(string: "http://localhost:3052")!, token: "test", realmId: "r")
+        let count = SendableBox(0)
+        let observer = await ws.observePositionFills { _, _ in count.update { $0 += 1 } }
+        let frame = #"{"type":"fill.recorded","entityId":"a","fill":{"id":"fill","market":"BTC"}}"#
+        for _ in 0..<2048 { await ws.injectMessage(frame) }
+        XCTAssertEqual(count.value, 2048)
+        await ws.removePositionFillObserver(observer)
+        await ws.injectMessage(frame)
+        XCTAssertEqual(count.value, 2048)
+        await ws.disconnect()
+    }
+
 }

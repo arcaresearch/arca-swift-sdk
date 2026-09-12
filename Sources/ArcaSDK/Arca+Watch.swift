@@ -799,12 +799,9 @@ extension Arca {
 
         let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
-        let recordedFills = await ws.fillRecordedEvents()
-        let fillTask = Task {
-            for await (fill, event) in recordedFills {
-                guard event.entityId == objectId || event.entityPath == objectPath else { continue }
-                visible.observeFill(market: fill.market, operationId: fill.orderOperationId, orderId: fill.orderId, recordedAt: fill.createdAt)
-            }
+        let fillObserverId = await ws.observePositionFills { fill, event in
+            guard event.entityId == objectId || event.entityPath == objectPath else { return }
+            visible.observeFill(market: fill.market, operationId: fill.orderOperationId, orderId: fill.orderId, recordedAt: fill.createdAt)
         }
 
         let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
@@ -865,11 +862,12 @@ extension Arca {
                 }
             }
             stopUpdates.update { $0 = {
-                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel(); fillTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
                 continuation.finish()
             } }
-            continuation.onTermination = { _ in
-                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel(); fillTask.cancel()
+            continuation.onTermination = { [ws] _ in
+                Task { await ws.removePositionFillObserver(fillObserverId) }
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }
 
@@ -880,7 +878,7 @@ extension Arca {
             stop: { [ws, weak self] in
                 stopped.update { $0 = true }
                 stopUpdates.value?()
-                fillTask.cancel()
+                await ws.removePositionFillObserver(fillObserverId)
                 statusTask.cancel()
                 expiryTask.update { $0?.cancel(); $0 = nil }
                 recoveryTask.update { $0?.cancel(); $0 = nil }

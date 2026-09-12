@@ -72,6 +72,7 @@ public actor WebSocketManager {
     private var serverLifetime: TimeInterval?
     private var handoffTimeout: TimeInterval = WebSocketManager.handoffTimeoutSeconds
 
+    private var positionFillObservers: [UUID: @Sendable (Fill, RealmEvent) -> Void] = [:]
     private var eventContinuations: [UUID: AsyncStream<RealmEvent>.Continuation] = [:]
     private var statusContinuations: [UUID: AsyncStream<ConnectionStatus>.Continuation] = [:]
 
@@ -893,6 +894,14 @@ public actor WebSocketManager {
         }
     }
 
+    /// Inline display-evidence tap: no unbounded AsyncStream hop between the
+    /// socket and the bounded PositionView correlator. Remove on watch stop.
+    func observePositionFills(_ handler: @escaping @Sendable (Fill, RealmEvent) -> Void) -> UUID {
+        let id = UUID(); positionFillObservers[id] = handler; return id
+    }
+
+    func removePositionFillObserver(_ id: UUID) { positionFillObservers.removeValue(forKey: id) }
+
     /// Stream of platform-level fill recorded events (full Fill data + originating event).
     public func fillRecordedEvents() -> AsyncStream<(Fill, RealmEvent)> {
         filteredStream { event in
@@ -1400,6 +1409,9 @@ public actor WebSocketManager {
         }
 
         if let event = try? decoder.decode(RealmEvent.self, from: data) {
+            if event.type == EventType.fillRecorded.rawValue, let fill = event.recordedFill {
+                for observer in positionFillObservers.values { observer(fill, event) }
+            }
             if event.type == EventType.midsUpdated.rawValue, let mids = event.mids {
                 retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
             }
