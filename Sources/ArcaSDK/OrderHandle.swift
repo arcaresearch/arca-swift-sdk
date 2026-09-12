@@ -55,6 +55,7 @@ public final class OrderHandle: @unchecked Sendable {
     private let objectId: String
     private let placementPath: String
     private let deps: OrderHandleDeps
+    private let positionUpdate = SendableBox<PositionUpdate?>(nil)
     private let executionDetail = SendableBox<SimOrderWithFills?>(nil)
 
     init(
@@ -72,6 +73,13 @@ public final class OrderHandle: @unchecked Sendable {
     deinit {
         let release = deps.releaseExecution
         Task { await release?() }
+    }
+
+    /// Bind a baseline captured before submission, including backend-submitted orders.
+    public func trackPositionUpdate(_ update: PositionUpdate) async throws {
+        let response = try await inner.submitted
+        try update.view.bind(update, operation: response.operation, objectId: objectId)
+        positionUpdate.update { $0 = update }
     }
 
     /// The HTTP response (before settlement).
@@ -103,6 +111,7 @@ public final class OrderHandle: @unchecked Sendable {
     public func executionReceipt(timeoutSeconds: TimeInterval = 30) async throws -> OrderExecutionReceipt {
         do {
             let receipt = try await waitExecutionReceipt(timeoutSeconds: timeoutSeconds)
+            if let update = positionUpdate.value { update.view.receive(update, receipt: receipt) }
             await deps.releaseExecution?()
             return receipt
         } catch let error as ArcaError {
@@ -225,6 +234,7 @@ public final class OrderHandle: @unchecked Sendable {
         let release = await deps.holdAccountWatch?()
         do {
             let detail = try await accountedDetail(deadline: deadline, recorded: recorded)
+            if let update = positionUpdate.value { await update.view.accounted(update, detail: detail) }
             await release?()
             return detail
         } catch {

@@ -31,6 +31,22 @@ final class OrderAttachTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    func testAttachedReceiptUpdatesSharedDisplayBeforeReturning() async throws {
+        let arca = makeArca()
+        let view = arca.positionView(objectId: "obj-1")
+        view.observe(try PositionViewTests.snapshot("0", market: "hl:0:BTC"))
+        let update = try view.begin(market: "hl:0:BTC", side: .buy)
+        let order = try await arca.orderHandle(objectId: "obj-1", operationId: "op_place")
+        try await order.trackPositionUpdate(update)
+        let receipt = try await order.executionReceipt(timeoutSeconds: 2)
+        XCTAssertEqual(view.current.value.positions.first?.signedSize, receipt.filledSize)
+        XCTAssertEqual(view.current.value.coverage.first?.operationId, "op_place")
+        XCTAssertEqual(view.current.value.coverage.first?.status, "execution")
+        XCTAssertTrue(OrderAttachProtocol.requests.allSatisfy { $0.hasPrefix("GET ") })
+        arca.resetPositionView(objectId: "obj-1")
+        await arca.ws.disconnect()
+    }
+
     func testAccountedResolvesOnAnAlreadyRecordedOrder() async throws {
         OrderAttachProtocol.fillsComplete = [true]
         let arca = makeArca()
@@ -183,7 +199,7 @@ private final class OrderAttachProtocol: URLProtocol {
               "type": "\(Self.operationType)", "state": "completed",
               \(Self.includeInput ? "\"input\": \"\(input)\"," : "")
               "outcome": "\(outcome)",
-              "createdAt": "2026-09-11T00:00:00.000000Z", "updatedAt": "2026-09-11T00:00:00.000000Z"
+              "createdAt": "2026-09-11T10:00:01.000000Z", "updatedAt": "2026-09-11T10:00:01.000000Z"
             }, "events": [], "deltas": []}}
             """
         case "/api/v1/objects/obj-1/exchange/orders/ord_abc":

@@ -58,6 +58,7 @@ public final class Arca: Sendable {
     public let candleCdnBaseUrl: String?
 
     let autoTracking = SendableBox(AutoTrackingState())
+    let positionViews = SendableBox<[String: PositionView]>([:])
     let metaCache = SendableBox(MetaCacheState())
 
     /// Live `watchExchangeState` re-read hooks by object id, so an order handle

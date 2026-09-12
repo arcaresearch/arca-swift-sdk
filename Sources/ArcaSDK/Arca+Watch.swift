@@ -660,6 +660,7 @@ extension Arca {
 
         let streamState = SendableBox<WatchStreamState>(.loading)
         let stateBox = SendableBox<ExchangeState?>(nil)
+        let visible = positionView(objectId: objectId)
         let structuralBox = SendableBox<ExchangeState?>(nil)
         let midsBox = SendableBox<[String: String]>([:])
         let observationEpoch = SendableBox<UInt64>(0)
@@ -679,6 +680,7 @@ extension Arca {
         /// Callers hold the epoch lock; nothing here re-enters it.
         let invalidate: @Sendable () -> Void = {
             expiryTask.update { $0?.cancel(); $0 = nil }
+            visible.invalidate()
             structuralBox.update { $0 = nil }; stateBox.update { $0 = nil }
             streamState.update { $0 = .reconnecting }
             scheduleRecoveryBox.value?()
@@ -713,6 +715,7 @@ extension Arca {
                 let currentMids = midsBox.value
                 let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
                 stateBox.update { $0 = revalued }
+                visible.observe(revalued)
                 streamState.update { $0 = .connected }
                 continuationBox.value?.yield(revalued)
             }
@@ -770,6 +773,7 @@ extension Arca {
         if armExpiry(initialState, 0) {
             structuralBox.update { $0 = initialState }
             stateBox.update { $0 = initialState }
+            visible.observe(initialState)
             streamState.update { $0 = .connected }
         }
 
@@ -777,6 +781,7 @@ extension Arca {
         let statusTask = Task {
             for await s in statusStream {
                 if s == .disconnected && streamState.value != .loading {
+                    visible.invalidate()
                     streamState.update { $0 = .reconnecting }
                 } else if s == .connected && streamState.value == .reconnecting {
                     await refetch()
@@ -786,7 +791,7 @@ extension Arca {
         // A hole in the server-assigned deliverySeq, or a server resync
         // marker, means at least one frame for this connection was lost, and
         // there is no durable log to replay `exchange.updated` from.
-        let gapId = await ws.onGap { _ in Task { await refetch() } }
+        let gapId = await ws.onGap { _ in visible.invalidate(); Task { await refetch() } }
         let refresherId = registerExchangeStateRefresher(objectId: objectId) { Task { await refetch() } }
 
         await ws.acquireMids(exchange: exchange)
@@ -794,6 +799,13 @@ extension Arca {
 
         let exchangeStream = await ws.exchangeNotifications()
         let midsStream = await ws.midsEvents()
+        let recordedFills = await ws.fillRecordedEvents()
+        let fillTask = Task {
+            for await (fill, event) in recordedFills {
+                guard event.entityId == objectId || event.entityPath == objectPath else { continue }
+                visible.observeFill(market: fill.market, operationId: fill.orderOperationId, orderId: fill.orderId, recordedAt: fill.createdAt)
+            }
+        }
 
         let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ExchangeState.self, bufferingPolicy: .bufferingNewest(1)) { [weak self] continuation in
@@ -838,6 +850,7 @@ extension Arca {
                         guard let base = structuralBox.value else { return }
                         let revalued = base.revalued(with: midsBox.value)
                         stateBox.update { $0 = revalued }
+                        visible.observe(revalued)
                         continuation.yield(revalued)
                     }
                 }
@@ -852,11 +865,11 @@ extension Arca {
                 }
             }
             stopUpdates.update { $0 = {
-                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel(); fillTask.cancel()
                 continuation.finish()
             } }
             continuation.onTermination = { _ in
-                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
+                exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel(); fillTask.cancel()
             }
         }
 
@@ -867,6 +880,7 @@ extension Arca {
             stop: { [ws, weak self] in
                 stopped.update { $0 = true }
                 stopUpdates.value?()
+                fillTask.cancel()
                 statusTask.cancel()
                 expiryTask.update { $0?.cancel(); $0 = nil }
                 recoveryTask.update { $0?.cancel(); $0 = nil }
