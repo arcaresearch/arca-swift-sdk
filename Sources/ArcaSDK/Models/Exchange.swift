@@ -283,6 +283,13 @@ public struct ExchangeState: Codable, Sendable {
     /// ``ActiveAssetData/availability`` breakdown. Absent on venues that have
     /// not declared a model, which clients read as "no reservation".
     public let collateralModel: CollateralModel?
+    /// Every venue-confirmed execution the ledger behind this observation has
+    /// not folded into `positions` and `marginSummary` yet. Compose with
+    /// ``projectedPositions()``; keep the previous money while
+    /// ``isAccountingSettled`` is false. `nil`/empty when nothing is pending,
+    /// and on venues whose accounting is synchronous with execution. See
+    /// ``AccountingPendingExecution``.
+    public let accountingPending: [AccountingPendingExecution]?
 
     public init(
         account: SimAccount, marginSummary: SimMarginSummary,
@@ -293,7 +300,8 @@ public struct ExchangeState: Codable, Sendable {
         collateralModel: CollateralModel? = nil,
         tradingAllocation: TradingAllocationState? = nil,
         financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil,
-        stateRefreshIntervalMs: Int? = nil
+        stateRefreshIntervalMs: Int? = nil,
+        accountingPending: [AccountingPendingExecution]? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -305,6 +313,7 @@ public struct ExchangeState: Codable, Sendable {
         self.tradingAllocation = tradingAllocation
         self.financialInputId = financialInputId; self.mirrorUnsettledFunding = mirrorUnsettledFunding
         self.stateRefreshIntervalMs = stateRefreshIntervalMs
+        self.accountingPending = accountingPending
     }
 
     public init(from decoder: Decoder) throws {
@@ -323,11 +332,13 @@ public struct ExchangeState: Codable, Sendable {
         financialInputId = try container.decodeIfPresent(String.self, forKey: .financialInputId)
         mirrorUnsettledFunding = try container.decodeIfPresent(String.self, forKey: .mirrorUnsettledFunding)
         stateRefreshIntervalMs = try container.decodeIfPresent(Int.self, forKey: .stateRefreshIntervalMs)
+        accountingPending = try container.decodeIfPresent([AccountingPendingExecution].self, forKey: .accountingPending)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
         case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding, stateRefreshIntervalMs
+        case accountingPending
     }
 }
 
@@ -1195,6 +1206,7 @@ extension ExchangeState {
             // native budget as spendable on a HIP-3 dex that may not spend it.
             // Any field added to ExchangeState must be carried through here.
             collateralModel: collateralModel, tradingAllocation: tradingAllocation,
-            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding, stateRefreshIntervalMs: stateRefreshIntervalMs)
+            financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding, stateRefreshIntervalMs: stateRefreshIntervalMs,
+            accountingPending: accountingPending)
     }
 }
