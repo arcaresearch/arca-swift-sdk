@@ -290,6 +290,10 @@ public struct ExchangeState: Codable, Sendable {
     /// and on venues whose accounting is synchronous with execution. See
     /// ``AccountingPendingExecution``.
     public let accountingPending: [AccountingPendingExecution]?
+    /// When the platform began the read this observation came from (RFC 3339,
+    /// nanoseconds). Observations of one account are ordered by it; see
+    /// ``observedBefore(_:)``. `nil` from a platform that predates the field.
+    public let observedAt: String?
 
     public init(
         account: SimAccount, marginSummary: SimMarginSummary,
@@ -301,7 +305,8 @@ public struct ExchangeState: Codable, Sendable {
         tradingAllocation: TradingAllocationState? = nil,
         financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil,
         stateRefreshIntervalMs: Int? = nil,
-        accountingPending: [AccountingPendingExecution]? = nil
+        accountingPending: [AccountingPendingExecution]? = nil,
+        observedAt: String? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -314,6 +319,7 @@ public struct ExchangeState: Codable, Sendable {
         self.financialInputId = financialInputId; self.mirrorUnsettledFunding = mirrorUnsettledFunding
         self.stateRefreshIntervalMs = stateRefreshIntervalMs
         self.accountingPending = accountingPending
+        self.observedAt = observedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -333,12 +339,37 @@ public struct ExchangeState: Codable, Sendable {
         mirrorUnsettledFunding = try container.decodeIfPresent(String.self, forKey: .mirrorUnsettledFunding)
         stateRefreshIntervalMs = try container.decodeIfPresent(Int.self, forKey: .stateRefreshIntervalMs)
         accountingPending = try container.decodeIfPresent([AccountingPendingExecution].self, forKey: .accountingPending)
+        observedAt = try container.decodeIfPresent(String.self, forKey: .observedAt)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
         case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding, stateRefreshIntervalMs
-        case accountingPending
+        case accountingPending, observedAt
+    }
+}
+
+public extension ExchangeState {
+    /// The instant the platform began the read behind this observation:
+    /// ``observedAt``, or the mirror allocation's `asOf` from platforms that
+    /// stamp only that. `nil` when the observation carries no read time.
+    var observationTime: Date? {
+        if let observedAt, let parsed = RFC3339.parse(observedAt) { return parsed }
+        if let asOf = tradingAllocation?.asOf, let parsed = RFC3339.parse(asOf) { return parsed }
+        return nil
+    }
+
+    /// Whether this observation describes an earlier ledger state than
+    /// `other`. Reads of one account race — a push, a re-read after a gap and
+    /// an application's own `getExchangeState` can complete in any order —
+    /// and a frame that resolves later is not therefore newer. Applying an
+    /// observation only when this is false for the one already applied keeps
+    /// positions and balances monotonic: a fill never appears, disappears
+    /// and reappears because a pre-fill read landed late. `false` when either
+    /// side carries no read time, so unstamped observations apply as before.
+    func observedBefore(_ other: ExchangeState) -> Bool {
+        guard let mine = observationTime, let theirs = other.observationTime else { return false }
+        return mine < theirs
     }
 }
 

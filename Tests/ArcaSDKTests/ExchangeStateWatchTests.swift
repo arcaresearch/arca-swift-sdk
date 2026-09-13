@@ -77,6 +77,46 @@ final class ExchangeStateWatchTests: XCTestCase {
         await arca.ws.disconnect()
     }
 
+    /// Reads of one account race. A frame the platform read before the one
+    /// already applied — a pre-fill snapshot resolving late — must not replace
+    /// it, whatever order the two arrived in; a genuinely newer one still does.
+    func testAnObservationReadBeforeTheAppliedOneIsDropped() async throws {
+        let arca = makeArca()
+        let stream = try await arca.watchExchangeState(objectId: "obj_1")
+        func push(equity: String, observedAt: String) async {
+            await arca.ws.injectMessage(#"""
+            {"type":"exchange.updated","entityId":"obj_1","entityPath":"/exchanges/main",
+             "exchangeState":{"observedAt":"\#(observedAt)",
+               "account":{"id":"act_1","realmId":"rlm_test","name":"main","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},
+               "marginSummary":{"equity":"\#(equity)","initialMarginUsed":"0","maintenanceMarginRequired":"0","availableToWithdraw":"\#(equity)","totalNtlPos":"0","totalUnrealizedPnl":"0"},
+               "positions":[],"openOrders":[],"pendingIntents":[{"operationId":"op_\#(equity)","operationPath":"/ops/1","market":"hl:0:BTC","side":"buy","size":"0.1","orderType":"MARKET","reduceOnly":false,"createdAt":"2026-01-01T00:00:00Z"}]}}
+            """#)
+        }
+        func wait(forEquity equity: String) async {
+            let seen = expectation(description: "equity \(equity) applied")
+            let observer = stream.exchangeState.onChange { state in
+                if state?.marginSummary.equity == equity { seen.fulfill() }
+            }
+            await fulfillment(of: [seen], timeout: 1.0)
+            stream.exchangeState.removeObserver(observer)
+        }
+
+        await push(equity: "1200", observedAt: "2026-09-13T06:37:40.700000Z")
+        await wait(forEquity: "1200")
+
+        // Older read, delivered later. Nothing to wait for: it must be ignored.
+        await push(equity: "900", observedAt: "2026-09-13T06:37:39.7Z")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(stream.exchangeState.value?.marginSummary.equity, "1200", "a pre-fill frame that resolved late replaced the newer state")
+        XCTAssertEqual(ExchangeStateWatchProtocol.stateRequestCount, 1, "dropping a stale frame is not a reason to re-read")
+
+        await push(equity: "1300", observedAt: "2026-09-13T06:37:40.700001Z")
+        await wait(forEquity: "1300")
+
+        await stream.stop()
+        await arca.ws.disconnect()
+    }
+
     func testUnavailableStateClearsMoneyWithoutRefetchAndRecoversOnPush() async throws {
         let arca = makeArca()
         let stream = try await arca.watchExchangeState(objectId: "obj_1")

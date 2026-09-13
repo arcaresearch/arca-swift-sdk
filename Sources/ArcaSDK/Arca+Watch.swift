@@ -708,6 +708,17 @@ extension Arca {
         let apply: @Sendable (ExchangeState, UInt64) -> Void = { structural, epoch in
             observationEpoch.update { current in
                 guard current == epoch else { return }
+                // The epoch orders this read against pushes that arrived
+                // while it was in flight; the read time orders it against
+                // the state already applied. A frame the platform read
+                // before that state describes an older ledger — a pre-fill
+                // snapshot resolving late — and must not replace it.
+                if let last = structuralBox.value, structural.observedBefore(last) {
+                    self.log.debug("watch", "dropped an exchange state observed before the one applied",
+                                   metadata: ["objectId": objectId, "observedAt": structural.observedAt ?? "",
+                                              "appliedAt": last.observedAt ?? ""])
+                    return
+                }
                 current &+= 1
                 guard armExpiry(structural, current) else { return }
                 clearRecovery()
