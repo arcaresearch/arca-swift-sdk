@@ -344,17 +344,33 @@ final class WebSocketManagerTests: XCTestCase {
 
     /// The end-to-end shape of the bug: a second `watchPrices()` on the same
     /// socket returns with its prices already populated.
+    ///
+    /// Runs on the mock transport, not a real dial. `watchPrices()` calls
+    /// `ensureConnected()`, and with a real `URLSessionWebSocketTask` against
+    /// a port nobody listens on the manager fails to connect on its own
+    /// backoff schedule, emits `.disconnected`, and the stream's status task
+    /// flips it to `.reconnecting` — a race against the assertion below that
+    /// the pre-push suite lost roughly one run in five on 2026-09-19/20
+    /// (`("reconnecting") is not equal to ("connected")`). The property under
+    /// test is the retained snapshot; the socket's health is a fixture, so it
+    /// is fixed: the mock authenticates and never drops.
     func testSecondWatchPricesIsPopulatedOnReturn() async throws {
         let arca = try Arca(
             token: fakeJwt(),
             baseURL: URL(string: "http://localhost:19998")!
         )
+        let factory = MockTransportFactory()
+        await arca.ws.setTransportFactory(factory.make())
 
         let firstTask = Task { try await arca.watchPrices() }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+        try await waitUntil { factory.count >= 1 }
+        guard let socket = factory.socket(0) else { return XCTFail("no socket was opened") }
+        socket.deliver(#"{"type":"authenticated"}"#)
+        try await waitUntil { await arca.ws.status == .connected }
+        socket.deliver(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
         let first = try await firstTask.value
         XCTAssertEqual(first.prices.value["hl:0:BTC"], "80000")
+        XCTAssertEqual(first.state.value, .connected)
 
         // No injection between here and the assertion: the second stream has
         // to resolve off the retained map alone. Bounded, because the failure
@@ -377,6 +393,18 @@ final class WebSocketManagerTests: XCTestCase {
         await second.stop()
         await first.stop()
         await arca.ws.disconnect()
+    }
+
+    /// Poll a condition to a bounded deadline. Fails the test on timeout
+    /// rather than hanging it, which is what a bare `while` would do if the
+    /// manager never reached the expected state.
+    private func waitUntil(timeout: TimeInterval = 2, _ condition: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let met = await condition()
+        XCTAssertTrue(met, "condition not met within \(timeout)s")
     }
 
     private func fakeJwt() -> String {
