@@ -32,6 +32,10 @@ public final class ArcaClient: @unchecked Sendable {
     }
     private let baseURL: URL
     private let session: URLSession
+    /// Session for long-lived `text/event-stream` responses: the request
+    /// timeout covers several missed 20 s heartbeats and the resource
+    /// lifetime is unbounded, the way the WebSocket session is.
+    let streamSession: URLSession
     private let decoder: JSONDecoder
 
     private let onUnauthorized: (@Sendable (AuthRefreshTrigger) async throws -> String)?
@@ -61,6 +65,12 @@ public final class ArcaClient: @unchecked Sendable {
         self._token = token
         self.baseURL = baseURL.appendingPathComponent("api/v1")
         self.session = URLSession(configuration: urlSessionConfiguration)
+        // Same configuration (proxies, test protocol classes) with stream
+        // timeouts; `copy()` keeps the caller's session untouched.
+        let streamConfiguration = (urlSessionConfiguration.copy() as? URLSessionConfiguration) ?? urlSessionConfiguration
+        streamConfiguration.timeoutIntervalForRequest = ArcaNetworkTimeouts.streamIdle
+        streamConfiguration.timeoutIntervalForResource = TimeInterval.greatestFiniteMagnitude
+        self.streamSession = URLSession(configuration: streamConfiguration)
         self.decoder = JSONDecoder()
         self.onUnauthorized = onUnauthorized
         self.onAuthError = onAuthError
@@ -325,6 +335,59 @@ public final class ArcaClient: @unchecked Sendable {
         return envelope.data!
     }
 
+    // MARK: - Server-sent events
+
+    /// An authorised GET for a `text/event-stream` endpoint. `lastEventID`
+    /// is sent as `Last-Event-ID` so the server resumes the stream.
+    func streamRequest(path: String, query: [String: String]?, lastEventID: String?) -> URLRequest {
+        var request = URLRequest(url: buildURL(path: path, query: query))
+        request.httpMethod = "GET"
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(
+            Self.advertisedCapabilities.joined(separator: ","),
+            forHTTPHeaderField: Self.clientCapabilitiesHeader
+        )
+        if let lastEventID {
+            request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+        }
+        return request
+    }
+
+    /// The error a refused stream connection carries: the API envelope
+    /// mapped exactly as the REST path maps it, or the raw status.
+    func streamRefusal(data: Data, statusCode: Int) -> ArcaError {
+        if let envelope = try? decoder.decode(APIResponse<EmptyData>.self, from: data), let error = envelope.error {
+            if statusCode == 401 {
+                return .unauthorized(message: error.message, errorId: error.errorId)
+            }
+            return mapAPIError(code: error.code, message: error.message, errorId: error.errorId, details: error.details?.values)
+        }
+        if statusCode == 401 {
+            return .unauthorized(message: "Invalid or expired authentication", errorId: nil)
+        }
+        return .unknown(code: "HTTP_\(statusCode)", message: "Stream refused with status \(statusCode)", errorId: nil)
+    }
+
+    /// Whether a refresh hook is configured, so a stream can retry a 401/403
+    /// once with a fresh credential.
+    var canRefreshToken: Bool { onUnauthorized != nil }
+
+    /// Ask the provider for a fresh credential and install it. Throws what
+    /// the provider throws; also reports it through `onAuthError`.
+    func refreshToken(_ trigger: AuthRefreshTrigger) async throws {
+        guard let onUnauthorized else {
+            throw ArcaError.unauthorized(message: "No token provider configured", errorId: nil)
+        }
+        do {
+            self.token = try await onUnauthorized(trigger)
+        } catch {
+            onAuthError?(error)
+            throw error
+        }
+    }
+
     // MARK: - URL Building
 
     private func buildURL(path: String, query: [String: String]?) -> URL {
@@ -350,6 +413,9 @@ public final class ArcaClient: @unchecked Sendable {
 private struct TransientHTTPError: Error {
     let statusCode: Int
 }
+
+/// `data` placeholder for envelopes read only for their error.
+struct EmptyData: Decodable {}
 
 /// Type-erased Encodable wrapper for encoding arbitrary request bodies.
 private struct AnyEncodable: Encodable {

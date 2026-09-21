@@ -173,6 +173,22 @@ for await (operation, event) in await arca.ws.operationEvents() {
 }
 ```
 
+### Wallet Account (V9 cash)
+
+One read and one stream per owner-facing wallet, composed by Arca from durable
+records with no chain call. The stream delivers the *complete* Wallet Account on
+connect and after every change (at most one per 250 ms), resumes with
+`Last-Event-ID` and 1 s → 30 s backoff after a disconnect, and throws only when
+the server refuses the connection.
+
+```swift
+let wallet = try await arca.walletAccount(boundaryId: boundaryId)
+
+for try await wallet in arca.walletAccountEvents(boundaryId: boundaryId) {
+    render(wallet) // wallet.typedWalletState, wallet.balances, wallet.autoDeposit, wallet.operations
+}
+```
+
 ### Socket rotation
 
 Infrastructure in front of the API caps how long any WebSocket may stay open, and for a socket that cap is a maximum lifetime, not an idle timeout — a busy connection is severed on schedule. Reaching it costs an unplanned reconnect (backoff, TCP, TLS, auth, resubscribe), during which a price display holds its last value and looks frozen. The SDK replaces the socket before the cap: a second connection authenticates and re-issues every subscription while the current one keeps streaming, and only takes over once the server confirms the new subscriptions are live. Nothing is missed, no status change is emitted, and a failure anywhere leaves the original socket serving.

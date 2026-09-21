@@ -18,6 +18,11 @@ public enum ArcaNetworkTimeouts {
 
     /// Maximum total lifetime of a single resource fetch.
     public static let resource: TimeInterval = 60
+
+    /// Maximum silence on a server-sent-event stream before it is treated as
+    /// dead and reconnected. The Wallet Account stream heartbeats every 20 s,
+    /// so this is three missed heartbeats.
+    public static let streamIdle: TimeInterval = 75
 }
 
 public extension URLSessionConfiguration {
