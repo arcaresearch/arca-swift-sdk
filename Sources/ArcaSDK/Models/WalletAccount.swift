@@ -91,11 +91,28 @@ public struct WalletAccount: Codable, Equatable, Sendable {
     public let balances: WalletBalances
     public let autoDeposit: WalletAutoDeposit?
     public let operations: [WalletOperation]
+    /// Action-proposal attempts awaiting the owner's answer, soonest deadline
+    /// first. Nil from servers that predate them.
+    public let requirements: [WalletRequirement]?
     /// Explicit deposit links into this boundary; with an active one,
     /// `source` and `autoDeposit` describe its source wallet. Nil when none.
     public var depositLinks: [WalletDepositLink]? = nil
 
     public var typedWalletState: WalletState? { WalletState(rawValue: walletState) }
+}
+
+/// One open action-proposal attempt on the account. `expiresAt` is the signed
+/// deadline in unix seconds; past it the attempt cannot be accepted. Read the
+/// proposal for its payload.
+public struct WalletRequirement: Codable, Equatable, Sendable {
+    public let proposalId: String
+    public let requirementId: String
+    public let attemptId: String
+    public let actionKind: String
+    public let schemaId: String
+    public let variant: String
+    public let state: String
+    public let expiresAt: Int64
 }
 
 /// `walletState` values.
