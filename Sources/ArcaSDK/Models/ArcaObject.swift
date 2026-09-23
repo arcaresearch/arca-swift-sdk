@@ -9,6 +9,8 @@ public enum ArcaObjectType: Codable, Sendable, Equatable {
     case withdrawal
     case escrow
     case info
+    /// An external wallet-provider account (Privy). Holds no balance.
+    case provider
     case unknown(String)
 
     private static let mapping: [(String, ArcaObjectType)] = [
@@ -18,6 +20,7 @@ public enum ArcaObjectType: Codable, Sendable, Equatable {
         ("withdrawal", .withdrawal),
         ("escrow", .escrow),
         ("info", .info),
+        ("provider", .provider),
     ]
 
     public init(from decoder: Decoder) throws {
@@ -194,6 +197,10 @@ public struct ArcaObjectDetailResponse: Codable, Sendable {
     public let balances: [ArcaBalance]
     public let reservedBalances: [ReservedBalance]?
     public let positions: [ArcaPositionCurrent]?
+    /// Present on provider objects.
+    public var provider: ProviderDetail? = nil
+    /// Deposit links this object is either end of.
+    public var depositLinks: [DepositLink]? = nil
 }
 
 public struct ArcaObjectVersionsResponse: Codable, Sendable {

@@ -91,6 +91,9 @@ public struct WalletAccount: Codable, Equatable, Sendable {
     public let balances: WalletBalances
     public let autoDeposit: WalletAutoDeposit?
     public let operations: [WalletOperation]
+    /// Explicit deposit links into this boundary; with an active one,
+    /// `source` and `autoDeposit` describe its source wallet. Nil when none.
+    public var depositLinks: [WalletDepositLink]? = nil
 
     public var typedWalletState: WalletState? { WalletState(rawValue: walletState) }
 }

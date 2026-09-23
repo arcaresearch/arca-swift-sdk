@@ -302,6 +302,8 @@ public enum DeltaType: Codable, Sendable, Equatable {
     case statusChange
     case holdChange
     case labelsChange
+    case providerChange
+    case depositLinkChange
     case creation
     case deletion
     case unknown(String)
@@ -314,6 +316,8 @@ public enum DeltaType: Codable, Sendable, Equatable {
         ("status_change", .statusChange),
         ("hold_change", .holdChange),
         ("labels_change", .labelsChange),
+        ("provider_change", .providerChange),
+        ("deposit_link_change", .depositLinkChange),
         ("creation", .creation),
         ("deletion", .deletion),
     ]
