@@ -368,6 +368,108 @@ public actor WebSocketManager {
         for (id, value) in ready { pathSnapshotWaiters.removeValue(forKey: id); value.1.resume(returning: operations) }
     }
 
+    // MARK: - Event Type Interest
+
+    // Realm event types subscribed by TYPE rather than by path. SDK-internal
+    // owners (operation waits, order capture) hold these instead of a
+    // realm-root watch, which would assemble a full-realm snapshot and put
+    // every realm event on this socket. Counted so one owner's release cannot
+    // unsubscribe a type another still needs.
+    private var eventTypeRefs: [String: Int] = [:]
+    private var acknowledgedEventTypes: [String: Int] = [:]
+    // generation -> type -> latest request id. Only the latest request's
+    // acknowledgement counts, so a stale one cannot pass for a fresh barrier.
+    private var eventTypeRequests: [Int: [String: String]] = [:]
+    private var eventTypeReadyWaiters: [UUID: ([String], CheckedContinuation<Void, Error>)] = [:]
+
+    func acquireEventTypes(_ types: [String]) {
+        cancelIdleTimer()
+        var added: [String] = []
+        for type in types {
+            let prev = eventTypeRefs[type, default: 0]
+            eventTypeRefs[type] = prev + 1
+            guard prev == 0 else { continue }
+            if let task = unsubTasks.removeValue(forKey: "event:\(type)") { task.cancel() } else { added.append(type) }
+        }
+        if !added.isEmpty {
+            ensureConnected()
+            sendEventTypes(added, generation: primaryGeneration)
+        }
+    }
+
+    func releaseEventTypes(_ types: [String]) {
+        for type in types {
+            let current = eventTypeRefs[type, default: 0]
+            if current > 1 { eventTypeRefs[type] = current - 1; continue }
+            guard current == 1 else { continue }
+            eventTypeRefs.removeValue(forKey: type)
+            let timerKey = "event:\(type)"
+            unsubTasks[timerKey] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+                guard !Task.isCancelled else { return }
+                await self?.finishEventTypeRelease(type, timerKey: timerKey)
+            }
+        }
+    }
+
+    private func finishEventTypeRelease(_ type: String, timerKey: String) {
+        unsubTasks.removeValue(forKey: timerKey)
+        if eventTypeRefs[type] == nil {
+            acknowledgedEventTypes.removeValue(forKey: type)
+            eventTypeRequests[primaryGeneration]?.removeValue(forKey: type)
+            sendMessage(.unsubscribeEvents(types: [type]))
+        }
+        maybeStartIdleTimer()
+    }
+
+    /// The server's acknowledgement of a type subscription on the current
+    /// connection is the registration barrier: anything published after it
+    /// reaches this socket. Sending the subscription alone does not close the
+    /// gap.
+    func awaitEventTypesReady(_ types: [String]) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if eventTypesReady(types) { continuation.resume() } else { eventTypeReadyWaiters[id] = (types, continuation) }
+            }
+        } onCancel: { Task { await self.cancelEventTypesReady(id) } }
+    }
+
+    /// Actual-gap recovery requires a newly acknowledged subscription, even if
+    /// an earlier acknowledgement is cached — the type-routed counterpart of
+    /// ``recoverPathReady(_:)``.
+    func recoverEventTypesReady(_ types: [String]) async throws {
+        acquireEventTypes(types)
+        defer { releaseEventTypes(types) }
+        sendEventTypes(types, generation: primaryGeneration)
+        try await awaitEventTypesReady(types)
+    }
+
+    private func eventTypesReady(_ types: [String]) -> Bool {
+        _status == .connected && types.allSatisfy {
+            eventTypeRefs[$0, default: 0] > 0 && acknowledgedEventTypes[$0] == primaryGeneration
+        }
+    }
+
+    private func cancelEventTypesReady(_ id: UUID) {
+        eventTypeReadyWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
+    }
+
+    private func sendEventTypes(_ types: [String], generation: Int) {
+        let requestId = "events-" + UUID().uuidString
+        for type in types { eventTypeRequests[generation, default: [:]][type] = requestId }
+        if generation == primaryGeneration { for type in types { acknowledgedEventTypes.removeValue(forKey: type) } }
+        sendMessage(.subscribeEvents(types: types, requestId: requestId), generation: generation)
+    }
+
+    private func acknowledgeEventTypes(_ types: [String]) {
+        guard _status == .connected else { return }
+        for type in types where eventTypeRefs[type, default: 0] > 0 { acknowledgedEventTypes[type] = primaryGeneration }
+        let ready = eventTypeReadyWaiters.filter { eventTypesReady($0.value.0) }
+        for (id, value) in ready { eventTypeReadyWaiters.removeValue(forKey: id); value.1.resume() }
+    }
+
     func onOperationSnapshot(_ handler: @escaping @Sendable ([Operation]) -> Void) -> UUID {
         let id = UUID(); operationSnapshotHandlers[id] = handler; return id
     }
@@ -581,6 +683,7 @@ public actor WebSocketManager {
 
     private func hasAnyInterest() -> Bool {
         !pathRefs.isEmpty || midsRefs > 0 || !candleRefCoins.isEmpty || !oiRefCoins.isEmpty || !chartHistoryWatches.isEmpty
+            || !eventTypeRefs.isEmpty
     }
 
     public func watchChartHistory(target: String, kind: String = "path", objectId: String? = nil) -> String {
@@ -1214,8 +1317,16 @@ public actor WebSocketManager {
                 return
             }
 
+            if msgType == "events_subscribed" {
+                if let requestId = json["requestId"] as? String {
+                    let types = (eventTypeRequests[primaryGeneration] ?? [:]).filter { $0.value == requestId }.map(\.key)
+                    if !types.isEmpty { acknowledgeEventTypes(types) }
+                }
+                return
+            }
+
             if msgType == "authenticated" {
-                acknowledgedPaths.removeAll(); acknowledgedOperations.removeAll()
+                acknowledgedPaths.removeAll(); acknowledgedOperations.removeAll(); acknowledgedEventTypes.removeAll()
                 log.info("websocket", "authenticated")
                 reconnectAttempt = 0
                 lastDeliverySeq = 0
@@ -1777,6 +1888,13 @@ public actor WebSocketManager {
             sendPathWatch(path, generation: generation)
         }
         pathWatchRequests = pathWatchRequests.filter { $0.key == generation }
+        // Same barrier for type subscriptions: the warming batch's are proven
+        // registered by the pong; any taken after it need their own.
+        let warmedTypes = eventTypeRefs.keys.filter { eventTypeRequests[generation]?[$0] != nil }
+        let unwarmedTypes = eventTypeRefs.keys.filter { eventTypeRequests[generation]?[$0] == nil }
+        if !warmedTypes.isEmpty { acknowledgeEventTypes(Array(warmedTypes)) }
+        if !unwarmedTypes.isEmpty { sendEventTypes(Array(unwarmedTypes), generation: generation) }
+        eventTypeRequests = eventTypeRequests.filter { $0.key == generation }
         receiveTask = handoffReceiveTask
         handoffReceiveTask = nil
         retiring?.stop(reason: nil)
@@ -1988,6 +2106,9 @@ public actor WebSocketManager {
         }
         for path in pathRefs.keys {
             sendPathWatch(path, generation: generation)
+        }
+        if !eventTypeRefs.isEmpty {
+            sendEventTypes(Array(eventTypeRefs.keys), generation: generation)
         }
         for (watchId, req) in chartHistoryWatches {
             sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId),

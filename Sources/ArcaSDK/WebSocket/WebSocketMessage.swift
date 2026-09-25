@@ -17,6 +17,8 @@ enum OutboundMessage: Encodable {
     case unwatchProjection(watchId: String)
     case attachAggregationWatch(watchId: String)
     case detachAggregationWatch(watchId: String)
+    case subscribeEvents(types: [String], requestId: String?)
+    case unsubscribeEvents(types: [String])
     case ping
     case presence(foreground: Bool)
 
@@ -77,6 +79,13 @@ enum OutboundMessage: Encodable {
         case .detachAggregationWatch(let watchId):
             try container.encode("detach_aggregation_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
+        case .subscribeEvents(let types, let requestId):
+            try container.encode("subscribe_events", forKey: .action)
+            try container.encode(types, forKey: .types)
+            try container.encodeIfPresent(requestId, forKey: .requestId)
+        case .unsubscribeEvents(let types):
+            try container.encode("unsubscribe_events", forKey: .action)
+            try container.encode(types, forKey: .types)
         case .presence(let foreground):
             try container.encode("ping", forKey: .action)
             try container.encode(foreground, forKey: .foreground)
@@ -87,7 +96,7 @@ enum OutboundMessage: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case action, token, realmId, capabilities, foreground, exchange, coins, intervals, path, batch
-        case watchId, target, kind, objectId, projection, requestId
+        case watchId, target, kind, objectId, projection, requestId, types
     }
 }
 

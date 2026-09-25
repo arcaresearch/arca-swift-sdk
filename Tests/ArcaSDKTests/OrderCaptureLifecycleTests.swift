@@ -19,6 +19,14 @@ final class OrderCaptureLifecycleTests: XCTestCase {
         while !(await condition()) && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
         let passed = await condition(); XCTAssertTrue(passed)
     }
+    // Order capture holds its event types by subscription, never a realm-root
+    // watch: releasing capture is observed as `unsubscribe_events`.
+    func testCaptureSubscribesByTypeAndNeverWatchesTheRoot() async throws {
+        let (ws, socket, capture) = try await harness()
+        try await waitFor { socket.sentActions.contains("subscribe_events") }
+        XCTAssertFalse(socket.sentActions.contains("watch"))
+        await capture.stop(); await ws.disconnect()
+    }
     private func harness() async throws -> (WebSocketManager, MockWebSocketTransport, OrderEventCapture) {
         let factory = MockTransportFactory()
         let ws = WebSocketManager(baseURL: URL(string: "http://localhost:19999")!, token: "test", realmId: "realm", connectionLifetime: 0)
@@ -37,7 +45,7 @@ final class OrderCaptureLifecycleTests: XCTestCase {
             if terminalFirst { await ws.injectMessage(terminal()) }
             await ws.injectMessage(try operationEvent(operation(outcome: #"{"orderId":"venue","status":"OPEN","filledSize":"0"}"#)))
             if !terminalFirst { await ws.injectMessage(terminal()) }
-            try await waitFor { socket.sentActions.contains("unwatch") }
+            try await waitFor { socket.sentActions.contains("unsubscribe_events") }
             await capture.stop(); await ws.disconnect()
         }
     }
@@ -47,26 +55,26 @@ final class OrderCaptureLifecycleTests: XCTestCase {
         await ws.injectMessage(try operationEvent(operation(outcome: #"{"orderId":"wrong"}"#, account: "foreign")))
         await capture.submitted(try operation(), objectId: "account")
         try await Task.sleep(nanoseconds: 30_000_000)
-        XCTAssertFalse(socket.sentActions.contains("unwatch"))
+        XCTAssertFalse(socket.sentActions.contains("unsubscribe_events"))
         await ws.injectMessage(terminal(order: "other"))
         await ws.injectMessage(terminal(account: "foreign"))
         try await Task.sleep(nanoseconds: 30_000_000)
-        XCTAssertFalse(socket.sentActions.contains("unwatch"))
+        XCTAssertFalse(socket.sentActions.contains("unsubscribe_events"))
         await ws.injectMessage(try operationEvent(operation(outcome: #"{"orderId":"venue","status":"OPEN","filledSize":"0"}"#)))
-        try await waitFor { socket.sentActions.contains("unwatch") }
+        try await waitFor { socket.sentActions.contains("unsubscribe_events") }
         await capture.stop(); await ws.disconnect()
     }
     func testKnownOrderCannotBeReplacedByAnotherLegAndKeepsOtherWatchOwner() async throws {
         let (ws, socket, capture) = try await harness()
-        await ws.watchPath("/") // another consumer owns the same shared path
+        await ws.acquireEventTypes(OrderEventCapture.executionTypes) // another consumer owns the same types
         await capture.submitted(try operation(outcome: #"{"orderId":"venue","status":"OPEN","filledSize":"0"}"#), objectId: "account")
         await ws.injectMessage(try operationEvent(operation(outcome: #"{"orderId":"other","status":"OPEN","filledSize":"0"}"#)))
         await ws.injectMessage(terminal(order: "other"))
         try await Task.sleep(nanoseconds: 30_000_000)
-        await ws.unwatchPath("/") // if capture released incorrectly this sends unwatch
-        XCTAssertFalse(socket.sentActions.contains("unwatch"))
+        await ws.releaseEventTypes(OrderEventCapture.executionTypes) // if capture released incorrectly this unsubscribes
+        XCTAssertFalse(socket.sentActions.contains("unsubscribe_events"))
         await ws.injectMessage(terminal())
-        try await waitFor { socket.sentActions.contains("unwatch") }
+        try await waitFor { socket.sentActions.contains("unsubscribe_events") }
         await capture.stop(); await ws.disconnect()
     }
     func testReceiptTimeoutStillReleasesLaterWithoutRetry() async throws {
@@ -83,10 +91,10 @@ final class OrderCaptureLifecycleTests: XCTestCase {
         do { _ = try await handle.executionReceipt(timeoutSeconds: 0.02); XCTFail("expected timeout") }
         catch ArcaError.unknown(let code, _, _) { XCTAssertEqual(code, "TIMEOUT") }
         catch { XCTFail("Unexpected error: \(error)") }
-        XCTAssertFalse(socket.sentActions.contains("unwatch"))
+        XCTAssertFalse(socket.sentActions.contains("unsubscribe_events"))
         await ws.injectMessage(try operationEvent(operation(outcome: #"{"orderId":"venue","status":"OPEN","filledSize":"0"}"#)))
         await ws.injectMessage(terminal())
-        try await waitFor { socket.sentActions.contains("unwatch") }
+        try await waitFor { socket.sentActions.contains("unsubscribe_events") }
         _ = try await handle.submitted // keep the handle alive; deinit cannot mask ownership
         await ws.disconnect()
     }

@@ -3,6 +3,11 @@ import Foundation
 /// Retains execution evidence across submission/settlement. Starting this capture
 /// installs local observers before POST without waiting for a network ACK.
 actor OrderEventCapture {
+    /// The types the capture consumes, subscribed by type: a realm-root watch
+    /// would also assemble a full-realm snapshot and put every realm event on
+    /// the socket for each order in flight.
+    static let executionTypes = ["order.updated", "operation.updated", "fill.previewed", "fill.recorded"]
+    static let fillTypes = ["fill.previewed", "fill.recorded"]
     private let ws: WebSocketManager
     private var setup: Task<Void, Never>?
     private var consumer: Task<Void, Never>?
@@ -44,8 +49,8 @@ actor OrderEventCapture {
         guard !closed else { return }
         let input = await ws.orderExecutionEvents()
         guard !closed else { return }
-        await ws.watchPath("/")
-        if closed { await ws.unwatchPath("/"); return }
+        await ws.acquireEventTypes(Self.executionTypes)
+        if closed { await ws.releaseEventTypes(Self.executionTypes); return }
         acquired = true
         consumer = Task { [weak self] in
             for await event in input {
@@ -105,7 +110,7 @@ actor OrderEventCapture {
         // Register live delivery before copying replay; overlapping delivery is
         // intentional and is deduplicated by stable execution identity.
         let live = await ws.fillEvents()
-        await ws.watchPath("/")
+        await ws.acquireEventTypes(Self.fillTypes)
         let captured = replay.compactMap { event in event.executionFill.map { ($0, event) } }
         let ws = self.ws
         return AsyncStream { continuation in
@@ -116,7 +121,7 @@ actor OrderEventCapture {
             }
             continuation.onTermination = { _ in
                 task.cancel()
-                Task { await ws.unwatchPath("/") }
+                Task { await ws.releaseEventTypes(Self.fillTypes) }
             }
         }
     }
@@ -124,7 +129,7 @@ actor OrderEventCapture {
         await start()
         try Task.checkCancellation()
         guard !closed else { throw CancellationError() }
-        try await ws.awaitPathReady("/")
+        try await ws.awaitEventTypesReady(Self.executionTypes)
     }
     func events() -> AsyncStream<RealmEvent> {
         let id = UUID()
@@ -142,6 +147,6 @@ actor OrderEventCapture {
         consumer?.cancel()
         for observer in observers.values { observer.finish() }
         observers.removeAll()
-        if acquired { acquired = false; await ws.unwatchPath("/") }
+        if acquired { acquired = false; await ws.releaseEventTypes(Self.executionTypes) }
     }
 }

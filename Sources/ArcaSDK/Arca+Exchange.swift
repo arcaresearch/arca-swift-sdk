@@ -267,9 +267,9 @@ extension Arca {
             executionEvents: { await capture.events() },
             getExecutionOperation: { [self] id in try await self.getOperation(operationId: id).operation },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
+            recoverExecutionReady: { [self] in try await self.ws.recoverEventTypesReady(OrderEventCapture.executionTypes) },
             recordedFillEvents: { [self] in await self.ws.fillRecordedEvents() },
-            holdAccountWatch: { [self] in await self.holdRootWatch() },
+            holdAccountWatch: { [self] in await self.holdRecordedFills() },
             exchangeStateChanged: { [self] objectId in self.refreshExchangeStateWatches(objectId: objectId) }
         )
 
@@ -1018,14 +1018,16 @@ extension Arca {
         return stream
     }
 
-    /// Hold the realm-root path watch until the returned release runs. Used
-    /// by ``OrderHandle/accounted(timeoutSeconds:)`` so `fill.recorded` frames
-    /// reach this socket even when the app holds no other watch covering the
-    /// account. Ref-counted with every other owner of `/`.
-    private func holdRootWatch() async -> @Sendable () async -> Void {
-        await ws.watchPath("/")
+    /// Hold a `fill.recorded` type subscription until the returned release
+    /// runs. Used by ``OrderHandle/accounted(timeoutSeconds:)`` so recorded
+    /// fills reach this socket even when the app holds no other watch covering
+    /// the account. Type-routed on purpose: a realm-root watch would also
+    /// assemble a full-realm snapshot and deliver every realm event here.
+    private func holdRecordedFills() async -> @Sendable () async -> Void {
+        let types = [EventType.fillRecorded.rawValue]
+        await ws.acquireEventTypes(types)
         let ws = self.ws
-        return { await ws.unwatchPath("/") }
+        return { await ws.releaseEventTypes(types) }
     }
 
     private func makeOrderHandleDeps(capture: OrderEventCapture? = nil,
@@ -1058,9 +1060,9 @@ extension Arca {
             },
             getExecutionOperation: { [self] id in projection(try await self.getOperation(operationId: id).operation) },
             executionGaps: { [self] in await self.orderExecutionGaps() },
-            recoverExecutionReady: { [self] in try await self.ws.recoverPathReady("/") },
+            recoverExecutionReady: { [self] in try await self.ws.recoverEventTypesReady(OrderEventCapture.executionTypes) },
             recordedFillEvents: { [self] in await self.ws.fillRecordedEvents() },
-            holdAccountWatch: { [self] in await self.holdRootWatch() },
+            holdAccountWatch: { [self] in await self.holdRecordedFills() },
             exchangeStateChanged: { [self] objectId in self.refreshExchangeStateWatches(objectId: objectId) }
         )
     }

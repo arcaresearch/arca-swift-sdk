@@ -127,7 +127,10 @@ extension Arca {
                 snapshotResults.continuation.yield(operation)
             }
         }
-        await ws.watchPath("/")
+        // Type routing, not a realm-root watch: the root watch assembled a
+        // full-realm snapshot and put every realm event on this socket.
+        let operationTypes = [EventType.operationCreated.rawValue, EventType.operationUpdated.rawValue]
+        await ws.acquireEventTypes(operationTypes)
         defer {
             requests.continuation.finish()
             snapshotResults.continuation.finish()
@@ -136,7 +139,7 @@ extension Arca {
                 await ws.removeAuthenticatedHandler(auth)
                 await ws.removeRotatedHandler(rotated)
                 await ws.removeOperationSnapshotHandler(snapshots)
-                await ws.unwatchPath("/")
+                await ws.releaseEventTypes(operationTypes)
             }
         }
         recover()
@@ -165,17 +168,19 @@ extension Arca {
                     for attempt in 0..<3 {
                         var acknowledged = false
                         do {
-                            let operations = try await withThrowingTaskGroup(of: [Operation].self) { ack in
+                            // Once the subscription is acknowledged every later
+                            // operation event reaches this socket, so the read
+                            // below covers the window the stream could not.
+                            try await withThrowingTaskGroup(of: Void.self) { ack in
                                 defer { ack.cancelAll() }
-                                ack.addTask { try await self.ws.recoverPathSnapshotOperations("/") }
+                                ack.addTask { try await self.ws.recoverEventTypesReady(operationTypes) }
                                 ack.addTask {
                                     try await Task.sleep(nanoseconds: 1_000_000_000)
-                                    throw ArcaError.unknown(code: "ACK_TIMEOUT", message: "Operation snapshot acknowledgement timed out", errorId: nil)
+                                    throw ArcaError.unknown(code: "ACK_TIMEOUT", message: "Operation subscription acknowledgement timed out", errorId: nil)
                                 }
-                                return try await ack.next()!
+                                try await ack.next()!
                             }
                             acknowledged = true
-                            if let operation = operations.first(where: { $0.id.rawValue == operationId && $0.state.isTerminal }) { return operation }
                         }
                         catch { try Task.checkCancellation() }
                         covered = revision.value
