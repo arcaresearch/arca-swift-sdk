@@ -71,6 +71,12 @@ public struct WalletOperation: Codable, Equatable, Sendable, Identifiable {
     public let startedAt: String
     public let updatedAt: String
     public let canRetry: Bool
+    /// The Cash propose route's idempotency key (Cash-route operations only).
+    public let requestId: String?
+    /// The action proposal whose accepted attempt created the operation.
+    public let actionProposalId: String?
+    /// The opaque reference the send was requested with, echoed as-is.
+    public let reference: String?
 
     public var typedState: WalletOperationState? { WalletOperationState(rawValue: state) }
     public var typedReason: WalletFailureReason? { reason.flatMap(WalletFailureReason.init(rawValue:)) }
