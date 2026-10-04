@@ -335,6 +335,10 @@ public struct ProjectionWatchStream: Sendable {
 
 /// A stream of real-time mid prices.
 public struct MarketPriceStream: Sendable {
+    var updateMarkets: @Sendable ([String]) async -> Void = { _ in }
+    /// Replace this watch's direct-price interests without reopening the stream. Empty keeps Arca prices.
+    public func setMarkets(_ markets: [String]) async { await updateMarkets(markets) }
+
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
     /// Current mid prices, populated before this stream is returned and

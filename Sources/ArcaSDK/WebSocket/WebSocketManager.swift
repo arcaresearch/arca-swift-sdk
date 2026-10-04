@@ -92,6 +92,110 @@ public actor WebSocketManager {
     // long as it stays quiet. `midsEvents()` replays this map to each new
     // consumer as its first element.
     private var retainedMids: [String: String]?
+    private var pendingPublicPrices: [String: String] = [:]
+    private var publicFlushTask: Task<Void, Never>?
+    private var lastPublicFlushAt = 0.0
+    private var publicBatchEpoch: UInt64 = 0
+    private func clearPublicPrices() { publicBatchEpoch += 1; publicFlushTask?.cancel(); publicFlushTask = nil; pendingPublicPrices.removeAll() }
+    private func queuePublicPrices(_ mids: [String: String]) {
+        for (market, price) in mids where price != (pendingPublicPrices[market] ?? retainedMids?[market]) { pendingPublicPrices[market] = price }
+        guard !pendingPublicPrices.isEmpty else { return }
+        let delay = 0.1 - (ProcessInfo.processInfo.systemUptime - lastPublicFlushAt)
+        if delay <= 0 { flushPublicPrices() }
+        else if publicFlushTask == nil {
+            let epoch = publicBatchEpoch
+            publicFlushTask = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
+                await self?.flushPublicPrices(epoch: epoch)
+            }
+        }
+    }
+    func flushPublicPrices(epoch: UInt64? = nil) {
+        guard epoch == nil || epoch == publicBatchEpoch else { return }
+        publicBatchEpoch += 1
+        publicFlushTask?.cancel(); publicFlushTask = nil
+        let mids = pendingPublicPrices.filter { retainedMids?[$0.key] != $0.value }; pendingPublicPrices.removeAll()
+        guard !mids.isEmpty else { return }
+        lastPublicFlushAt = ProcessInfo.processInfo.systemUptime
+        retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
+        let event = RealmEvent(type: "mids.updated", mids: mids)
+        for continuation in eventContinuations.values { continuation.yield(event) }
+    }
+    private var marketDataRouter = MarketDataRouter()
+    private var publicSource: (any PublicMarketSource)?
+    private var publicSourceEpoch: UInt64 = 0
+    private var publicConnectionEpoch: UInt64 = 0
+    private var marketDataConfigurationEpoch: UInt64 = 0
+    private var subscriptionRevision: UInt64 = 0
+    private var publicNetwork: HyperliquidNetwork = .mainnet
+    private var publicSuspended = false
+    var publicSourceFactory: @Sendable (URL, @escaping @Sendable (UInt64, PublicMarketUpdate) async -> Void) -> any PublicMarketSource = {
+        HyperliquidMarketSource(url: $0, receive: $1)
+    }
+
+    func setPublicSourceFactory(_ factory: @escaping @Sendable (URL, @escaping @Sendable (UInt64, PublicMarketUpdate) async -> Void) -> any PublicMarketSource) { publicSourceFactory = factory }
+    func beginMarketDataConfiguration() -> UInt64 {
+        stopPublicSource()
+        marketDataRouter.configure(.arca, markets: [])
+        marketDataConfigurationEpoch += 1
+        return marketDataConfigurationEpoch
+    }
+    func configureMarketData(epoch: UInt64, preference: MarketDataPreference, network: HyperliquidNetwork, markets: [Market]) {
+        guard epoch == marketDataConfigurationEpoch else { return }
+        publicNetwork = network
+        marketDataRouter.configure(preference, markets: markets)
+        syncPublicSource()
+    }
+    public var marketDataSourceStatus: MarketDataSourceStatus { marketDataRouter.status }
+    func registerPriceMarkets() -> UUID { let owner = UUID(); marketDataRouter.register(owner); return owner }
+    func updatePriceMarkets(_ owner: UUID, markets: Set<String>, revision: UInt64 = 0) {
+        marketDataRouter.update(owner, markets: markets, revision: revision); syncPublicSource()
+    }
+    func releasePriceMarkets(_ owner: UUID) { marketDataRouter.release(owner); syncPublicSource() }
+    private func stopPublicSource() {
+        clearPublicPrices(); lastPublicFlushAt = 0
+        publicSourceEpoch += 1; publicConnectionEpoch = 0
+        if let source = publicSource { Task { await source.close() } }
+        publicSource = nil
+        marketDataRouter.unavailable(nil)
+    }
+    private func syncPublicSource() {
+        let markets = Set(marketDataRouter.subscriptions.filter { $0.interval == nil }.map(\.market))
+        pendingPublicPrices = pendingPublicPrices.filter { markets.contains($0.key) }
+        guard !publicSuspended, !marketDataRouter.subscriptions.isEmpty else { stopPublicSource(); return }
+        if publicSource == nil {
+            publicSourceEpoch += 1
+            let epoch = publicSourceEpoch
+            publicSource = publicSourceFactory(publicNetwork.websocketURL) { [weak self] connection, update in
+                await self?.receivePublicUpdate(update, source: epoch, connection: connection)
+            }
+        }
+        subscriptionRevision += 1
+        let revision = subscriptionRevision, subscriptions = marketDataRouter.subscriptions
+        if let source = publicSource { Task { await source.subscribe(subscriptions, revision: revision) } }
+    }
+    private func receivePublicUpdate(_ update: PublicMarketUpdate, source: UInt64, connection: UInt64) {
+        guard source == publicSourceEpoch, connection >= publicConnectionEpoch else { return }
+        publicConnectionEpoch = connection
+        if case .unavailable = update { clearPublicPrices() }
+        guard let event = marketDataRouter.direct(update, nowMs: Int(Date().timeIntervalSince1970 * 1000)) else { return }
+        if let mids = event.mids { queuePublicPrices(mids) }
+        else { for continuation in eventContinuations.values { continuation.yield(event) } }
+    }
+    private func emitArcaMarketEvent(_ event: RealmEvent, snapshot: Bool = false) {
+        if let mids = event.mids, event.type == EventType.midsUpdated.rawValue {
+            let selected = marketDataRouter.arcaPrices(mids)
+            if snapshot {
+                let direct = (retainedMids ?? [:]).filter { marketDataRouter.status.directPriceMarkets.contains($0.key) }
+                retainedMids = selected.merging(direct) { _, new in new }
+            } else { retainedMids = (retainedMids ?? [:]).merging(selected) { _, new in new } }
+            guard snapshot || !selected.isEmpty else { return }
+            let routed = selected.count == mids.count ? event : event.withMids(selected)
+            for continuation in eventContinuations.values { continuation.yield(routed) }
+        } else if marketDataRouter.arcaCandle(event) {
+            for continuation in eventContinuations.values { continuation.yield(event) }
+        }
+    }
     private var candleRefCoins: [String: Set<String>] = [:]
     private var oiRefCoins: [String: Set<String>] = [:]
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
@@ -197,6 +301,7 @@ public actor WebSocketManager {
 
     /// Connect to the WebSocket.
     public func connect() {
+        publicSuspended = hiddenAt != nil; syncPublicSource()
         shouldReconnect = true
         // Install lifecycle observers lazily on first connect so we
         // observe app foreground/background only when actually using the
@@ -225,6 +330,7 @@ public actor WebSocketManager {
 
     /// Disconnect and stop reconnecting.
     public func disconnect() {
+        publicSuspended = true; stopPublicSource()
         shouldReconnect = false
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -520,6 +626,7 @@ public actor WebSocketManager {
 
     /// Acquire interest in mid price updates.
     public func acquireMids(exchange: String) {
+        publicSuspended = hiddenAt != nil; syncPublicSource()
         cancelIdleTimer()
         midsExchange = exchange
         midsRefs += 1
@@ -557,6 +664,7 @@ public actor WebSocketManager {
 
     /// Acquire interest in candle updates.
     public func acquireCandles(coins: [String], intervals: [CandleInterval]) {
+        marketDataRouter.acquireCandles(coins, intervals: intervals); syncPublicSource()
         cancelIdleTimer()
         for coin in coins {
             if candleRefCoins[coin] == nil {
@@ -572,9 +680,10 @@ public actor WebSocketManager {
 
     /// Release interest in candle updates.
     public func releaseCandles(coins: [String], intervals: [CandleInterval]) {
+        marketDataRouter.releaseCandles(coins, intervals: intervals); syncPublicSource()
         for coin in coins {
             guard var ivs = candleRefCoins[coin] else { continue }
-            for iv in intervals { ivs.remove(iv.rawValue) }
+            for iv in intervals where !marketDataRouter.candleRetained(coin, interval: iv) { ivs.remove(iv.rawValue) }
             if ivs.isEmpty {
                 candleRefCoins.removeValue(forKey: coin)
             } else {
@@ -1399,14 +1508,7 @@ public actor WebSocketManager {
             // the initial price map (mirrors TypeScript SDK behavior).
             if msgType == "mids.snapshot",
                let midsRaw = json["mids"] as? [String: String] {
-                // A snapshot is the authoritative current state for whatever
-                // the socket is subscribed to, so it replaces the retained map
-                // rather than merging into it.
-                retainedMids = midsRaw
-                let syntheticEvent = RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw)
-                for continuation in eventContinuations.values {
-                    continuation.yield(syntheticEvent)
-                }
+                emitArcaMarketEvent(RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw), snapshot: true)
                 return
             }
 
@@ -1431,9 +1533,7 @@ public actor WebSocketManager {
                         interval: interval,
                         candle: candle
                     )
-                    for continuation in eventContinuations.values {
-                        continuation.yield(syntheticEvent)
-                    }
+                    emitArcaMarketEvent(syntheticEvent)
                 }
                 return
             }
@@ -1523,12 +1623,7 @@ public actor WebSocketManager {
             if event.type == EventType.fillRecorded.rawValue, let fill = event.recordedFill {
                 for observer in positionFillObservers.values { observer(fill, event) }
             }
-            if event.type == EventType.midsUpdated.rawValue, let mids = event.mids {
-                retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
-            }
-            for continuation in eventContinuations.values {
-                continuation.yield(event)
-            }
+            emitArcaMarketEvent(event)
         }
     }
 
@@ -1761,12 +1856,14 @@ public actor WebSocketManager {
 
     private func handleAppDidEnterBackground() {
         hiddenAt = Date()
+        publicSuspended = true; stopPublicSource()
         sendMessage(.presence(foreground: false))
     }
 
     private func handleAppWillEnterForeground() {
         guard let hiddenAt = hiddenAt else { return }
         self.hiddenAt = nil
+        publicSuspended = false; syncPublicSource()
         sendMessage(.presence(foreground: true))
         let hiddenDuration = Date().timeIntervalSince(hiddenAt)
         guard hiddenDuration >= WebSocketManager.resumeHiddenThresholdS else { return }

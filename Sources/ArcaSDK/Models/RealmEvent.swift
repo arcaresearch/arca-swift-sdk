@@ -154,6 +154,18 @@ public struct RealmEvent: Codable, Sendable {
 // Normalize a durable execution only when its required public fill fields exist.
 // The venue fill ID joins its preview to the later ledger row without counting twice.
 extension RealmEvent {
+    func withMids(_ replacement: [String: String]) -> RealmEvent {
+        RealmEvent(realmId: realmId, type: type, entityId: entityId, entityPath: entityPath,
+            summary: summary, operation: operation, event: event, object: object, mids: replacement,
+            exchangeState: exchangeState, exchangeStateUnavailable: exchangeStateUnavailable,
+            exchange: exchange, deposit: deposit, valuation: valuation, path: path, watchId: watchId,
+            aggregation: aggregation, projection: projection, valuations: valuations, removed: removed,
+            market: market, interval: interval, candle: candle, bar: bar, isClosed: isClosed,
+            fill: fill, recordedFill: recordedFill, order: order, funding: funding, trade: trade,
+            realm: realm, twap: twap, driftCorrected: driftCorrected, eventId: eventId,
+            correlationId: correlationId, sequence: sequence, timestamp: timestamp, deliverySeq: deliverySeq)
+    }
+
     func withOperation(_ replacement: Operation) -> RealmEvent {
         RealmEvent(realmId: realmId, type: type, entityId: entityId, entityPath: entityPath,
             summary: summary, operation: replacement, event: event, object: object, mids: mids,

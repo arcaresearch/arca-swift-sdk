@@ -1577,7 +1577,7 @@ extension Arca {
     /// Get sparkline close-price arrays for all tracked coins in a single request.
     /// Returns a map of coin name to an array of recent close prices at the
     /// 24 hourly close prices. Sparkline data is pre-computed every ~5 minutes;
-    /// for real-time prices use ``watchPrices(exchange:)``.
+    /// for real-time prices use ``watchPrices(exchange:markets:)``.
     ///
     /// The `interval` and `points` parameters are accepted for backward
     /// compatibility but ignored — sparklines always return 24 hourly close prices.
@@ -1602,7 +1602,9 @@ extension Arca {
     /// incoming mids contain no actual change.
     ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
-    public func watchPrices(exchange: String = "sim") async throws -> MarketPriceStream {
+    public func watchPrices(exchange: String = "sim", markets: [String] = []) async throws -> MarketPriceStream {
+        let priceInterest = await ws.registerPriceMarkets()
+        await ws.updatePriceMarkets(priceInterest, markets: Set(markets))
         await ws.ensureConnected()
 
         let state = SendableBox<WatchStreamState>(.loading)
@@ -1643,15 +1645,18 @@ extension Arca {
         }
 
         let stream = MarketPriceStream(
+            updateMarkets: { [ws] markets in await ws.updatePriceMarkets(priceInterest, markets: Set(markets)) },
             state: state,
             prices: prices,
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
+                await ws.releasePriceMarkets(priceInterest)
                 await ws.releaseMids()
             }
         )
         await stream.ready()
+        if Task.isCancelled { await stream.stop(); throw CancellationError() }
         return stream
     }
 
@@ -1679,7 +1684,7 @@ extension Arca {
         let activeAssetBox = SendableBox<ActiveAssetData?>(nil)
         let pendingReasonBox = SendableBox<MaxOrderSizePendingReason?>(.awaitingExchangeState)
 
-        let priceStream = try await watchPrices()
+        let priceStream = try await watchPrices(markets: [opts.market])
 
         let initialExchangeState: ExchangeState
         do {

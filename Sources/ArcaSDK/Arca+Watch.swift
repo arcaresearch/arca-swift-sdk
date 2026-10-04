@@ -657,6 +657,7 @@ extension Arca {
 
         let detail = try await getObjectDetail(objectId: objectId)
         let objectPath = detail.object.path
+        let priceInterest = await ws.registerPriceMarkets()
 
         let streamState = SendableBox<WatchStreamState>(.loading)
         let stateBox = SendableBox<ExchangeState?>(nil)
@@ -723,6 +724,8 @@ extension Arca {
                 guard armExpiry(structural, current) else { return }
                 clearRecovery()
                 structuralBox.update { $0 = structural }
+                let revision = current
+                Task { await self.ws.updatePriceMarkets(priceInterest, markets: Set(structural.positions.map(\.market)), revision: revision) }
                 let currentMids = midsBox.value
                 let revalued = currentMids.isEmpty ? structural : structural.revalued(with: currentMids)
                 stateBox.update { $0 = revalued }
@@ -780,7 +783,10 @@ extension Arca {
         }
         scheduleRecoveryBox.update { $0 = scheduleRecovery }
 
-        let initialState = try await getExchangeState(objectId: objectId)
+        let initialState: ExchangeState
+        do { initialState = try await getExchangeState(objectId: objectId) }
+        catch { await ws.releasePriceMarkets(priceInterest); throw error }
+        await ws.updatePriceMarkets(priceInterest, markets: Set(initialState.positions.map(\.market)))
         if armExpiry(initialState, 0) {
             structuralBox.update { $0 = initialState }
             stateBox.update { $0 = initialState }
@@ -896,6 +902,7 @@ extension Arca {
                 await ws.removeGapHandler(gapId)
                 self?.unregisterExchangeStateRefresher(objectId: objectId, id: refresherId)
                 await ws.unwatchPath(objectPath)
+                await ws.releasePriceMarkets(priceInterest)
                 await ws.releaseMids()
             },
             refresh: { Task { await refetch() } }
