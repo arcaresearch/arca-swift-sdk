@@ -65,6 +65,7 @@ actor HyperliquidMarketSource: PublicMarketSource {
         lastReceivedAt = ProcessInfo.processInfo.systemUptime
         let data: Data
         switch message { case .string(let text): data = Data(text.utf8); case .data(let bytes): data = bytes; @unknown default: return }
+        await receive(epoch, .traffic(bytes: data.count))
         guard data.count <= 262_144 else { await fail(epoch: epoch, reason: "Hyperliquid frame exceeded size budget"); return }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if json["channel"] as? String == "error" { await fail(epoch: epoch, reason: "Hyperliquid subscription rejected"); return }

@@ -7,7 +7,7 @@ final class MarketDataRoutingTests: XCTestCase {
         let counts = SendableBox((quotes: 0, bars: 0, errors: 0))
         let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, update in
             counts.update { value in
-                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1 }
+                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1; case .traffic: break }
             }
         }
         await source.subscribe([.init(market: "hl:0:BTC", coin: "BTC"), .init(market: "hl:0:BTC", coin: "BTC", interval: .oneMinute)], revision: 1)
@@ -159,6 +159,10 @@ final class MarketDataRoutingTests: XCTestCase {
         await receive(3, .quote(market: "hl:0:BTC", price: "999", timeMs: now + 2)); await arca("107")
         await fulfillment(of: [complete], timeout: 2)
         XCTAssertEqual(values.value, ["100", "101", "103", "105", "107"])
+        let diagnostics = await manager.marketDataDiagnostics
+        XCTAssertEqual(diagnostics.arcaPriceValues, 3); XCTAssertEqual(diagnostics.hyperliquidPriceValues, 2)
+        XCTAssertEqual(diagnostics.hyperliquidFailures, 1); XCTAssertEqual(diagnostics.hyperliquidRecoveries, 1)
+        XCTAssertEqual(diagnostics.arcaServingMarkets, 1); XCTAssertEqual(diagnostics.hyperliquidServingMarkets, 0)
         let base = try JSONDecoder().decode(ExchangeState.self, from: Data(#"{"account":{"id":"a1","realmId":"r1","name":"main","createdAt":"2026-09-06","updatedAt":"2026-09-06"},"marginSummary":{"equity":"1000","initialMarginUsed":"50","maintenanceMarginRequired":"0","availableToWithdraw":"950","totalNtlPos":"1000","totalUnrealizedPnl":"0","totalRawUsd":"1000"},"positions":[{"id":"p1","market":"hl:0:BTC","side":"long","size":"10","entryPrice":"100","leverage":20,"marginUsed":"50","positionValue":"1000","unrealizedPnl":"0"}],"openOrders":[]}"#.utf8))
         let marked = base.revalued(with: ["hl:0:BTC": values.value.last!])
         XCTAssertEqual(Double(marked.marginSummary.equity), 1070)

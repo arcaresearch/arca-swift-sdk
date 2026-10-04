@@ -29,6 +29,7 @@ enum PublicMarketUpdate: Sendable {
     case quote(market: String, price: String, timeMs: Int)
     case bar(market: String, interval: CandleInterval, candle: Candle)
     case unavailable(String)
+    case traffic(bytes: Int)
 }
 
 /// Provider boundary: wire format/reconnection belongs to the source; preference belongs to the router.
@@ -43,6 +44,7 @@ struct MarketDataRouter {
     private var mapping: [String: String] = [:]
     private struct Interest { var revision: UInt64 = 0; var markets: Set<String> = [] }
     private var interests: [UUID: Interest] = [:]
+    var priceInterestMarkets: Set<String> { Set(interests.values.flatMap { $0.markets }) }
     private struct BarKey: Hashable { let market: String; let interval: CandleInterval }
     private var candles: [BarKey: Int] = [:]
     private var quoteTimes: [String: Int] = [:]
@@ -121,6 +123,7 @@ struct MarketDataRouter {
     }
     mutating func direct(_ update: PublicMarketUpdate, nowMs: Int) -> RealmEvent? {
         switch update {
+        case .traffic: return nil
         case .unavailable(let reason): unavailable(reason); return nil
         case let .quote(market, price, timeMs):
             guard subscriptions.contains(where: { $0.market == market && $0.interval == nil }),
