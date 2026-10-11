@@ -5,6 +5,19 @@ for the full API. Use canonical market IDs (for example hl:0:BTC), keep monetary
 values as decimal strings, and preserve server authority for execution/risk.
 Public source preference is optional and reversible; Arca remains the default.
 
+## Aggregation watches and reconnects (2.12.1)
+
+`watchAggregation` creates its watch on the socket (`create_aggregation_watch`),
+not over REST. The server destroys that watch with the connection, so the SDK
+re-creates it after every reconnect or rotation; the stream keeps its last value
+meanwhile and retries a failed re-create with backoff. Once a connection has
+authenticated, a server error rejects one request (a non-canonical market id, a
+path outside the credential's scope) and never closes the socket; an error that
+names a `requestId` fails only that request. The
+reconnect backoff (1 s doubling to 30 s) resets only after a connection has
+stayed up for 30 s, `ensureConnected()` does not cut a pending backoff short, and
+returning to the foreground reconnects at once without resetting the backoff.
+
 ## Market data diagnostics (2.12.0)
 
 `watchMarketDataDiagnostics()` observes a conflated cumulative `MarketDataDiagnostics`

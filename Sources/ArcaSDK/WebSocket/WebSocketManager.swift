@@ -54,6 +54,12 @@ public actor WebSocketManager {
     private var reconnectAttempt = 0
     private let maxReconnectDelay: TimeInterval
     private var reconnectTask: Task<Void, Never>?
+    private var reconnectSeq = 0
+    private var stableTask: Task<Void, Never>?
+    // A connection must stay up this long before the reconnect backoff
+    // resets. Resetting at auth let a socket that authenticated and then
+    // failed reconnect every second indefinitely.
+    private static let stableConnectionNs: UInt64 = 30_000_000_000 // 30s
     private var receiveTask: Task<Void, Never>?
 
     // Gapless rotation: a replacement socket warms up alongside the live one
@@ -68,6 +74,7 @@ public actor WebSocketManager {
     private var nextGeneration = 0
     private var primaryGeneration = 0
     private var handoffGeneration = 0
+    private var handoffAuthenticated = false
     private let connectionLifetime: TimeInterval
     private var serverLifetime: TimeInterval?
     private var handoffTimeout: TimeInterval = WebSocketManager.handoffTimeoutSeconds
@@ -235,9 +242,27 @@ public actor WebSocketManager {
     private var chartHistoryWatches: [String: (target: String, kind: String, objectId: String?)] = [:]
     // Watches created out-of-band (REST POST /aggregations/watch) that this
     // socket registered for delivery. Delivery is ownership-gated
-    // server-side, so these must be re-attached on every reconnect or the
-    // watch goes silent.
+    // server-side, so these are re-attached on every reconnect. The server
+    // destroys a watch with the connection that registered it, so a
+    // re-attach usually answers "unknown watch"; that answer is scoped to
+    // the attach request and drops the id here.
     private var attachedWatches: Set<String> = []
+    private var attachRequests: [String: String] = [:]
+    // Aggregation watches created over the socket, by requestId. A request
+    // parked while disconnected, or in flight on a socket that went away, is
+    // (re)sent on the next live socket: the caller wants a watch on whichever
+    // socket is current, and one created on a dead socket died with it.
+    private struct AggregationCreateRequest {
+        let message: OutboundMessage
+        let continuation: CheckedContinuation<CreateWatchResponse, Error>
+        var sentOn = 0
+    }
+    private var aggregationCreateRequests: [String: AggregationCreateRequest] = [:]
+    private var aggregationCreateTimeouts: [String: Task<Void, Never>] = [:]
+    private var nextRequestId = 0
+    // Budget for a create_aggregation_watch reply, including any wait for the
+    // socket to authenticate.
+    private static let aggregationRequestTimeoutNs: UInt64 = 10_000_000_000 // 10s
     // Request/reply seam for watch_projection: requestId → continuation,
     // plus deferred sends for requests issued before auth completes.
     private var pendingProjectionRequests: [String: CheckedContinuation<ProjectionWatchCreated, Error>] = [:]
@@ -345,9 +370,10 @@ public actor WebSocketManager {
         doConnect()
     }
 
-    /// Connect only if not already connected or connecting.
+    /// Connect only if not already connected, connecting, or waiting out a reconnect backoff.
     public func ensureConnected() {
-        if webSocketTask != nil { return }
+        // A scheduled reconnect is already connecting; jumping it would undo the backoff.
+        if webSocketTask != nil || reconnectTask != nil { return }
         connect()
     }
 
@@ -368,6 +394,9 @@ public actor WebSocketManager {
         shouldReconnect = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        stableTask?.cancel()
+        stableTask = nil
+        reconnectAttempt = 0
         receiveTask?.cancel()
         receiveTask = nil
         resumeProbeTask?.cancel()
@@ -859,7 +888,74 @@ public actor WebSocketManager {
         cancelIdleTimer()
         attachedWatches.insert(watchId)
         ensureConnected()
-        sendMessage(.attachAggregationWatch(watchId: watchId))
+        // Before auth the server answers "not authenticated" with no
+        // requestId, which reads as a connection-level failure. Auth attaches
+        // every registered watch, so nothing is lost by waiting.
+        if _status == .connected { sendAttach(watchId, generation: primaryGeneration) }
+    }
+
+    /// Create a standalone aggregation watch on this socket and suspend until
+    /// the server replies with the initial aggregation.
+    ///
+    /// The watch registry is per pod and a socket only receives updates for
+    /// watches on its own pod, so a watch created here is always deliverable,
+    /// where a REST-created one is silent whenever the REST call and the
+    /// socket land on different pods. The watch is connection-scoped: the
+    /// server destroys it when the socket closes, so callers re-create it on
+    /// reconnect or rotation (see ``rotatedStream``).
+    func createAggregationWatch(sources: [AggregationSource], flowsSince: String? = nil) async throws -> CreateWatchResponse {
+        cancelIdleTimer()
+        ensureConnected()
+        nextRequestId += 1
+        let requestId = "agg-req-\(nextRequestId)"
+        let message = OutboundMessage.createAggregationWatch(sources: sources, flowsSince: flowsSince, requestId: requestId)
+        return try await withCheckedThrowingContinuation { continuation in
+            aggregationCreateRequests[requestId] = AggregationCreateRequest(message: message, continuation: continuation)
+            aggregationCreateTimeouts[requestId] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: WebSocketManager.aggregationRequestTimeoutNs)
+                guard !Task.isCancelled else { return }
+                await self?.failAggregationCreate(requestId, ArcaError.unknown(
+                    code: "WS_REQUEST_TIMEOUT",
+                    message: "create_aggregation_watch: timed out waiting for the server reply",
+                    errorId: nil
+                ))
+            }
+            if _status == .connected { sendAggregationCreate(requestId, generation: primaryGeneration) }
+        }
+    }
+
+    /// Tear down a watch made by ``createAggregationWatch(sources:flowsSince:)``.
+    /// Best-effort; a no-op while disconnected.
+    func destroyAggregationWatch(watchId: String) {
+        guard !watchId.isEmpty else { return }
+        // A disconnected socket already took the watch with it.
+        if _status == .connected { sendMessage(.destroyAggregationWatch(watchId: watchId)) }
+        maybeStartIdleTimer()
+    }
+
+    private func sendAttach(_ watchId: String, generation: Int) {
+        nextRequestId += 1
+        let requestId = "attach-req-\(nextRequestId)"
+        attachRequests[requestId] = watchId
+        sendMessage(.attachAggregationWatch(watchId: watchId, requestId: requestId), generation: generation)
+    }
+
+    private func sendAggregationCreate(_ requestId: String, generation: Int) {
+        guard generation != 0, let request = aggregationCreateRequests[requestId] else { return }
+        aggregationCreateRequests[requestId]?.sentOn = generation
+        sendMessage(request.message, generation: generation)
+    }
+
+    /// Send every create request not yet sent on `generation`, the newly live socket.
+    private func flushAggregationCreates(generation: Int) {
+        for (requestId, request) in aggregationCreateRequests where request.sentOn != generation {
+            sendAggregationCreate(requestId, generation: generation)
+        }
+    }
+
+    private func failAggregationCreate(_ requestId: String, _ error: Error) {
+        aggregationCreateTimeouts.removeValue(forKey: requestId)?.cancel()
+        aggregationCreateRequests.removeValue(forKey: requestId)?.continuation.resume(throwing: error)
     }
 
     /// Stop delivery of a watch on this socket without destroying it.
@@ -914,6 +1010,47 @@ public actor WebSocketManager {
             message: "watch_projection: timeout waiting for server response",
             errorId: nil
         ))
+    }
+
+    private func handleRequestError(requestId: String, message: String) {
+        let metadata = ["message": message, "requestId": requestId]
+        pendingProjectionSends.removeValue(forKey: requestId)
+        if let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
+            projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
+            log.warning("websocket", "projection watch request rejected", metadata: metadata)
+            continuation.resume(throwing: ArcaError.unknown(code: "WS_REQUEST_ERROR", message: message, errorId: nil))
+            return
+        }
+        if aggregationCreateRequests[requestId] != nil {
+            log.warning("websocket", "aggregation watch request rejected", metadata: metadata)
+            failAggregationCreate(requestId, ArcaError.unknown(code: "WS_REQUEST_ERROR", message: message, errorId: nil))
+            return
+        }
+        if let watchId = attachRequests.removeValue(forKey: requestId) {
+            attachedWatches.remove(watchId)
+            maybeStartIdleTimer()
+            log.warning("websocket", "aggregation watch attach rejected; the watch has to be re-created",
+                        metadata: metadata.merging(["watchId": watchId]) { $1 })
+            return
+        }
+        log.warning("websocket", "request rejected", metadata: metadata)
+    }
+
+    private func handleAggregationWatchCreated(requestId: String, json: [String: Any]) {
+        guard aggregationCreateRequests[requestId] != nil else { return }
+        guard let watchId = json["watchId"] as? String, !watchId.isEmpty,
+              let raw = json["aggregation"], let data = JSONSafe.data(from: raw),
+              let aggregation = try? JSONDecoder().decode(PathAggregation.self, from: data) else {
+            failAggregationCreate(requestId, ArcaError.unknown(
+                code: "WS_REQUEST_ERROR",
+                message: "create_aggregation_watch: reply carried no watch or aggregation",
+                errorId: nil
+            ))
+            return
+        }
+        aggregationCreateTimeouts.removeValue(forKey: requestId)?.cancel()
+        aggregationCreateRequests.removeValue(forKey: requestId)?.continuation.resume(
+            returning: CreateWatchResponse(watchId: WatchID(watchId), aggregation: aggregation))
     }
 
     private func flushPendingProjectionSends() {
@@ -1249,6 +1386,10 @@ public actor WebSocketManager {
     /// which is the right thing when it is already gone.
     private func doConnect(handoff: Bool = false) {
         if !handoff {
+            // A scheduled reconnect firing after this would replace the socket
+            // opened here, possibly mid-auth.
+            reconnectTask?.cancel()
+            reconnectTask = nil
             cancelRotation()
             abortHandoff()
             receiveTask?.cancel()
@@ -1275,6 +1416,7 @@ public actor WebSocketManager {
         if handoff {
             handoffTask = task
             handoffGeneration = generation
+            handoffAuthenticated = false
         } else {
             webSocketTask = task
             primaryGeneration = generation
@@ -1392,8 +1534,21 @@ public actor WebSocketManager {
         let msgType = json["type"] as? String ?? ""
 
         if msgType == "error" {
+            let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
+            // A rejected resubscribe request (an attach for a watch that lives
+            // on the retiring connection's pod) doesn't make the replacement
+            // unusable.
+            if let requestId = json["requestId"] as? String {
+                handleRequestError(requestId: requestId, message: errorMessage)
+                return
+            }
+            // Once authenticated, an error answers one resubscribe request.
+            if handoffAuthenticated {
+                log.warning("websocket", "request rejected", metadata: ["message": errorMessage])
+                return
+            }
             log.warning("websocket", "handoff socket rejected",
-                        metadata: ["message": json["message"] as? String ?? "Unknown WebSocket error"])
+                        metadata: ["message": errorMessage])
             abortHandoff()
             scheduleRotation(after: WebSocketManager.handoffRetrySeconds)
             return
@@ -1414,6 +1569,7 @@ public actor WebSocketManager {
         }
 
         if msgType == "authenticated" {
+            handoffAuthenticated = true
             readServerLifetime(json)
             resubscribeAll(generation: generation)
             // Queued behind the batch above; its reply is the barrier this
@@ -1473,8 +1629,9 @@ public actor WebSocketManager {
             if msgType == "authenticated" {
                 acknowledgedPaths.removeAll(); acknowledgedOperations.removeAll(); acknowledgedEventTypes.removeAll()
                 log.info("websocket", "authenticated")
-                reconnectAttempt = 0
+                scheduleBackoffReset()
                 lastDeliverySeq = 0
+                attachRequests.removeAll()
                 readServerLifetime(json)
                 setStatus(.connected)
                 startHeartbeat()
@@ -1482,6 +1639,7 @@ public actor WebSocketManager {
                 resubscribeAll(generation: primaryGeneration)
                 // Flush projection-watch requests issued while disconnected.
                 flushPendingProjectionSends()
+                flushAggregationCreates(generation: primaryGeneration)
                 // Notify subscribers AFTER all subscriptions are re-issued so
                 // any chart-history watch IDs they depend on are already
                 // registered.
@@ -1513,17 +1671,37 @@ public actor WebSocketManager {
                 return
             }
 
+            if msgType == "aggregation_watch_created" {
+                if let requestId = json["requestId"] as? String {
+                    handleAggregationWatchCreated(requestId: requestId, json: json)
+                }
+                return
+            }
+
+            if msgType == "aggregation_watch_attached" {
+                if let requestId = json["requestId"] as? String { attachRequests.removeValue(forKey: requestId) }
+                return
+            }
+
             if msgType == "error" {
                 let errorMessage = json["message"] as? String ?? "Unknown WebSocket error"
-                // A request-scoped error rejects just that pending request;
-                // the connection itself is healthy and keeps serving.
-                if let requestId = json["requestId"] as? String,
-                   let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
-                    projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
-                    log.warning("websocket", "projection watch request rejected",
-                                metadata: ["message": errorMessage])
-                    continuation.resume(throwing: ArcaError.unknown(
-                        code: "WS_REQUEST_ERROR", message: errorMessage, errorId: nil))
+                // An error carrying a requestId is scoped to that request (a
+                // watch_projection the caller isn't authorized for, an attach
+                // for a watch that no longer exists) and leaves the connection
+                // serving, even when the request is one this client no longer
+                // tracks. Dropping the socket for it reconnected straight into
+                // the same error, every second, for as long as the screen
+                // stayed open.
+                if let requestId = json["requestId"] as? String {
+                    handleRequestError(requestId: requestId, message: errorMessage)
+                    return
+                }
+                // After authentication every error answers one request (a
+                // non-canonical market id, a path outside the credential's
+                // scope). The connection is fine, and a reconnect would replay
+                // that request straight into the same error.
+                if _status == .connected {
+                    log.warning("websocket", "request rejected", metadata: ["message": errorMessage])
                     return
                 }
                 log.error("websocket", "server error",
@@ -1890,16 +2068,20 @@ public actor WebSocketManager {
         lifecycleObservers.removeAll()
     }
 
-    private func handleAppDidEnterBackground() {
+    func handleAppDidEnterBackground() {
         hiddenAt = Date()
         publicSuspended = true; stopPublicSource()
         sendMessage(.presence(foreground: false))
     }
 
-    private func handleAppWillEnterForeground() {
+    func handleAppWillEnterForeground() {
         guard let hiddenAt = hiddenAt else { return }
         self.hiddenAt = nil
         publicSuspended = false; syncPublicSource()
+        // A user returning to the app should not wait out a backoff that
+        // grew while it was hidden. The attempt count is kept, so a connect
+        // that fails again still backs off.
+        if shouldReconnect && reconnectTask != nil { doConnect() }
         sendMessage(.presence(foreground: true))
         let hiddenDuration = Date().timeIntervalSince(hiddenAt)
         guard hiddenDuration >= WebSocketManager.resumeHiddenThresholdS else { return }
@@ -2031,6 +2213,9 @@ public actor WebSocketManager {
         receiveTask = handoffReceiveTask
         handoffReceiveTask = nil
         retiring?.stop(reason: nil)
+        // A create still in flight on the retiring socket would answer there,
+        // where nothing listens any more.
+        flushAggregationCreates(generation: generation)
 
         // New connection, new sequence space. Carrying the old cursor across
         // would read the next frame as a burst of missed events and trigger a
@@ -2128,16 +2313,36 @@ public actor WebSocketManager {
                         "delaySeconds": String(format: "%.1f", delay),
                     ])
 
+        reconnectSeq += 1
+        let seq = reconnectSeq
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            await self?.performReconnect()
+            await self?.performReconnect(seq)
         }
     }
 
-    private func performReconnect() {
+    private func performReconnect(_ seq: Int) {
+        // A direct connect in the meantime superseded this one.
+        guard seq == reconnectSeq, reconnectTask != nil else { return }
         reconnectTask = nil
         doConnect()
+    }
+
+    /// Reset the backoff once the live socket has stayed up for `stableConnectionNs`.
+    private func scheduleBackoffReset() {
+        stableTask?.cancel()
+        let generation = primaryGeneration
+        stableTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.stableConnectionNs)
+            guard !Task.isCancelled else { return }
+            await self?.backoffResetDue(generation)
+        }
+    }
+
+    private func backoffResetDue(_ generation: Int) {
+        stableTask = nil
+        if generation != 0 && generation == primaryGeneration { reconnectAttempt = 0 }
     }
 
     // MARK: - Private: Heartbeat
@@ -2247,11 +2452,10 @@ public actor WebSocketManager {
             sendMessage(.watchChartHistory(watchId: watchId, target: req.target, kind: req.kind, objectId: req.objectId),
                         generation: generation)
         }
-        // Re-register REST-created watches. The registry is per-pod, so a
-        // reconnect landing elsewhere answers "unknown watch" — the watch is
-        // genuinely gone there and the stream recreates it.
+        // Re-register REST-created watches. Each attach carries a requestId,
+        // so an "unknown watch" answer drops that watch instead of the socket.
         for watchId in attachedWatches {
-            sendMessage(.attachAggregationWatch(watchId: watchId), generation: generation)
+            sendAttach(watchId, generation: generation)
         }
     }
 

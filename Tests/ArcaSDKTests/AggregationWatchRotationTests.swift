@@ -28,13 +28,12 @@ final class AggregationWatchRotationTests: XCTestCase {
         let arca = makeArca()
         await arca.ws.setTransportFactory(factory.make())
 
-        let stream = try await arca.watchAggregation(
-            sources: [AggregationSource(type: .prefix, value: "/")])
+        let pending = Task { try await arca.watchAggregation(sources: [AggregationSource(type: .prefix, value: "/")]) }
         try await waitFor { self.factory.count >= 1 }
-        factory.socket(0)?.deliver(#"{"type":"authenticated"}"#)
-        try await waitFor { await arca.ws.status == .connected }
-
-        XCTAssertEqual(AggregationWatchProtocol.createCount, 1)
+        guard let original = factory.socket(0) else { return XCTFail("no socket") }
+        original.deliver(#"{"type":"authenticated"}"#)
+        try await answerCreate(original, watchId: "agw_1")
+        let stream = try await pending.value
         let firstWatchId = stream.watchId
 
         let observedStates = SendableBox<[WatchStreamState]>([])
@@ -46,18 +45,13 @@ final class AggregationWatchRotationTests: XCTestCase {
         replacement.deliver(#"{"type":"authenticated"}"#)
         try await waitFor { replacement.sentActions.contains("ping") }
         replacement.deliver(#"{"type":"pong"}"#)
+        try await answerCreate(replacement, watchId: "agw_2", timeout: 2.0)
 
-        // The mock records creation before its response reaches the SDK.
-        // Retiring the previous watch is a subsequent asynchronous request.
-        try await waitFor(timeout: 2.0) {
-            AggregationWatchProtocol.createCount == 2 &&
-                AggregationWatchProtocol.destroyedIds.contains(firstWatchId)
-        }
-
-        XCTAssertEqual(AggregationWatchProtocol.createCount, 2,
-                       "the aggregation watch must be re-created against the new connection")
-        XCTAssertTrue(AggregationWatchProtocol.destroyedIds.contains(firstWatchId),
+        try await waitFor { replacement.destroyedWatchIds.contains(firstWatchId) }
+        XCTAssertTrue(replacement.destroyedWatchIds.contains(firstWatchId),
                       "the watch the retired connection held must be cleaned up")
+        XCTAssertEqual(AggregationWatchProtocol.createCount, 0,
+                       "the watch is created on the socket, never over REST")
         XCTAssertFalse(observedStates.value.contains(.reconnecting),
                        "a rotation is not an outage; the stream must never enter reconnecting")
 
@@ -90,6 +84,14 @@ final class AggregationWatchRotationTests: XCTestCase {
             .replacingOccurrences(of: "=", with: "")
     }
 
+    private func answerCreate(_ socket: MockWebSocketTransport, watchId: String, timeout: TimeInterval = 1.0) async throws {
+        try await waitFor(timeout: timeout) { socket.frames("create_aggregation_watch").count > 0 }
+        let requestId = try XCTUnwrap(socket.frames("create_aggregation_watch").last?["requestId"] as? String)
+        socket.deliver("""
+        {"type":"aggregation_watch_created","requestId":"\(requestId)","watchId":"\(watchId)","aggregation":{"prefix":"/","totalEquityUsd":"100.00","departingUsd":"0","arrivingUsd":"0","breakdown":[],"asOf":null,"cumInflowsUsd":null,"cumOutflowsUsd":null}}
+        """)
+    }
+
     private func waitFor(
         timeout: TimeInterval = 1.0,
         _ condition: @escaping () async -> Bool
@@ -100,6 +102,18 @@ final class AggregationWatchRotationTests: XCTestCase {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         _ = await condition()
+    }
+}
+
+private extension MockWebSocketTransport {
+    func frames(_ action: String) -> [[String: Any]] {
+        sent.compactMap { $0.data(using: .utf8) }
+            .compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            .filter { $0["action"] as? String == action }
+    }
+
+    var destroyedWatchIds: [String] {
+        frames("destroy_aggregation_watch").compactMap { $0["watchId"] as? String }
     }
 }
 

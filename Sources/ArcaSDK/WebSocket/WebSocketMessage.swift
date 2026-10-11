@@ -15,8 +15,10 @@ enum OutboundMessage: Encodable {
     case unwatchChartHistory(watchId: String)
     case watchProjection(projection: String, requestId: String)
     case unwatchProjection(watchId: String)
-    case attachAggregationWatch(watchId: String)
+    case attachAggregationWatch(watchId: String, requestId: String)
     case detachAggregationWatch(watchId: String)
+    case createAggregationWatch(sources: [AggregationSource], flowsSince: String?, requestId: String)
+    case destroyAggregationWatch(watchId: String)
     case subscribeEvents(types: [String], requestId: String?)
     case unsubscribeEvents(types: [String])
     case ping
@@ -73,11 +75,20 @@ enum OutboundMessage: Encodable {
         case .unwatchProjection(let watchId):
             try container.encode("unwatch_projection", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
-        case .attachAggregationWatch(let watchId):
+        case .attachAggregationWatch(let watchId, let requestId):
             try container.encode("attach_aggregation_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
+            try container.encode(requestId, forKey: .requestId)
         case .detachAggregationWatch(let watchId):
             try container.encode("detach_aggregation_watch", forKey: .action)
+            try container.encode(watchId, forKey: .watchId)
+        case .createAggregationWatch(let sources, let flowsSince, let requestId):
+            try container.encode("create_aggregation_watch", forKey: .action)
+            try container.encode(sources.map(WireAggregationSource.init), forKey: .sources)
+            try container.encodeIfPresent(flowsSince, forKey: .flowsSince)
+            try container.encode(requestId, forKey: .requestId)
+        case .destroyAggregationWatch(let watchId):
+            try container.encode("destroy_aggregation_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
         case .subscribeEvents(let types, let requestId):
             try container.encode("subscribe_events", forKey: .action)
@@ -96,7 +107,26 @@ enum OutboundMessage: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case action, token, realmId, capabilities, foreground, exchange, coins, intervals, path, batch
-        case watchId, target, kind, objectId, projection, requestId, types
+        case watchId, target, kind, objectId, projection, requestId, types, sources, flowsSince
+    }
+}
+
+/// An aggregation source as the socket handler reads it: a `paths` source
+/// carries its paths in an array, where REST takes the single path in `value`.
+private struct WireAggregationSource: Encodable {
+    let type: String
+    let value: String?
+    let paths: [String]?
+
+    init(_ source: AggregationSource) {
+        type = source.type.rawValue
+        if source.type == .paths {
+            value = nil
+            paths = [source.value]
+        } else {
+            value = source.value
+            paths = nil
+        }
     }
 }
 
