@@ -39,3 +39,44 @@ payloads, excluding framing/TLS; Arca's count includes its shared account socket
 The first price delay starts at socket-manager creation and concerns the first
 routed interested price. It is not venue latency. Quiet prices are not failures,
 no exchange timestamp is invented, and Arca still owns finalized candles.
+
+## Scoped projection watches and interest-scoped mids (2.13.0)
+
+`watchProjection(name:paths:prefix:exchange:)` watches a registered projection
+for the accounts named: `paths` (max 500 exact object paths) and/or a `prefix`
+sub-tree, both intersected with the projection's registered resources (a path
+outside them is dropped; they compose as AND). The server reply is the scope's
+snapshot (a path set whole; a prefix scope's first page, the rest fetched over
+REST with the same prefix). `setPaths(_:)` / `setPrefix(_:)` replace the scope
+in place under the same watch id (`update_projection_watch`; the ack carries the
+new scope's snapshot, which replaces the rows; a later call supersedes an
+earlier one); `scope` is the current interest set. A watch with no `paths` and
+no `prefix` is EMPTY — it delivers nothing until `setPaths` names a set — and
+never means every covered account; a client that wants the whole projection
+passes the projection's own prefix (on a realm-wide projection, the shape to
+avoid on a device). Frames are per-account deltas (`removed` drops rows); the
+stream re-marks rows against mids between deltas, subscribing to mids only for
+the markets its rows hold; reconnects and rotations re-create the watch with
+the current scope. Requires `arca:ReadProjection` on the projection name.
+`getProjectionValuations(name:prefix:path:paths:cursor:limit:)` is the REST read
+with the same narrowing.
+
+`watchPrices(exchange:markets:)`: the market list is the stream's price interest
+on BOTH providers. The direct Hyperliquid source subscribes one `bbo` per market;
+the Arca socket's `subscribe_mids` carries the union of every live consumer's
+markets (`watchPrices`, `watchExchangeState`, `watchObject`, `watchAggregation`,
+`watchProjection` all declare the markets their positions hold), is re-sent when
+the union changes (widening at once, narrowing after the release debounce) and
+is replayed on reconnect. `setMarkets` changes a stream's set in place. Only an
+unscoped `watchPrices()` (empty list) asks the server for every market. A market
+no earlier consumer asked for is not in the retained snapshot yet; it lands with
+the snapshot the widened subscription triggers, one round trip after return.
+Driving the manager directly: `acquireMids(exchange:allMarkets:)` /
+`releaseMids(allMarkets:)` are the refcounts (default `true` keeps the old
+all-markets meaning); a bare `subscribeMids` / `unsubscribeMids` pair is left
+alone by them. Measured from 2026-10-17 02:32 UTC on production (payload
+bytes, 5 min): one market 0.02 KiB/s, a 22-market board 1.1 KiB/s (7.8
+frames/s), every market (567 ids) 6.2 KiB/s, versus Hyperliquid `bbo` on the
+same 22 markets 7.8 KiB/s (57 frames/s) and `allMids` 4.8 KiB/s;
+`marketDataDiagnostics` reports `arcaPayloadBytes` / `hyperliquidPayloadBytes`
+per client.

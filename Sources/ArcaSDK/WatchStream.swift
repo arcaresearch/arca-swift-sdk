@@ -287,16 +287,27 @@ public struct AggregationWatchStream: Sendable {
 
 /// A stream of redacted per-object valuations for a registered projection.
 ///
-/// One batched watch covers every object the projection's resources match.
-/// Server frames are deltas — they carry only the rows that changed, plus
-/// an optional `removed` list of deleted paths — and the stream merges them
+/// One batched watch covers the accounts in the stream's scope — the paths
+/// or prefix passed to ``Arca/watchProjection(name:paths:prefix:exchange:)``,
+/// changeable in place with ``setPaths(_:)`` / ``setPrefix(_:)``. Server
+/// frames are deltas — they carry only the rows that changed, plus an
+/// optional `removed` list of deleted paths — and the stream merges them
 /// into ``valuations`` by path. Between server deltas, rows re-mark
-/// client-side against the mids feed so a leaderboard ticks with the market
-/// without extra server traffic.
+/// client-side against the mids feed, which the stream subscribes to only
+/// for the markets its rows hold, so a leaderboard ticks with the market at
+/// the cost of its own rows.
 ///
 /// The stream never receives balances, reserved balances, fills, orders,
 /// or any field outside the projection's registered set.
 public struct ProjectionWatchStream: Sendable {
+    var updateScope: @Sendable (ProjectionWatchScope) async throws -> Void = { _ in }
+    /// Replace the watched path set in place (max 500). The watch keeps its
+    /// ID; the server answers with the snapshot of the new set, which
+    /// replaces the rows wholesale. A later call supersedes an earlier one.
+    public func setPaths(_ paths: [String]) async throws { try await updateScope(ProjectionWatchScope(paths: paths)) }
+    /// Replace the watched sub-tree in place. See ``setPaths(_:)``.
+    public func setPrefix(_ prefix: String) async throws { try await updateScope(ProjectionWatchScope(prefix: prefix)) }
+
     /// Current lifecycle state of the stream.
     public let state: SendableBox<WatchStreamState>
     /// Projection name this stream serves.
@@ -305,6 +316,8 @@ public struct ProjectionWatchStream: Sendable {
     public let fields: [String]
     /// Current server-assigned watch ID (changes after reconnect/rotation).
     public let watchId: SendableBox<String>
+    /// The interest set this watch currently covers.
+    public let scope: SendableBox<ProjectionWatchScope>
     /// Latest redacted valuations keyed by object path, re-marked on every
     /// mids tick.
     public let valuations: SendableBox<[String: ProjectedValuation]>

@@ -1588,11 +1588,24 @@ extension Arca {
         return try await client.get("/exchange/market/sparklines")
     }
 
-    /// Subscribe to real-time mid prices for all assets.
+    /// Subscribe to real-time mid prices for the given markets, or for every
+    /// market when `markets` is empty.
+    ///
+    /// The market list is this stream's price interest on BOTH providers:
+    /// the direct Hyperliquid source subscribes one feed per market, and the
+    /// Arca socket's `subscribe_mids` carries the union of every consumer's
+    /// interests, so a screen reading three markets costs three markets of
+    /// traffic on either arm. `setMarkets` changes the set in place. An
+    /// empty list is the one way to ask for every market; prefer naming
+    /// what the screen shows.
+    ///
     /// Resolves once prices are available, so `prices` is populated on return —
     /// for the first subscriber that is the server's snapshot, and for every
     /// later one it is the map the manager retained from it (the subscription
     /// is ref-counted, so the server only sends a snapshot per subscribe).
+    /// A market no earlier consumer asked for is not in that retained map
+    /// yet; it arrives on `updates` with the snapshot the widened
+    /// subscription triggers, one round trip later.
     /// Reconnections are handled automatically. Call `stop()` when done.
     ///
     /// The `updates` stream is buffered to the latest snapshot only:
@@ -1602,10 +1615,15 @@ extension Arca {
     /// incoming mids contain no actual change.
     ///
     /// - Parameter exchange: Exchange identifier (default: `"sim"`)
+    /// - Parameter markets: Canonical market ids (`hl:0:BTC`); empty means every market.
     public func watchPrices(exchange: String = "sim", markets: [String] = []) async throws -> MarketPriceStream {
         let priceInterest = await ws.registerPriceMarkets()
         await ws.updatePriceMarkets(priceInterest, markets: Set(markets))
         await ws.ensureConnected()
+        // An empty market list is an all-markets interest; a named list is
+        // served through the interest owner above. setMarkets can move
+        // between the two, so the all-ref is tracked per current state.
+        let holdsAllRef = SendableBox<Bool>(markets.isEmpty)
 
         let state = SendableBox<WatchStreamState>(.loading)
         let prices = SendableBox<[String: String]>([:])
@@ -1619,7 +1637,7 @@ extension Arca {
             }
         }
 
-        await ws.acquireMids(exchange: exchange)
+        await ws.acquireMids(exchange: exchange, allMarkets: markets.isEmpty)
 
         let midsStream = await ws.midsEvents()
         let updates = AsyncStream([String: String].self, bufferingPolicy: .bufferingNewest(1)) { continuation in
@@ -1645,14 +1663,26 @@ extension Arca {
         }
 
         let stream = MarketPriceStream(
-            updateMarkets: { [ws] markets in await ws.updatePriceMarkets(priceInterest, markets: Set(markets)) },
+            updateMarkets: { [ws] markets in
+                await ws.updatePriceMarkets(priceInterest, markets: Set(markets))
+                let wantsAll = markets.isEmpty
+                let hadAll = holdsAllRef.value
+                holdsAllRef.update { $0 = wantsAll }
+                if wantsAll && !hadAll {
+                    await ws.acquireMids(exchange: exchange, allMarkets: true)
+                    await ws.releaseMids(allMarkets: false)
+                } else if !wantsAll && hadAll {
+                    await ws.acquireMids(exchange: exchange, allMarkets: false)
+                    await ws.releaseMids(allMarkets: true)
+                }
+            },
             state: state,
             prices: prices,
             updates: updates,
             stop: { [ws] in
                 statusTask.cancel()
                 await ws.releasePriceMarkets(priceInterest)
-                await ws.releaseMids()
+                await ws.releaseMids(allMarkets: holdsAllRef.value)
             }
         )
         await stream.ready()

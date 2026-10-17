@@ -255,7 +255,17 @@ extension Arca {
             }
         }
 
-        await ws.acquireMids(exchange: exchange)
+        // The object's mids interest is the markets its positions hold,
+        // refreshed on every server valuation; a cash-only object asks for
+        // no prices at all.
+        let priceInterest = await ws.registerPriceMarkets()
+        let interestRevision = SendableBox<UInt64>(0)
+        let syncInterest: @Sendable (ObjectValuation) -> Void = { [ws] valuation in
+            let markets = Set((valuation.positions ?? []).map(\.market))
+            let revision = interestRevision.updateAndGet { $0 += 1 }
+            Task { await ws.updatePriceMarkets(priceInterest, markets: markets, revision: revision) }
+        }
+        await ws.acquireMids(exchange: exchange, allMarkets: false)
 
         let objCallbacks = SendableBox<[UUID: @Sendable (ObjectValuation) -> Void]>([:])
 
@@ -282,6 +292,7 @@ extension Arca {
                                          metadata: ["path": eventPath, "watchId": wid])
                     }
 
+                    syncInterest(valuation)
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? valuation : valuation.revalued(with: currentMids)
                     valBox.update { $0 = revalued }
@@ -322,7 +333,8 @@ extension Arca {
                 continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 await ws.removeGapHandler(gapId)
-                await ws.releaseMids()
+                await ws.releasePriceMarkets(priceInterest)
+                await ws.releaseMids(allMarkets: false)
                 await ws.unwatchPath(path)
             },
             updateCallbacks: objCallbacks
@@ -587,7 +599,18 @@ extension Arca {
             }
         }
 
-        await ws.acquireMids(exchange: exchange)
+        // The aggregate's mids interest is the set of market-priced rows in
+        // its breakdown (the keys `revalued(with:)` looks up), refreshed on
+        // every server aggregate.
+        let priceInterest = await ws.registerPriceMarkets()
+        let interestRevision = SendableBox<UInt64>(0)
+        let syncInterest: @Sendable (PathAggregation) -> Void = { [ws] agg in
+            let markets = Set(agg.breakdown.map(\.asset).filter(isCanonicalMarketId))
+            let revision = interestRevision.updateAndGet { $0 += 1 }
+            Task { await ws.updatePriceMarkets(priceInterest, markets: markets, revision: revision) }
+        }
+        if let initial = structuralBox.value { syncInterest(initial) }
+        await ws.acquireMids(exchange: exchange, allMarkets: false)
 
         let aggCallbacks = SendableBox<[UUID: @Sendable (PathAggregation) -> Void]>([:])
 
@@ -607,6 +630,7 @@ extension Arca {
                 for await (eventWatchId, agg, _) in aggEvents {
                     guard eventWatchId == widBox.value, let agg = agg else { continue }
                     structuralBox.update { $0 = agg }
+                    syncInterest(agg)
                     let currentMids = midsBox.value
                     let revalued = currentMids.isEmpty ? agg : agg.revalued(with: currentMids)
                     aggBox.update { $0 = revalued }
@@ -646,7 +670,8 @@ extension Arca {
                 continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 rotatedTask.cancel()
-                await ws.releaseMids()
+                await ws.releasePriceMarkets(priceInterest)
+                await ws.releaseMids(allMarkets: false)
                 await ws.destroyAggregationWatch(watchId: widBox.value)
             },
             updateCallbacks: aggCallbacks
@@ -834,7 +859,7 @@ extension Arca {
         let gapId = await ws.onGap { _ in visible.invalidate(); Task { await refetch() } }
         let refresherId = registerExchangeStateRefresher(objectId: objectId) { Task { await refetch() } }
 
-        await ws.acquireMids(exchange: exchange)
+        await ws.acquireMids(exchange: exchange, allMarkets: false)
         await ws.watchPath(objectPath)
 
         let exchangeStream = await ws.exchangeNotifications()
@@ -926,7 +951,7 @@ extension Arca {
                 self?.unregisterExchangeStateRefresher(objectId: objectId, id: refresherId)
                 await ws.unwatchPath(objectPath)
                 await ws.releasePriceMarkets(priceInterest)
-                await ws.releaseMids()
+                await ws.releaseMids(allMarkets: false)
             },
             refresh: { Task { await refetch() } }
         )

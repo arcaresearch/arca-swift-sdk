@@ -87,17 +87,27 @@ extension Arca {
         return try await client.get("/projections/\(name)/valuations", query: query)
     }
 
-    /// Subscribe to a registered projection: a single batched watch covering
-    /// every object the projection's resources match, delivering per-object
-    /// REDACTED valuation deltas keyed by path. Between server deltas, rows
-    /// re-mark client-side against the mids feed — so a leaderboard ticks
-    /// with the market without any extra server traffic.
+    /// Subscribe to a registered projection for a chosen set of accounts:
+    /// one batched watch delivering per-object REDACTED valuation deltas
+    /// keyed by path, for the `paths` (max 500) and/or `prefix` you name.
+    /// Between server deltas, rows re-mark client-side against the mids
+    /// feed — and the stream subscribes to mids only for the markets its
+    /// rows hold positions in — so a leaderboard ticks with the market at
+    /// the cost of its own rows, not the realm's.
     ///
-    /// The initial snapshot is paginated: the watch reply carries the first
-    /// page and this method fetches the remaining pages over REST before
-    /// returning, so ``ProjectionWatchStream/valuations`` starts complete.
-    /// The server-side watch is connection-scoped; reconnects and rotations
-    /// re-create it automatically.
+    /// The scope only narrows the projection's registered resources: a
+    /// path outside them is dropped, a prefix is intersected with them. No
+    /// scope at all is an EMPTY watch that delivers nothing until
+    /// ``ProjectionWatchStream/setPaths(_:)`` names one; it never means
+    /// every covered account. Change the roster with `setPaths` /
+    /// `setPrefix` without re-subscribing.
+    ///
+    /// A path set comes back whole in the watch reply. A prefix scope is
+    /// paginated: the reply carries the first page and this method fetches
+    /// the rest over REST before returning, so
+    /// ``ProjectionWatchStream/valuations`` starts complete. The server-side
+    /// watch is connection-scoped; reconnects and rotations re-create it
+    /// with the current scope automatically.
     ///
     /// Requires `arca:ReadProjection` on the projection name. The stream
     /// never receives balances, reserved balances, fills, orders, or any
@@ -105,18 +115,26 @@ extension Arca {
     ///
     /// - Parameters:
     ///   - name: Projection name.
+    ///   - paths: Exact object paths to watch (max 500).
+    ///   - prefix: A sub-tree of the projection to watch.
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`).
-    public func watchProjection(name: String, exchange: String = "sim") async throws -> ProjectionWatchStream {
+    public func watchProjection(name: String, paths: [String] = [], prefix: String? = nil, exchange: String = "sim") async throws -> ProjectionWatchStream {
         await ws.ensureConnected()
+        let initialScope = ProjectionWatchScope(paths: paths, prefix: prefix)
 
-        let created = try await ws.createProjectionWatch(projection: name)
-        var initial = created.valuations
-        var next = created.cursor
-        while let cursor = next {
-            let page = try await getProjectionValuations(name: name, cursor: cursor)
-            initial.append(contentsOf: page.valuations)
-            next = page.cursor
+        let fetchRemaining: @Sendable (ProjectionWatchCreated, ProjectionWatchScope) async throws -> [ProjectedValuation] = { [weak self] reply, scope in
+            var all = reply.valuations
+            var next = reply.cursor
+            while let cursor = next, let self {
+                let page = try await self.getProjectionValuations(name: name, prefix: scope.wirePrefix, cursor: cursor)
+                all.append(contentsOf: page.valuations)
+                next = page.cursor
+            }
+            return all
         }
+
+        let created = try await ws.createProjectionWatch(projection: name, scope: initialScope)
+        let initial = try await fetchRemaining(created, initialScope)
         var initialMap: [String: ProjectedValuation] = [:]
         for v in initial { initialMap[v.path] = v }
 
@@ -126,10 +144,23 @@ extension Arca {
         let valBox = SendableBox<[String: ProjectedValuation]>(initialMap)
         let midsBox = SendableBox<[String: String]>([:])
         let widBox = SendableBox<String>(created.watchId)
+        let scopeBox = SendableBox<ProjectionWatchScope>(initialScope)
         let continuationBox = SendableBox<AsyncStream<[String: ProjectedValuation]>.Continuation?>(nil)
         let refreshingBox = SendableBox<Bool>(false)
         let stoppedBox = SendableBox<Bool>(false)
         let projCallbacks = SendableBox<[UUID: @Sendable ([String: ProjectedValuation]) -> Void]>([:])
+
+        // The stream's mids interest is the union of its rows' position
+        // markets: the manager subscribes the Arca socket to that union
+        // (and the direct provider, when preferred), never to every market.
+        let priceInterest = await ws.registerPriceMarkets()
+        let interestRevision = SendableBox<UInt64>(0)
+        let syncInterest: @Sendable () -> Void = { [ws] in
+            let markets = Set(structuralBox.value.values.flatMap { ($0.positions ?? []).map(\.market) })
+            let revision = interestRevision.updateAndGet { $0 += 1 }
+            Task { await ws.updatePriceMarkets(priceInterest, markets: markets, revision: revision) }
+        }
+        await ws.updatePriceMarkets(priceInterest, markets: Set(initialMap.values.flatMap { ($0.positions ?? []).map(\.market) }))
 
         let emit: @Sendable () -> Void = {
             let mids = midsBox.value
@@ -141,22 +172,18 @@ extension Arca {
         }
 
         // The server-side watch lives on the connection that created it, so
-        // every reconnect and every rotation must re-create it (and refetch
-        // the snapshot — deltas that fired during the gap are gone).
+        // every reconnect and every rotation must re-create it with the
+        // CURRENT scope (and refetch the snapshot — deltas that fired
+        // during the gap are gone).
         let recreateWatch: @Sendable () async -> Void = { [weak self] in
             guard let self = self, !stoppedBox.value else { return }
             guard !refreshingBox.value else { return }
             refreshingBox.update { $0 = true }
             do {
                 let oldWatchId = widBox.value
-                let newWatch = try await self.ws.createProjectionWatch(projection: name)
-                var vals = newWatch.valuations
-                var cursor = newWatch.cursor
-                while let c = cursor {
-                    let page = try await self.getProjectionValuations(name: name, cursor: c)
-                    vals.append(contentsOf: page.valuations)
-                    cursor = page.cursor
-                }
+                let scope = scopeBox.value
+                let newWatch = try await self.ws.createProjectionWatch(projection: name, scope: scope)
+                let vals = try await fetchRemaining(newWatch, scope)
                 guard !stoppedBox.value else {
                     await self.ws.destroyProjectionWatch(watchId: newWatch.watchId)
                     refreshingBox.update { $0 = false }
@@ -169,6 +196,7 @@ extension Arca {
                 var map: [String: ProjectedValuation] = [:]
                 for v in vals { map[v.path] = v }
                 structuralBox.update { $0 = map }
+                syncInterest()
                 emit()
             } catch {
                 // Best effort — keep existing data.
@@ -176,6 +204,25 @@ extension Arca {
                                  error: error, metadata: ["projection": name])
             }
             refreshingBox.update { $0 = false }
+        }
+
+        // Scope changes are serialized so a later setPaths always wins; the
+        // reply is the full snapshot of the new scope and replaces the rows.
+        let scopeQueue = SerialAsyncQueue()
+        let applyScope: @Sendable (ProjectionWatchScope) async throws -> Void = { [weak self] scope in
+            guard let self else { return }
+            try await scopeQueue.run { [self] in
+                guard !stoppedBox.value else { return }
+                scopeBox.update { $0 = scope }
+                let reply = try await self.ws.updateProjectionWatch(watchId: widBox.value, scope: scope)
+                let vals = try await fetchRemaining(reply, scope)
+                guard !stoppedBox.value, scopeBox.value == scope else { return } // superseded
+                var map: [String: ProjectedValuation] = [:]
+                for v in vals { map[v.path] = v }
+                structuralBox.update { $0 = map }
+                syncInterest()
+                emit()
+            }
         }
 
         let statusStream = await ws.statusStream
@@ -200,7 +247,7 @@ extension Arca {
             }
         }
 
-        await ws.acquireMids(exchange: exchange)
+        await ws.acquireMids(exchange: exchange, allMarkets: false)
 
         let projEvents = await ws.projectionValuationEvents()
         let midsStream = await ws.midsEvents()
@@ -222,6 +269,7 @@ extension Arca {
                         }
                     }
                     state.update { $0 = .connected }
+                    syncInterest()
                     emit()
                 }
                 continuation.finish()
@@ -244,11 +292,12 @@ extension Arca {
 
         state.update { $0 = .connected }
 
-        return ProjectionWatchStream(
+        var stream = ProjectionWatchStream(
             state: state,
             projection: name,
             fields: created.fields,
             watchId: widBox,
+            scope: scopeBox,
             valuations: valBox,
             updates: updates,
             stop: { [ws] in
@@ -256,10 +305,29 @@ extension Arca {
                 continuationBox.update { $0 = nil }
                 statusTask.cancel()
                 rotatedTask.cancel()
-                await ws.releaseMids()
+                await ws.releasePriceMarkets(priceInterest)
+                await ws.releaseMids(allMarkets: false)
                 await ws.destroyProjectionWatch(watchId: widBox.value)
             },
             updateCallbacks: projCallbacks
         )
+        stream.updateScope = applyScope
+        return stream
+    }
+}
+
+/// Runs async work one item at a time, in call order. Used to serialize a
+/// stream's scope changes so a later `setPaths` always wins.
+actor SerialAsyncQueue {
+    private var tail: Task<Void, Never>?
+
+    func run(_ work: @escaping @Sendable () async throws -> Void) async throws {
+        let previous = tail
+        let task = Task<Void, Error> {
+            await previous?.value
+            try await work()
+        }
+        tail = Task { _ = try? await task.value }
+        try await task.value
     }
 }

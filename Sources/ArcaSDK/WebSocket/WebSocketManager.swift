@@ -6,9 +6,38 @@ import UIKit
 import AppKit
 #endif
 
-/// Reply to a `watch_projection` request: the server-assigned watch ID,
-/// the projection's registered field set, and the first page of redacted
-/// valuations (remaining pages are fetched over REST with `cursor`).
+/// The interest set of a projection watch: which of the accounts a
+/// projection covers this subscriber wants deltas for. It only ever narrows
+/// the projection's registered resources — a path outside them is dropped,
+/// a prefix is intersected with them, and the two compose as AND. An empty
+/// scope (neither field) is a watch that delivers nothing until
+/// ``ProjectionWatchStream/setPaths(_:)`` names one; it is never "everyone".
+public struct ProjectionWatchScope: Sendable, Equatable {
+    /// Exact object paths to watch (max 500) — a leaderboard roster, a set
+    /// of followed traders. The snapshot for the whole set comes back in
+    /// the watch reply.
+    public var paths: [String]
+    /// A sub-tree of the projection to watch (`"/users/alice"`). Pass the
+    /// projection's own prefix to opt into the whole covered set
+    /// explicitly; on a realm-wide projection that is the shape to avoid
+    /// on a device.
+    public var prefix: String?
+
+    public init(paths: [String] = [], prefix: String? = nil) {
+        self.paths = paths
+        self.prefix = prefix
+    }
+
+    /// Sent fields only: an empty scope goes over the wire as exactly that.
+    var wirePaths: [String]? { paths.isEmpty ? nil : paths }
+    var wirePrefix: String? { (prefix ?? "").isEmpty ? nil : prefix }
+    public var isEmpty: Bool { wirePaths == nil && wirePrefix == nil }
+}
+
+/// Reply to a `watch_projection` or `update_projection_watch` request: the
+/// server-assigned watch ID, the projection's registered field set, and the
+/// snapshot of the watch's scope (a path set whole; a prefix scope's first
+/// page, with the remaining pages fetched over REST with `cursor`).
 public struct ProjectionWatchCreated: Sendable {
     public let watchId: String
     public let projection: String
@@ -88,6 +117,10 @@ public actor WebSocketManager {
     // Ref-counted path watch engine
     private var pathRefs: [String: Int] = [:]
     private var midsRefs = 0
+    // Consumers holding an all-markets interest (acquireMids(allMarkets:
+    // true)). While non-zero the Arca socket subscribes to every market;
+    // otherwise it subscribes to the union of declared price interests.
+    private var midsAllRefs = 0
     private var midsExchange = "sim"
     // Latest merged mid prices, held while the mids subscription is live.
     //
@@ -181,7 +214,12 @@ public actor WebSocketManager {
     func updatePriceMarkets(_ owner: UUID, markets: Set<String>, revision: UInt64 = 0) {
         marketDataRouter.update(owner, markets: markets, revision: revision); syncPublicSource()
     }
-    func releasePriceMarkets(_ owner: UUID) { marketDataRouter.release(owner); syncPublicSource() }
+    /// Dropping an owner can only narrow the Arca subscription, so the
+    /// socket side waits out the release debounce like releaseMids does;
+    /// the direct provider diffs its own subscriptions at once.
+    func releasePriceMarkets(_ owner: UUID) {
+        marketDataRouter.release(owner); syncPublicSource(arca: false); scheduleMidsNarrowing()
+    }
     private func stopPublicSource() {
         clearPublicPrices(); lastPublicFlushAt = 0
         publicSourceEpoch += 1; publicConnectionEpoch = 0
@@ -191,7 +229,12 @@ public actor WebSocketManager {
         marketDataRecorder.suspend()
         publishMarketDiagnostics(force: true)
     }
-    private func syncPublicSource() {
+    /// Pushes the current interest set to both providers: the direct
+    /// Hyperliquid source (per-coin subscriptions) and, unless `arca` is
+    /// false, the Arca socket (`subscribe_mids` with the union of declared
+    /// markets). Every interest change passes through here.
+    private func syncPublicSource(arca: Bool = true) {
+        if arca { syncArcaMids() }
         defer { publishMarketDiagnostics(force: true) }
         marketDataRecorder.retain(marketDataRouter.priceInterestMarkets)
         let markets = Set(marketDataRouter.subscriptions.filter { $0.interval == nil }.map(\.market))
@@ -266,7 +309,9 @@ public actor WebSocketManager {
     // Request/reply seam for watch_projection: requestId → continuation,
     // plus deferred sends for requests issued before auth completes.
     private var pendingProjectionRequests: [String: CheckedContinuation<ProjectionWatchCreated, Error>] = [:]
-    private var pendingProjectionSends: [String: String] = [:]
+    // Projection requests (create or update) issued before the socket
+    // authenticated, keyed by requestId and flushed once it is live.
+    private var pendingProjectionSends: [String: OutboundMessage] = [:]
     private var projectionTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var nextProjectionRequestId = 0
     private static let projectionRequestTimeoutNs: UInt64 = 10_000_000_000 // 10s
@@ -688,41 +733,93 @@ public actor WebSocketManager {
     }
 
     /// Acquire interest in mid price updates.
-    public func acquireMids(exchange: String) {
-        publicSuspended = hiddenAt != nil; syncPublicSource()
+    ///
+    /// The Arca socket subscribes only to the markets its consumers have
+    /// declared through `registerPriceMarkets` / `updatePriceMarkets` — the
+    /// same interest set the direct Hyperliquid provider already subscribes
+    /// per coin — so a phone pays for the markets on its screen, not for
+    /// every market on the venue. `allMarkets: true` (the pre-existing
+    /// meaning of a bare `acquireMids`) is for a consumer that cannot name
+    /// its markets and genuinely wants every mid; while any such consumer is
+    /// live the socket subscribes to everything. Consumers that know their
+    /// markets (a price watch with a market list, an account watch with
+    /// positions, a projection watch with rows) pass `false` and keep their
+    /// interest owner current.
+    public func acquireMids(exchange: String, allMarkets: Bool = true) {
+        publicSuspended = hiddenAt != nil
         cancelIdleTimer()
         midsExchange = exchange
         midsRefs += 1
-        if midsRefs == 1 {
-            let timerKey = "mids"
-            if let task = unsubTasks.removeValue(forKey: timerKey) {
-                task.cancel()
-            } else {
-                ensureConnected()
-                subscribeMids(exchange: exchange)
-            }
-        }
+        if allMarkets { midsAllRefs += 1 }
+        if let task = unsubTasks.removeValue(forKey: "mids") { task.cancel() }
+        ensureConnected()
+        syncPublicSource()
     }
 
-    /// Release interest in mid price updates.
-    public func releaseMids() {
+    /// Release interest in mid price updates. `allMarkets` must match the
+    /// value passed to `acquireMids`.
+    public func releaseMids(allMarkets: Bool = true) {
         midsRefs = max(0, midsRefs - 1)
-        if midsRefs == 0 {
-            let timerKey = "mids"
-            unsubTasks[timerKey] = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
-                guard !Task.isCancelled else { return }
-                await self?.finishMidsRelease(timerKey: timerKey)
-            }
+        if allMarkets { midsAllRefs = max(0, midsAllRefs - 1) }
+        scheduleMidsNarrowing()
+    }
+
+    /// Narrowing (or dropping) the Arca mids subscription is debounced so a
+    /// screen that releases and re-acquires within a frame does not churn a
+    /// subscribe/unsubscribe pair and its snapshot. Widening is never
+    /// debounced: a consumer that just declared a market needs its price.
+    private func scheduleMidsNarrowing() {
+        let timerKey = "mids"
+        unsubTasks[timerKey]?.cancel()
+        unsubTasks[timerKey] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: WebSocketManager.unsubDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.finishMidsRelease(timerKey: timerKey)
         }
     }
 
     private func finishMidsRelease(timerKey: String) {
         unsubTasks.removeValue(forKey: timerKey)
         if midsRefs == 0 {
-            unsubscribeMids()
+            if subscribedMids != nil { unsubscribeMids() }
+        } else {
+            syncArcaMids()
         }
         maybeStartIdleTimer()
+    }
+
+    /// The coin set the Arca socket should hold right now: nil when no
+    /// consumer needs mids (or none has declared a market yet), `[]` for
+    /// every market while an all-markets consumer is live, otherwise the
+    /// sorted union of declared interests.
+    private func desiredArcaMids() -> [String]? {
+        guard midsRefs > 0 else { return nil }
+        if midsAllRefs > 0 { return [] }
+        let markets = marketDataRouter.priceInterestMarkets
+        guard !markets.isEmpty else { return nil }
+        return markets.sorted()
+    }
+
+    /// Reconciles the Arca mids subscription with the desired coin set,
+    /// sending `subscribe_mids` only when the set actually changed. The
+    /// server treats a repeated `subscribe_mids` as a replacement, and
+    /// answers it with a snapshot of the new set, which seeds any market
+    /// that was just added. A subscription made directly through
+    /// `subscribeMids` (no consumer refs) is left alone: `unsubscribeMids`
+    /// is its counterpart.
+    private func syncArcaMids() {
+        guard midsRefs > 0 else { return }
+        let desired = desiredArcaMids()
+        switch (desired, subscribedMids) {
+        case (nil, nil):
+            return
+        case (nil, .some):
+            unsubscribeMids()
+        case let (.some(coins), .some(current)) where current.exchange == midsExchange && current.coins == coins:
+            return
+        case let (.some(coins), _):
+            subscribeMids(exchange: midsExchange, coins: coins)
+        }
     }
 
     /// Acquire interest in candle updates.
@@ -968,29 +1065,49 @@ public actor WebSocketManager {
 
     // MARK: - Projection Watches
 
-    /// Create a projection watch over the socket: sends `watch_projection`
-    /// and suspends until the server replies with `projection_watch_created`
-    /// (or an error / timeout). The watch is connection-scoped on the server
-    /// side, so callers must re-create it after a reconnect or rotation —
-    /// ``Arca/watchProjection(name:exchange:)`` handles that automatically.
-    public func createProjectionWatch(projection: String) async throws -> ProjectionWatchCreated {
+    /// Create a projection watch over the socket for the accounts in
+    /// `scope`: sends `watch_projection` and suspends until the server
+    /// replies with `projection_watch_created` (or an error / timeout). The
+    /// scope only narrows the projection's registration; an empty scope is
+    /// an empty watch. The watch is connection-scoped on the server side,
+    /// so callers must re-create it after a reconnect or rotation —
+    /// ``Arca/watchProjection(name:paths:prefix:exchange:)`` handles that
+    /// automatically.
+    public func createProjectionWatch(projection: String, scope: ProjectionWatchScope = ProjectionWatchScope()) async throws -> ProjectionWatchCreated {
+        try await projectionRequest(
+            .watchProjection(projection: projection, paths: scope.wirePaths, prefix: scope.wirePrefix, requestId: ""),
+            label: "watch_projection")
+    }
+
+    /// Replace a live projection watch's interest set in place: sends
+    /// `update_projection_watch` and suspends until `projection_watch_updated`.
+    /// The watch keeps its ID; the reply is the snapshot of the NEW scope,
+    /// which the caller swaps in wholesale.
+    public func updateProjectionWatch(watchId: String, scope: ProjectionWatchScope) async throws -> ProjectionWatchCreated {
+        try await projectionRequest(
+            .updateProjectionWatch(watchId: watchId, paths: scope.wirePaths, prefix: scope.wirePrefix, requestId: ""),
+            label: "update_projection_watch")
+    }
+
+    private func projectionRequest(_ template: OutboundMessage, label: String) async throws -> ProjectionWatchCreated {
         cancelIdleTimer()
         ensureConnected()
         nextProjectionRequestId += 1
         let requestId = "proj-\(nextProjectionRequestId)"
+        let message = template.withRequestId(requestId)
         return try await withCheckedThrowingContinuation { continuation in
             pendingProjectionRequests[requestId] = continuation
             projectionTimeoutTasks[requestId] = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: WebSocketManager.projectionRequestTimeoutNs)
                 guard !Task.isCancelled else { return }
-                await self?.timeoutProjectionRequest(requestId)
+                await self?.timeoutProjectionRequest(requestId, label: label)
             }
             if _status == .connected {
-                sendMessage(.watchProjection(projection: projection, requestId: requestId))
+                sendMessage(message)
             } else {
                 // Not authenticated yet — the send is flushed from the
                 // `authenticated` handler once the connection is live.
-                pendingProjectionSends[requestId] = projection
+                pendingProjectionSends[requestId] = message
             }
         }
     }
@@ -1001,13 +1118,13 @@ public actor WebSocketManager {
         maybeStartIdleTimer()
     }
 
-    private func timeoutProjectionRequest(_ requestId: String) {
+    private func timeoutProjectionRequest(_ requestId: String, label: String) {
         projectionTimeoutTasks.removeValue(forKey: requestId)
         pendingProjectionSends.removeValue(forKey: requestId)
         guard let continuation = pendingProjectionRequests.removeValue(forKey: requestId) else { return }
         continuation.resume(throwing: ArcaError.unknown(
             code: "WS_REQUEST_TIMEOUT",
-            message: "watch_projection: timeout waiting for server response",
+            message: "\(label): timeout waiting for server response",
             errorId: nil
         ))
     }
@@ -1055,8 +1172,8 @@ public actor WebSocketManager {
 
     private func flushPendingProjectionSends() {
         guard !pendingProjectionSends.isEmpty else { return }
-        for (requestId, projection) in pendingProjectionSends {
-            sendMessage(.watchProjection(projection: projection, requestId: requestId))
+        for message in pendingProjectionSends.values {
+            sendMessage(message)
         }
         pendingProjectionSends.removeAll()
     }
@@ -1650,7 +1767,7 @@ public actor WebSocketManager {
                 return
             }
 
-            if msgType == "projection_watch_created" {
+            if msgType == "projection_watch_created" || msgType == "projection_watch_updated" {
                 if let requestId = json["requestId"] as? String,
                    let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
                     projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
@@ -2422,7 +2539,13 @@ public actor WebSocketManager {
     /// after auth and on a warming socket during a handoff, so it must target
     /// a named socket rather than "the current one".
     private func resubscribeAll(generation: Int) {
-        if let mids = subscribedMids {
+        // The mids subscription is re-derived from the live consumers'
+        // interests rather than replayed from the last set sent, so a
+        // socket that comes up mid-change subscribes to what is wanted now.
+        if let coins = desiredArcaMids() {
+            subscribedMids = (midsExchange, coins)
+            sendMessage(.subscribeMids(exchange: midsExchange, coins: coins), generation: generation)
+        } else if let mids = subscribedMids {
             sendMessage(.subscribeMids(exchange: mids.exchange, coins: mids.coins), generation: generation)
         }
         if let candles = subscribedCandles {
@@ -2432,9 +2555,6 @@ public actor WebSocketManager {
         if let oi = subscribedOI {
             sendMessage(.subscribeOI(coins: oi.coins, intervals: oi.intervals.map(\.rawValue)),
                         generation: generation)
-        }
-        if midsRefs > 0 && subscribedMids == nil {
-            sendMessage(.subscribeMids(exchange: midsExchange, coins: []), generation: generation)
         }
         if !candleRefCoins.isEmpty && subscribedCandles == nil, let message = candleSubscriptionMessage() {
             sendMessage(message, generation: generation)

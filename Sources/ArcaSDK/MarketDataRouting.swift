@@ -38,6 +38,15 @@ protocol PublicMarketSource: Sendable {
     func close() async
 }
 
+/// Whether a string has the shape of a canonical market id (`{exchange}:{native}`,
+/// alphabetic exchange prefix) — the only keys a mids map can carry. Used to
+/// pick the market-priced rows out of an aggregate's breakdown when declaring
+/// price interest; never to construct or guess an id.
+func isCanonicalMarketId(_ id: String) -> Bool {
+    guard let colon = id.firstIndex(of: ":"), colon > id.startIndex, id.index(after: colon) < id.endIndex else { return false }
+    return id[..<colon].allSatisfy(\.isLetter) && !id.contains(where: \.isWhitespace)
+}
+
 /// Pure routing state, serialized by WebSocketManager. Both providers feed the same SDK event bus.
 struct MarketDataRouter {
     var preference: MarketDataPreference = .arca
