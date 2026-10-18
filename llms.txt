@@ -40,6 +40,49 @@ The first price delay starts at socket-manager creation and concerns the first
 routed interested price. It is not venue latency. Quiet prices are not failures,
 no exchange timestamp is invented, and Arca still owns finalized candles.
 
+## Wallet snapshot and money figures (2.14.0)
+
+`walletSnapshot(ownerAddress:arcaPath:boundaryId:)` reads the schema-2 wallet
+snapshot (`WalletSnapshot`): Cash, every trading account under the owner's
+root, the money moving between them (`moving`), the funding operations and
+`totals`, composed by Arca at one journal position so
+`totals.totalMicro = cashMicro + movingMicro + tradingMicro` in every frame
+(an empty `boundaryId` names a pre-Cash wallet). `walletSnapshotEvents(...)`
+streams it (`AsyncThrowingStream<WalletSnapshot, Error>`) with the same
+resume and backoff as `walletAccountEvents`, keyed on `watermark.sequence`.
+
+`watchWalletMoney(ownerAddress:arcaPath:boundaryId:)` returns a
+`WalletMoneyWatchStream` whose `money` is the latest `WalletMoney`: a
+`MoneyFigure` for the total, for Cash and for each account (`accounts`,
+`orderedAccounts`), each one Arca's figure VERBATIM (`settledMicro`: Cash
+`confirmedMicro`, an account's `balances.totalMicro`, `totals.totalMicro`;
+`availableMicro`: Cash `availableMicro`, an account's `withdrawableMicro`)
+plus the legs of the operations moving money into or out of it (`arriving`,
+`departing`: one `MoneyLeg` per operation with `stage` reserved / inTransit /
+expected, `amountMicro`, `counterparty` cash / account / external / unknown).
+Rules, all from the frame: a `reserved` leg shows at both ends; an `inTransit`
+leg at its destination when listed, else at its source (a send); `expected`
+only at its destination and never in `arrivingMicro` or `inMotion`; the total
+carries only legs that cross the wallet (deposits, sends; also Cash's own
+sends in `cash.operations` and `pendingInMicro`); a leg whose other end the
+frame does not list still renders on the visible end. NOTHING is summed into
+a figure on the client; `arrivingMicro`/`departingMicro`/`expectedMicro` are
+caption totals only. One frame, one value: every figure carries the same
+`watermark`; hold one watch per wallet and render it everywhere. The only
+gates are another owner/root/realm or an older `watermark.sequence`
+(ignored) and an unknown schema (refused); a `totals` mismatch is a
+`diagnostics` entry, never a gate. `predict(_:)` adds only the legs of an
+accepted operation (`MoneyPrediction`: requestId, amount, from, to) until the
+frame that carries it, never moving a figure. `revalue(_:)` takes a venue
+frame (`MoneyRevaluation(arcaId:exchangeState:)`) and sets `revaluedMicro`
+verbatim only when it is newer than the figure's `asOf` and the frame lists no
+settlement toward the account (`heldBy` empty, no incoming leg in motion);
+`settledMicro` never moves with it. `change` names the operation or the venue
+that moved a figure with a signed `deltaMicro` caption, only when the frame
+makes it attributable. Contract: documents/contracts/sdk-money-figure.md;
+fixtures shared by all four SDKs:
+backend/libs/arca-go/fundingv9/testdata/wallet-money/.
+
 ## Scoped projection watches and interest-scoped mids (2.13.0)
 
 `watchProjection(name:paths:prefix:exchange:)` watches a registered projection
