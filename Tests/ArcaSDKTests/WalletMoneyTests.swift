@@ -140,6 +140,8 @@ final class WalletMoneyTests: XCTestCase {
         XCTAssertEqual(failed.cash.availableMicro, "28510000")
         XCTAssertTrue(failed.cash.departing.isEmpty && failed.account(Self.hl1)!.arriving.isEmpty)
         XCTAssertEqual(failed.cash.change?.cause, .operation(operationId: "opr_move1", kind: "cash_to_trading"))
+        XCTAssertEqual(failed.cash.change?.operationStatus, "failed", "a released reservation is not money sent")
+        XCTAssertEqual(failed.cash.change?.retired?.direction, .outgoing)
 
         // Compensation after it: Cash is credited back in the same frame the leg disappears.
         let compensated = WalletMoney.compose(try Self.fixture("06-move-compensated"), previous: inTransit)
@@ -186,6 +188,12 @@ final class WalletMoneyTests: XCTestCase {
         XCTAssertTrue(landed.account(Self.hl2)!.arriving.isEmpty)
         XCTAssertEqual(landed.account(Self.hl2)?.change?.cause, .operation(operationId: "opr_dep1", kind: "deposit"))
         XCTAssertEqual(landed.total.change?.cause, .operation(operationId: "opr_dep1", kind: "deposit"))
+        // The total did not move when the money landed (it was counted as moving already); the retired leg names the amount.
+        XCTAssertEqual(landed.total.change?.deltaMicro, "0")
+        XCTAssertEqual(landed.total.change?.retired?.amountMicro, "2000000")
+        XCTAssertEqual(landed.total.change?.retired?.direction, .incoming)
+        XCTAssertEqual(landed.total.change?.operationStatus, "succeeded")
+        XCTAssertEqual(landed.account(Self.hl2)?.change?.operationStatus, "succeeded")
     }
 
     func testSendLeavesTheTotalOnlyWhenPaid() throws {

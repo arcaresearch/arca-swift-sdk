@@ -96,11 +96,21 @@ public struct MoneyChange: Equatable, Sendable {
     public let deltaMicro: String
     /// The journal position of the frame that carried the change.
     public let sequence: UInt64
+    /// The leg of the named operation this frame no longer lists (it landed,
+    /// left, or was released), so a caption can name the amount even when the
+    /// figure itself did not move (the total, when in-transit money lands).
+    public let retired: MoneyLeg?
+    /// The named operation's `status` in this frame (`pending`, `succeeded`,
+    /// `failed`), so a retired leg reads as received or sent only when the
+    /// operation succeeded.
+    public let operationStatus: String?
 
-    public init(cause: Cause, deltaMicro: String, sequence: UInt64) {
+    public init(cause: Cause, deltaMicro: String, sequence: UInt64, retired: MoneyLeg? = nil, operationStatus: String? = nil) {
         self.cause = cause
         self.deltaMicro = deltaMicro
         self.sequence = sequence
+        self.retired = retired
+        self.operationStatus = operationStatus
     }
 }
 
@@ -527,15 +537,14 @@ public struct WalletMoney: Equatable, Sendable {
 
     static func change(from previous: MoneyFigure?, to figure: MoneyFigure, snapshot: WalletSnapshot, previous previousMoney: WalletMoney,
                        sequence: UInt64, account: WalletTradingAccount?) -> MoneyChange? {
+        let moved = operationThatMoved(figure, previous: previous, snapshot: snapshot, previousMoney: previousMoney)
         guard let before = previous?.settledMicro, let after = figure.settledMicro, let delta = Micro.difference(after, before) else {
             // No figure to compare: an operation whose legs changed still names itself.
-            if let cause = operationThatMoved(figure, previous: previous, snapshot: snapshot, previousMoney: previousMoney) {
-                return MoneyChange(cause: cause, deltaMicro: "0", sequence: sequence)
-            }
-            return nil
+            guard let moved else { return nil }
+            return MoneyChange(cause: moved.cause, deltaMicro: "0", sequence: sequence, retired: moved.retired, operationStatus: moved.status)
         }
-        if let cause = operationThatMoved(figure, previous: previous, snapshot: snapshot, previousMoney: previousMoney) {
-            return MoneyChange(cause: cause, deltaMicro: delta, sequence: sequence)
+        if let moved {
+            return MoneyChange(cause: moved.cause, deltaMicro: delta, sequence: sequence, retired: moved.retired, operationStatus: moved.status)
         }
         if delta == "0" { return nil }
         if let account, account.balances?.typedSource == .hyperliquidWs {
@@ -544,14 +553,24 @@ public struct WalletMoney: Equatable, Sendable {
         return nil
     }
 
+    struct Moved {
+        let cause: MoneyChange.Cause
+        let retired: MoneyLeg?
+        let status: String?
+    }
+
     /// An operation that touches the figure and changed between the frames:
     /// a new or retired leg, or a stage or status transition.
-    static func operationThatMoved(_ figure: MoneyFigure, previous: MoneyFigure?, snapshot: WalletSnapshot, previousMoney: WalletMoney) -> MoneyChange.Cause? {
+    static func operationThatMoved(_ figure: MoneyFigure, previous: MoneyFigure?, snapshot: WalletSnapshot, previousMoney: WalletMoney) -> Moved? {
         let nowLegs = Dictionary((figure.arriving + figure.departing).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let beforeLegs = Dictionary(((previous?.arriving ?? []) + (previous?.departing ?? [])).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var touched: [(String, String)] = []
+        var retired: [String: MoneyLeg] = [:]
         for (id, leg) in nowLegs where beforeLegs[id]?.stage != leg.stage { touched.append((leg.operationId, leg.kind)) }
-        for (id, leg) in beforeLegs where nowLegs[id] == nil { touched.append((leg.operationId, leg.kind)) }
+        for (id, leg) in beforeLegs where nowLegs[id] == nil {
+            touched.append((leg.operationId, leg.kind))
+            retired[leg.operationId] = leg
+        }
         let before = Dictionary(previousMoney.operations.map { ($0.operationId, $0) }, uniquingKeysWith: { first, _ in first })
         for op in snapshot.operations where touches(op, figure: figure, snapshot: snapshot) {
             let old = before[op.operationId]
@@ -559,14 +578,17 @@ public struct WalletMoney: Equatable, Sendable {
                 touched.append((op.operationId, op.kind))
             }
         }
+        var cashStatus: [String: String] = [:]
         if figure.kind == .cash || figure.kind == .total {
             let beforeCash = Dictionary(previousMoney.snapshot.cash.operations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for op in snapshot.cash.operations where beforeCash[op.id]?.state != op.state && (op.kind == "send" || figure.kind == .cash) {
                 touched.append((op.id, op.kind))
+                cashStatus[op.id] = op.state == WalletOperationState.completed.rawValue ? "succeeded" : op.state == WalletOperationState.failed.rawValue ? "failed" : "pending"
             }
         }
         guard let (id, kind) = touched.first else { return nil }
-        return .operation(operationId: id, kind: kind)
+        let status = snapshot.operations.first { $0.operationId == id }?.status ?? cashStatus[id]
+        return Moved(cause: .operation(operationId: id, kind: kind), retired: retired[id], status: status)
     }
 
     static func touches(_ op: WalletFundingOperation, figure: MoneyFigure, snapshot: WalletSnapshot) -> Bool {
@@ -581,28 +603,28 @@ public struct WalletMoney: Equatable, Sendable {
 
 /// Integer arithmetic on micro-USDC strings for captions and diagnostics.
 /// A figure is never produced here; only differences and caption totals.
-enum Micro {
-    static func parse(_ raw: String) -> Int64? {
+public enum Micro {
+    public static func parse(_ raw: String) -> Int64? {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         return Int64(trimmed)
     }
 
-    static func sum(_ values: [String]) -> String {
+    public static func sum(_ values: [String]) -> String {
         var total: Int64 = 0
         for value in values { total &+= parse(value) ?? 0 }
         return String(total)
     }
 
     /// `a - b` as a signed integer string, nil when either is not an integer.
-    static func difference(_ a: String, _ b: String) -> String? {
+    public static func difference(_ a: String, _ b: String) -> String? {
         guard let x = parse(a), let y = parse(b) else { return nil }
         return String(x - y)
     }
 
     /// A decimal USD string ("6.49", "-0.5") as micro-USDC, truncated toward
     /// zero past six decimals; nil when not a decimal.
-    static func fromDecimal(_ raw: String) -> String? {
+    public static func fromDecimal(_ raw: String) -> String? {
         var text = raw.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return nil }
         var negative = false
