@@ -69,7 +69,14 @@ actor HyperliquidMarketSource: PublicMarketSource {
         guard data.count <= 262_144 else { await fail(epoch: epoch, reason: "Hyperliquid frame exceeded size budget"); return }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if json["channel"] as? String == "error" { await fail(epoch: epoch, reason: "Hyperliquid subscription rejected"); return }
-        if let update = decodePublicMarketUpdate(json, subscriptions: sent) { await receive(epoch, update) }
+        if let update = decodePublicMarketUpdate(json, subscriptions: sent) {
+            await receive(epoch, update)
+            switch update {
+            case let .quote(market, _, _): await receive(epoch, .cost(key: market, bytes: data.count))
+            case let .mids(dex, _): await receive(epoch, .cost(key: "@" + dex, bytes: data.count))
+            default: break
+            }
+        }
     }
     private func ping(epoch: UInt64) async {
         guard epoch == generation, let socket else { return }
@@ -86,10 +93,12 @@ actor HyperliquidMarketSource: PublicMarketSource {
     }
     private func sendChanges(epoch: UInt64) async {
         while !Task.isCancelled, epoch == generation, let socket {
-            let remove = sent.subtracting(desired).first
-            guard let sub = remove ?? desired.subtracting(sent).first else { changes = nil; return }
-            var subscription = ["type": sub.interval == nil ? "bbo" : "candle", "coin": sub.coin]
-            if let interval = sub.interval { subscription["interval"] = interval.rawValue }
+            let add = desired.subtracting(sent).first
+            let remove = add == nil ? sent.subtracting(desired).first : nil
+            guard let sub = add ?? remove else { changes = nil; return }
+            var subscription = ["type": sub.dex != nil ? "allMids" : sub.interval == nil ? "bbo" : "candle"]
+            if let dex = sub.dex { if !dex.isEmpty { subscription["dex"] = dex } }
+            else { subscription["coin"] = sub.coin; if let interval = sub.interval { subscription["interval"] = interval.rawValue } }
             let json: [String: Any] = ["method": remove == nil ? "subscribe" : "unsubscribe", "subscription": subscription]
             guard let data = try? JSONSerialization.data(withJSONObject: json), let text = String(data: data, encoding: .utf8) else { return }
             // Register before suspension so an immediate snapshot can be decoded.
@@ -140,6 +149,16 @@ private func marketDecimal(_ value: Any?) -> Decimal? {
 /// Decode only exact subscriptions; HL candle `s` is a symbol, not Arca provenance.
 func decodePublicMarketUpdate(_ json: [String: Any], subscriptions: Set<PublicMarketSubscription>) -> PublicMarketUpdate? {
     guard let channel = json["channel"] as? String, let data = json["data"] as? [String: Any] else { return nil }
+    if channel == "allMids" {
+        guard data["dex"] == nil || data["dex"] is String else { return nil }
+        let dex = data["dex"] as? String ?? ""
+        guard subscriptions.contains(where: { $0.dex == dex }), let mids = data["mids"] as? [String: Any] else { return nil }
+        let prices = mids.compactMapValues { raw -> String? in
+            guard let number = marketDecimal(raw), number > 0 else { return nil }
+            return raw as? String
+        }
+        return .mids(dex: dex, prices: prices)
+    }
     if channel == "bbo" {
         guard let coin = data["coin"] as? String,
               let sub = subscriptions.first(where: { $0.coin == coin && $0.interval == nil }),

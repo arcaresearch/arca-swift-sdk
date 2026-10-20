@@ -756,7 +756,7 @@ extension Arca {
         /// re-reads and the periodic refresh.
         let apply: @Sendable (ExchangeState, UInt64) -> Void = { structural, epoch in
             observationEpoch.update { current in
-                guard current == epoch else { return }
+                guard !stopped.value, current == epoch else { return }
                 // The epoch orders this read against pushes that arrived
                 // while it was in flight; the read time orders it against
                 // the state already applied. A frame the platform read
@@ -905,12 +905,19 @@ extension Arca {
 
             let midsTask = Task {
                 for await mids in midsStream {
+                    guard !Task.isCancelled else { break }
                     midsBox.update { current in
                         for (key, value) in mids { current[key] = value }
                     }
-                    observationEpoch.update { _ in
-                        guard let base = structuralBox.value else { return }
-                        let revalued = base.revalued(with: midsBox.value)
+                    var input: (epoch: UInt64, state: ExchangeState, mids: [String: String])?
+                    observationEpoch.update { epoch in
+                        guard !stopped.value, !Task.isCancelled, let base = structuralBox.value else { return }
+                        input = (epoch, base, midsBox.value)
+                    }
+                    guard let input else { continue }
+                    let revalued = input.state.revalued(with: input.mids)
+                    observationEpoch.update { epoch in
+                        guard !stopped.value, !Task.isCancelled, epoch == input.epoch else { return }
                         stateBox.update { $0 = revalued }
                         visible.observe(revalued)
                         continuation.yield(revalued)
@@ -941,7 +948,7 @@ extension Arca {
             exchangeState: stateBox,
             updates: updates,
             stop: { [ws, weak self] in
-                stopped.update { $0 = true }
+                observationEpoch.update { current in stopped.update { $0 = true }; current &+= 1 }
                 stopUpdates.value?()
                 await ws.removePositionFillObserver(fillObserverId)
                 statusTask.cancel()

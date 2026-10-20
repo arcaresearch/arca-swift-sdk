@@ -342,6 +342,48 @@ final class MaxOrderSizeWatchTests: XCTestCase {
 
     // MARK: - Helpers
 
+    func testStructuralModeSwitchDuringBurstRejectsOlderLocalSizingAndStopEndsPrices() async throws {
+        let arca = makeArca()
+        await arca.ws.injectMessage(#"{"type":"mids.snapshot","mids":{"hl:0:BTC":"80000"}}"#)
+        let stream = try await arca.watchMaxOrderSize(options: MaxOrderSizeWatchOptions(
+            objectId: "obj_1", market: "hl:0:BTC", side: .buy, leverage: 5, feeScale: 1))
+        XCTAssertNotEqual(stream.activeAssetData.value?.maxBuySize, "0")
+        let state = try await arca.getExchangeState(objectId: "obj_1")
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        body["pricingMode"] = "server"
+        let event: [String: Any] = ["type": "exchange.updated", "entityId": "obj_1", "exchangeState": body]
+        let serverValue = expectation(description: "new structural mode publishes server size")
+        let observer = stream.activeAssetData.onChange { if $0?.maxBuySize == "0" { serverValue.fulfill() } }
+        for i in 1...1000 {
+            await arca.ws.injectMessage("{\"type\":\"mids.updated\",\"mids\":{\"hl:0:BTC\":\"\(80000 + i)\"}}")
+        }
+        await arca.ws.injectMessage(String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self))
+        await fulfillment(of: [serverValue], timeout: 2)
+        stream.activeAssetData.removeObserver(observer)
+        let noOldLocalResult = expectation(description: "old structural epoch cannot publish local sizing")
+        noOldLocalResult.isInverted = true
+        let afterSwitch = stream.activeAssetData.onChange { if $0?.maxBuySize != "0" { noOldLocalResult.fulfill() } }
+        for i in 1001...2000 {
+            await arca.ws.injectMessage("{\"type\":\"mids.updated\",\"mids\":{\"hl:0:BTC\":\"\(80000 + i)\"}}")
+        }
+        await fulfillment(of: [noOldLocalResult], timeout: 0.1)
+        stream.activeAssetData.removeObserver(afterSwitch)
+        await stream.stop()
+
+        let stoppedPrices = try await arca.watchPrices(markets: ["hl:0:BTC"])
+        let livePrices = try await arca.watchPrices(markets: ["hl:0:BTC"])
+        await stoppedPrices.stop()
+        let stoppedValue = stoppedPrices.prices.value
+        let liveUpdate = expectation(description: "another price watch remains live")
+        let liveObserver = livePrices.prices.onChange { if $0["hl:0:BTC"] == "99999" { liveUpdate.fulfill() } }
+        await arca.ws.injectMessage(#"{"type":"mids.updated","mids":{"hl:0:BTC":"99999"}}"#)
+        await fulfillment(of: [liveUpdate], timeout: 2)
+        XCTAssertEqual(stoppedPrices.prices.value, stoppedValue, "explicit stop terminates the private price worker")
+        livePrices.prices.removeObserver(liveObserver)
+        await livePrices.stop()
+        await arca.ws.disconnect()
+    }
+
     private func makeArca() -> Arca {
         try! Arca(
             token: fakeJwt(),

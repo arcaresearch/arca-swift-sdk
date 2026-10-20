@@ -132,6 +132,14 @@ public actor WebSocketManager {
     // long as it stays quiet. `midsEvents()` replays this map to each new
     // consumer as its first element.
     private var retainedMids: [String: String]?
+    // Merge sparse deltas before the one-element queue. A slow valuation
+    // consumer must retain quiet markets even when intermediate ticks drop.
+    private var midsContinuations: [UUID: AsyncStream<[String: String]>.Continuation] = [:]
+    private func publishMidsSnapshot() {
+        guard let retainedMids else { return }
+        for continuation in midsContinuations.values { continuation.yield(retainedMids) }
+    }
+    private func removeMidsContinuation(_ id: UUID) { midsContinuations.removeValue(forKey: id) }
     private var pendingPublicPrices: [String: String] = [:]
     private var publicFlushTask: Task<Void, Never>?
     private var lastPublicFlushAt = 0.0
@@ -158,6 +166,7 @@ public actor WebSocketManager {
         guard !mids.isEmpty else { return }
         lastPublicFlushAt = ProcessInfo.processInfo.systemUptime
         retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
+        publishMidsSnapshot()
         marketDataRecorder.prices(mids, direct: true, interests: marketDataRouter.priceInterestMarkets)
         publishMarketDiagnostics()
         let event = RealmEvent(type: "mids.updated", mids: mids)
@@ -209,6 +218,7 @@ public actor WebSocketManager {
         marketDataRouter.configure(preference, markets: markets)
         syncPublicSource()
     }
+    func setMarketDataBudget(_ budget: MarketDataBudget?) { marketDataRouter.setBudget(budget); syncPublicSource() }
     public var marketDataSourceStatus: MarketDataSourceStatus { marketDataRouter.status }
     func registerPriceMarkets() -> UUID { let owner = UUID(); marketDataRouter.register(owner); return owner }
     func updatePriceMarkets(_ owner: UUID, markets: Set<String>, revision: UInt64 = 0) {
@@ -237,7 +247,7 @@ public actor WebSocketManager {
         if arca { syncArcaMids() }
         defer { publishMarketDiagnostics(force: true) }
         marketDataRecorder.retain(marketDataRouter.priceInterestMarkets)
-        let markets = Set(marketDataRouter.subscriptions.filter { $0.interval == nil }.map(\.market))
+        let markets = marketDataRouter.directCoverageMarkets
         pendingPublicPrices = pendingPublicPrices.filter { markets.contains($0.key) }
         guard !publicSuspended, !marketDataRouter.subscriptions.isEmpty else { stopPublicSource(); return }
         if publicSource == nil {
@@ -257,7 +267,10 @@ public actor WebSocketManager {
         if case .traffic(let bytes) = update { marketDataRecorder.bytes(bytes, direct: true); publishMarketDiagnostics(); return }
         if case .unavailable = update { marketDataRecorder.failure(); clearPublicPrices() }
         defer { publishMarketDiagnostics(force: { if case .unavailable = update { return true }; return false }()) }
-        guard let event = marketDataRouter.direct(update, nowMs: Int(Date().timeIntervalSince1970 * 1000)) else { return }
+        let before = marketDataRouter.subscriptions
+        let routed = marketDataRouter.direct(update, nowMs: Int(Date().timeIntervalSince1970 * 1000), costNowMs: Int(ProcessInfo.processInfo.systemUptime * 1000))
+        if before != marketDataRouter.subscriptions { syncPublicSource(arca: false) }
+        guard let event = routed else { return }
         marketDataRecorder.recovered()
         if let mids = event.mids { queuePublicPrices(mids) }
         else { marketDataRecorder.candle(direct: true); for continuation in eventContinuations.values { continuation.yield(event) } }
@@ -270,6 +283,7 @@ public actor WebSocketManager {
                 retainedMids = selected.merging(direct) { _, new in new }
             } else { retainedMids = (retainedMids ?? [:]).merging(selected) { _, new in new } }
             guard snapshot || !selected.isEmpty else { return }
+            publishMidsSnapshot()
             marketDataRecorder.prices(selected, direct: false, interests: marketDataRouter.priceInterestMarkets)
             publishMarketDiagnostics()
             let routed = selected.count == mids.count ? event : event.withMids(selected)
@@ -1280,7 +1294,9 @@ public actor WebSocketManager {
         }
     }
 
-    /// Stream of mid price updates.
+    /// Stream of complete merged mid price snapshots, with one newest pending
+    /// snapshot per consumer. Intermediate price ticks may be skipped; sparse
+    /// deltas are merged first so prices for other markets are never lost.
     ///
     /// The current merged price map is replayed as the first element when one
     /// is held, so a consumer that subscribes after the server's
@@ -1288,10 +1304,13 @@ public actor WebSocketManager {
     /// rather than from nothing. Registration and replay happen in the same
     /// actor turn, so a live update cannot land between them.
     public func midsEvents() -> AsyncStream<[String: String]> {
-        filteredStream(seed: retainedMids) { event in
-            guard event.type == EventType.midsUpdated.rawValue,
-                  let mids = event.mids else { return nil }
-            return mids
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            midsContinuations[id] = continuation
+            if let retainedMids { continuation.yield(retainedMids) }
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeMidsContinuation(id) }
+            }
         }
     }
 

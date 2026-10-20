@@ -1640,25 +1640,36 @@ extension Arca {
         await ws.acquireMids(exchange: exchange, allMarkets: markets.isEmpty)
 
         let midsStream = await ws.midsEvents()
+        let stopped = SendableBox(false)
+        let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream([String: String].self, bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 for await mids in midsStream {
-                    var changed = false
-                    prices.update { current in
-                        for (key, value) in mids {
-                            if current[key] != value {
-                                current[key] = value
-                                changed = true
+                    guard !Task.isCancelled else { break }
+                    stopped.update { isStopped in
+                        guard !isStopped else { return }
+                        var changed = false
+                        prices.update { current in
+                            for (key, value) in mids {
+                                if current[key] != value {
+                                    current[key] = value
+                                    changed = true
+                                }
                             }
                         }
-                    }
-                    state.update { $0 = .connected }
-                    if changed {
-                        continuation.yield(prices.value)
+                        state.update { $0 = .connected }
+                        if changed {
+                            continuation.yield(prices.value)
+                        }
                     }
                 }
                 continuation.finish()
             }
+            stopUpdates.update { $0 = {
+                stopped.update { $0 = true }
+                task.cancel()
+                continuation.finish()
+            } }
             continuation.onTermination = { _ in task.cancel() }
         }
 
@@ -1680,6 +1691,7 @@ extension Arca {
             prices: prices,
             updates: updates,
             stop: { [ws] in
+                stopUpdates.value?()
                 statusTask.cancel()
                 await ws.releasePriceMarkets(priceInterest)
                 await ws.releaseMids(allMarkets: holdsAllRef.value)
@@ -1789,19 +1801,27 @@ extension Arca {
         let exchangeStateBox = SendableBox<ExchangeState?>(initialExchangeState)
         let observationEpoch = SendableBox<UInt64>(0)
 
-        func recompute() -> ActiveAssetData? {
-            guard let exState = exchangeStateBox.value else {
-                pendingReasonBox.update { $0 = .awaitingExchangeState }
-                return nil
-            }
-            let mids = priceStream.prices.value
+        struct SizingInput: Sendable {
+            let epoch: UInt64
+            let state: ExchangeState
+            let mids: [String: String]
+        }
+        struct SizingResult: Sendable {
+            let data: ActiveAssetData?
+            let pending: MaxOrderSizePendingReason?
+        }
+        let feeScale = resolvedFeeScale
+        let stopped = SendableBox(false)
+
+        @Sendable func recompute(_ input: SizingInput) -> SizingResult {
+            let exState = input.state
+            let mids = input.mids
             // Live mid wins; the snapshot mark only covers a market the mids
             // map has not carried yet.
             let markStr = mids[opts.market] ?? seedMarkBox.value
             let markPx = markStr.flatMap(Double.init) ?? 0
             guard markPx > 0 else {
-                pendingReasonBox.update { $0 = .awaitingMarkPrice }
-                return nil
+                return SizingResult(data: nil, pending: .awaitingMarkPrice)
             }
             // Re-mark the book against current mids before deriving.
             //
@@ -1824,14 +1844,13 @@ extension Arca {
                 side: opts.side,
                 builderFeeBps: opts.builderFeeBps,
                 szDecimals: opts.szDecimals,
-                feeScale: resolvedFeeScale,
+                feeScale: feeScale,
                 maintenanceMarginRate: mmrBox.value,
                 marginTiers: tiersBox.value,
                 askRatio: askRatioBox.value,
                 bidRatio: bidRatioBox.value
             )
-            pendingReasonBox.update { $0 = derived == nil ? .awaitingExchangeState : nil }
-            return derived
+            return SizingResult(data: derived, pending: derived == nil ? .awaitingExchangeState : nil)
         }
 
         // Server-authoritative pricing: when the object is priced by the server
@@ -1847,19 +1866,23 @@ extension Arca {
                 applicationFeeTenthsBps: opts.builderFeeBps,
                 leverage: opts.leverage
             )
-            pendingReasonBox.update { $0 = data == nil ? .awaitingExchangeState : nil }
             return data
         }
 
         if initialExchangeState.pricingMode == .server {
             if let initial = await fetchServerActiveAssetData() {
                 activeAssetBox.update { $0 = initial }
+                pendingReasonBox.update { $0 = nil }
             }
-        } else if let initial = recompute() {
-            activeAssetBox.update { $0 = initial }
+        } else {
+            let initial = recompute(SizingInput(epoch: 0, state: initialExchangeState, mids: priceStream.prices.value))
+            pendingReasonBox.update { $0 = initial.pending }
+            activeAssetBox.update { $0 = initial.data }
         }
 
-        let detail = try await getObjectDetail(objectId: opts.objectId)
+        let detail: ArcaObjectDetailResponse
+        do { detail = try await getObjectDetail(objectId: opts.objectId) }
+        catch { await priceStream.stop(); throw error }
         let objectPath = detail.object.path
         await ws.watchPath(objectPath)
 
@@ -1877,6 +1900,37 @@ extension Arca {
 
         let stopUpdates = SendableBox<(@Sendable () -> Void)?>(nil)
         let updates = AsyncStream(ActiveAssetData.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let calculations = LatestSnapshotCalculation<SizingInput, SizingResult>(
+                calculate: { recompute($0) },
+                publish: { input, result in
+                    observationEpoch.update { current in
+                        guard !stopped.value, current == input.epoch else { return }
+                        pendingReasonBox.update { $0 = result.pending }
+                        guard let data = result.data else { return }
+                        activeAssetBox.update { $0 = data }
+                        streamState.update { $0 = .connected }
+                        continuation.yield(data)
+                    }
+                }
+            )
+            // Capture all replaceable inputs while holding the same epoch gate
+            // used by structural acceptance and publication. No calculation
+            // runs under this gate or on a UI executor.
+            @Sendable func enqueueLocal(_ epoch: UInt64) {
+                guard !stopped.value, let state = exchangeStateBox.value,
+                      state.pricingMode != .server else { return }
+                calculations.submit(SizingInput(epoch: epoch, state: state, mids: priceStream.prices.value))
+            }
+            @Sendable func publishServer(_ data: ActiveAssetData?, epoch: UInt64) {
+                observationEpoch.update { current in
+                    guard !stopped.value, current == epoch else { return }
+                    pendingReasonBox.update { $0 = data == nil ? .awaitingExchangeState : nil }
+                    guard let data else { return }
+                    activeAssetBox.update { $0 = data }
+                    streamState.update { $0 = .connected }
+                    continuation.yield(data)
+                }
+            }
             let exchangeTask = Task { [weak self] in
                 for await event in exchangeStream {
                     guard event.entityId == opts.objectId || event.entityPath == objectPath else { continue }
@@ -1894,38 +1948,27 @@ extension Arca {
                         nextState = fetched
                     }
                     guard !Task.isCancelled else { break }
-                    var accepted = false
+                    var acceptedEpoch: UInt64?
                     observationEpoch.update { current in
-                        guard current == epoch else { return }
+                        guard !stopped.value, current == epoch else { return }
+                        // Fence price work captured while the fetch was pending.
+                        current &+= 1
                         exchangeStateBox.update { $0 = nextState }
-                        accepted = true
+                        enqueueLocal(current)
+                        acceptedEpoch = current
                     }
-                    guard accepted else { continue }
-                    let data: ActiveAssetData?
+                    guard let acceptedEpoch else { continue }
                     if nextState.pricingMode == .server {
-                        data = await fetchServerActiveAssetData()
-                    } else {
-                        data = recompute()
-                    }
-                    guard !Task.isCancelled else { break }
-                    observationEpoch.update { current in
-                        guard current == epoch, let data else { return }
-                        activeAssetBox.update { $0 = data }
-                        streamState.update { $0 = .connected }
-                        continuation.yield(data)
+                        let data = await fetchServerActiveAssetData()
+                        guard !Task.isCancelled else { break }
+                        publishServer(data, epoch: acceptedEpoch)
                     }
                 }
             }
             let midsTask = Task {
                 for await _ in midsUpdates {
-                    // Server-authoritative pricing: ignore raw mid ticks; the
-                    // server drives max-order-size via exchange-state events.
-                    if exchangeStateBox.value?.pricingMode == .server { continue }
-                    if let data = recompute() {
-                        activeAssetBox.update { $0 = data }
-                        streamState.update { $0 = .connected }
-                        continuation.yield(data)
-                    }
+                    guard !Task.isCancelled else { break }
+                    observationEpoch.update { epoch in enqueueLocal(epoch) }
                 }
             }
             let refreshTask = Task { [weak self] in
@@ -1938,28 +1981,31 @@ extension Arca {
                     let epoch = observationEpoch.value
                     guard let self, let fresh = try? await self.getExchangeState(objectId: opts.objectId) else { continue }
                     guard !Task.isCancelled else { break }
-                    var accepted = false
+                    var acceptedEpoch: UInt64?
                     observationEpoch.update { current in
-                        guard current == epoch else { return }
+                        guard !stopped.value, current == epoch else { return }
+                        current &+= 1
                         exchangeStateBox.update { $0 = fresh }
-                        accepted = true
+                        enqueueLocal(current)
+                        acceptedEpoch = current
                     }
-                    guard accepted else { continue }
-                    let data = fresh.pricingMode == .server ? await fetchServerActiveAssetData() : recompute()
-                    guard !Task.isCancelled else { break }
-                    observationEpoch.update { current in
-                        guard current == epoch, let data else { return }
-                        activeAssetBox.update { $0 = data }
-                        streamState.update { $0 = .connected }
-                        continuation.yield(data)
+                    guard let acceptedEpoch else { continue }
+                    if fresh.pricingMode == .server {
+                        let data = await fetchServerActiveAssetData()
+                        guard !Task.isCancelled else { break }
+                        publishServer(data, epoch: acceptedEpoch)
                     }
                 }
             }
             stopUpdates.update { $0 = {
+                observationEpoch.update { current in stopped.update { $0 = true }; current &+= 1 }
+                calculations.stop()
                 exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
                 continuation.finish()
             } }
             continuation.onTermination = { _ in
+                observationEpoch.update { current in stopped.update { $0 = true }; current &+= 1 }
+                calculations.stop()
                 exchangeTask.cancel(); midsTask.cancel(); refreshTask.cancel()
             }
         }

@@ -7,7 +7,7 @@ final class MarketDataRoutingTests: XCTestCase {
         let counts = SendableBox((quotes: 0, bars: 0, errors: 0))
         let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, update in
             counts.update { value in
-                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1; case .traffic: break }
+                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1; case .traffic, .cost, .mids: break }
             }
         }
         await source.subscribe([.init(market: "hl:0:BTC", coin: "BTC"), .init(market: "hl:0:BTC", coin: "BTC", interval: .oneMinute)], revision: 1)
@@ -143,21 +143,27 @@ final class MarketDataRoutingTests: XCTestCase {
         await manager.configureMarketData(epoch: epoch, preference: .hyperliquid, network: .mainnet, markets: [try market()])
         let stream = await manager.midsEvents()
         let values = SendableBox<[String]>([])
-        let complete = expectation(description: "all selected frames")
+        let observations = ["100", "101", "103", "105", "107"].map { expectation(description: "selected frame \($0)") }
         let reader = Task { for await mids in stream {
-            if let price = mids["hl:0:BTC"] { values.update { $0.append(price) }; if price == "107" { complete.fulfill(); break } }
+            if let price = mids["hl:0:BTC"] {
+                values.update { $0.append(price) }
+                if let index = ["100", "101", "103", "105", "107"].firstIndex(of: price) { observations[index].fulfill() }
+                if price == "107" { break }
+            }
         } }
         let receive = try XCTUnwrap(callback.value)
         func arca(_ price: String) async { await manager.injectMessage("{\"type\":\"mids.updated\",\"mids\":{\"hl:0:BTC\":\"\(price)\"}}") }
         let now = Int(Date().timeIntervalSince1970 * 1000)
-        await arca("100"); await receive(1, .quote(market: "hl:0:BTC", price: "101", timeMs: now)); await arca("102")
+        await arca("100"); await fulfillment(of: [observations[0]], timeout: 2)
+        await receive(1, .quote(market: "hl:0:BTC", price: "101", timeMs: now)); await fulfillment(of: [observations[1]], timeout: 2); await arca("102")
         await receive(1, .quote(market: "hl:0:BTC", price: "101", timeMs: now))
         await receive(2, .unavailable("offline")); await receive(1, .quote(market: "hl:0:BTC", price: "999", timeMs: now))
-        await arca("103"); await receive(3, .quote(market: "hl:0:BTC", price: "105", timeMs: now + 1)); await arca("104")
-        await manager.flushPublicPrices()
+        await arca("103"); await fulfillment(of: [observations[2]], timeout: 2)
+        await receive(3, .quote(market: "hl:0:BTC", price: "105", timeMs: now + 1)); await arca("104")
+        await manager.flushPublicPrices(); await fulfillment(of: [observations[3]], timeout: 2)
         _ = await manager.beginMarketDataConfiguration()
         await receive(3, .quote(market: "hl:0:BTC", price: "999", timeMs: now + 2)); await arca("107")
-        await fulfillment(of: [complete], timeout: 2)
+        await fulfillment(of: [observations[4]], timeout: 2)
         XCTAssertEqual(values.value, ["100", "101", "103", "105", "107"])
         let diagnostics = await manager.marketDataDiagnostics
         XCTAssertEqual(diagnostics.arcaPriceValues, 3); XCTAssertEqual(diagnostics.hyperliquidPriceValues, 2)

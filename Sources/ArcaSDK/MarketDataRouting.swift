@@ -24,9 +24,12 @@ struct PublicMarketSubscription: Hashable, Sendable {
     let market: String
     let coin: String
     var interval: CandleInterval? = nil
+    var dex: String? = nil
 }
 enum PublicMarketUpdate: Sendable {
     case quote(market: String, price: String, timeMs: Int)
+    case mids(dex: String, prices: [String: String])
+    case cost(key: String, bytes: Int)
     case bar(market: String, interval: CandleInterval, candle: Candle)
     case unavailable(String)
     case traffic(bytes: Int)
@@ -51,6 +54,15 @@ func isCanonicalMarketId(_ id: String) -> Bool {
 struct MarketDataRouter {
     var preference: MarketDataPreference = .arca
     private var mapping: [String: String] = [:]
+    private var budget: MarketDataBudget?
+    private var costs = PublicFeedCosts()
+    private var lastBudgetRefreshMs: Int?
+    private var coarseMarkets: Set<String> = []
+    var directCoverageMarkets: Set<String> {
+        Set(subscriptions.filter { $0.interval == nil && $0.dex == nil }.map(\.market)).union(
+            mapping.filter { pair in subscriptions.contains { $0.dex == venueDex(pair.value) } }.keys)
+    }
+    mutating func setBudget(_ value: MarketDataBudget?) { budget = value; refresh() }
     private struct Interest { var revision: UInt64 = 0; var markets: Set<String> = [] }
     private var interests: [UUID: Interest] = [:]
     var priceInterestMarkets: Set<String> { Set(interests.values.flatMap { $0.markets }) }
@@ -95,26 +107,32 @@ struct MarketDataRouter {
     func candleRetained(_ market: String, interval: CandleInterval) -> Bool { (candles[BarKey(market: market, interval: interval)] ?? 0) > 0 }
     private mutating func refresh() {
         var wanted: [PublicMarketSubscription] = []
+        let interested = priceInterestMarkets
         if preference == .hyperliquid {
-            for market in Set(interests.values.flatMap { $0.markets }).sorted() {
-                if let coin = mapping[market] { wanted.append(PublicMarketSubscription(market: market, coin: coin)) }
-            }
-            for key in candles.keys.sorted(by: { ($0.market, $0.interval.rawValue) < ($1.market, $1.interval.rawValue) }) {
-                if key.interval != .fifteenSeconds, let coin = mapping[key.market] {
-                    wanted.append(PublicMarketSubscription(market: key.market, coin: coin, interval: key.interval))
-                }
+            let priceMapping = mapping.filter { interested.contains($0.key) }
+            let candleSubscriptions = candles.keys.sorted { ($0.market, $0.interval.rawValue) < ($1.market, $1.interval.rawValue) }.compactMap { key -> PublicMarketSubscription? in
+                guard key.interval != .fifteenSeconds, let coin = mapping[key.market] else { return nil }
+                return PublicMarketSubscription(market: key.market, coin: coin, interval: key.interval)
+            }.prefix(64)
+            if let budget {
+                costs.retain(Set(priceMapping.keys).union(priceMapping.values.map { "@" + venueDex($0) }))
+                wanted += candleSubscriptions
+                wanted += budgetSubscriptions(mapping: priceMapping, budget: budget, costs: costs, previous: subscriptions, slots: 64 - wanted.count)
+            } else {
+                for market in priceMapping.keys.sorted() { wanted.append(.init(market: market, coin: priceMapping[market]!)) }
+                wanted += candleSubscriptions
             }
         }
-        // Bound phone network/decode work. Overflow remains subscribed through Arca.
         subscriptions = Set(wanted.prefix(64))
-        let quoteMarkets = Set(subscriptions.filter { $0.interval == nil }.map(\.market))
+        let quoteMarkets = Set(subscriptions.filter { $0.interval == nil && $0.dex == nil }.map(\.market))
         quoteTimes = quoteTimes.filter { quoteMarkets.contains($0.key) }
+        coarseMarkets = coarseMarkets.intersection(mapping.filter { pair in interested.contains(pair.key) && subscriptions.contains { $0.dex == venueDex(pair.value) } }.keys)
         let barKeys = Set(subscriptions.compactMap { s in s.interval.map { BarKey(market: s.market, interval: $0) } })
         bars = bars.filter { barKeys.contains($0.key) }
         closedBars = closedBars.filter { candles[$0.key] != nil }
     }
-    mutating func unavailable(_ reason: String?) { quoteTimes.removeAll(); bars.removeAll(); lastError = reason }
-    func arcaPrices(_ prices: [String: String]) -> [String: String] { prices.filter { quoteTimes[$0.key] == nil } }
+    mutating func unavailable(_ reason: String?) { quoteTimes.removeAll(); coarseMarkets.removeAll(); bars.removeAll(); lastError = reason }
+    func arcaPrices(_ prices: [String: String]) -> [String: String] { prices.filter { quoteTimes[$0.key] == nil && !coarseMarkets.contains($0.key) } }
     mutating func arcaCandle(_ event: RealmEvent) -> Bool {
         if event.type == "candle.closed" {
             if let market = event.market, let raw = event.interval, let interval = CandleInterval(rawValue: raw), let candle = event.candle {
@@ -130,9 +148,26 @@ struct MarketDataRouter {
         guard let direct = bars[key] else { return true }
         return incoming.t > direct.t
     }
-    mutating func direct(_ update: PublicMarketUpdate, nowMs: Int) -> RealmEvent? {
+    mutating func direct(_ update: PublicMarketUpdate, nowMs: Int, costNowMs: Int? = nil) -> RealmEvent? {
         switch update {
         case .traffic: return nil
+        case let .cost(key, bytes):
+            let clock = costNowMs ?? nowMs
+            if costs.record(key, bytes: bytes, nowMs: clock), lastBudgetRefreshMs.map({ clock - $0 >= 10_000 }) ?? true {
+                lastBudgetRefreshMs = clock; refresh()
+            }
+            return nil
+        case let .mids(dex, prices):
+            guard subscriptions.contains(where: { $0.dex == dex }) else { return nil }
+            let interested = priceInterestMarkets
+            let mids = Dictionary(uniqueKeysWithValues: mapping.compactMap { market, coin -> (String, String)? in
+                guard interested.contains(market), venueDex(coin) == dex, quoteTimes[market] == nil, let price = prices[coin] else { return nil }
+                return (market, price)
+            })
+            coarseMarkets.formUnion(mids.keys)
+            guard !mids.isEmpty else { return nil }
+            lastError = nil
+            return RealmEvent(type: "mids.updated", mids: mids)
         case .unavailable(let reason): unavailable(reason); return nil
         case let .quote(market, price, timeMs):
             guard subscriptions.contains(where: { $0.market == market && $0.interval == nil }),
@@ -151,7 +186,7 @@ struct MarketDataRouter {
     }
     var status: MarketDataSourceStatus {
         MarketDataSourceStatus(preference: preference, directSubscriptions: subscriptions.count,
-                               directPriceMarkets: Set(quoteTimes.keys), directCandleMarkets: Set(bars.keys.map(\.market)), lastError: lastError)
+                               directPriceMarkets: Set(quoteTimes.keys).union(coarseMarkets), directCandleMarkets: Set(bars.keys.map(\.market)), lastError: lastError)
     }
 }
 
