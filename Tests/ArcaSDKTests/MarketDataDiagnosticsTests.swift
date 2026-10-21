@@ -32,6 +32,21 @@ final class MarketDataDiagnosticsTests: XCTestCase {
         XCTAssertEqual(s.arcaPayloadBytes, 400); XCTAssertEqual(s.arcaDisconnects, 1)
         XCTAssertEqual(s.hyperliquidRecoveries, 0)
     }
+    func testLateOriginalRetryCannotOverwriteAcceleratedRetryTiming() {
+        var recorder = MarketDataDiagnosticsRecorder()
+        let router = MarketDataRouter()
+        recorder.connection(.connection(attemptAtNanos: 100, retryAtNanos: 300, retryDelayMs: 250))
+        recorder.connection(.connection(attemptAtNanos: 100, retryAtNanos: 200, retryDelayMs: 16_000))
+        var timing = recorder.snapshot(router: router).hyperliquidConnection
+        XCTAssertEqual(timing.lastRetryScheduledAtNanos, 300)
+        XCTAssertEqual(timing.lastRetryDelayMs, 250)
+        recorder.connection(.connection(attemptAtNanos: 400))
+        recorder.connection(.connection(attemptAtNanos: 100, retryAtNanos: 200, retryDelayMs: 16_000))
+        timing = recorder.snapshot(router: router).hyperliquidConnection
+        XCTAssertEqual(timing.attemptAtNanos, 400)
+        XCTAssertEqual(timing.lastRetryScheduledAtNanos, 300)
+        XCTAssertEqual(timing.lastRetryDelayMs, 250)
+    }
     func testWatchingDiagnosticsDoesNotSubscribeOrOpenASocket() async {
         let manager = WebSocketManager(baseURL: URL(string: "http://localhost:1")!, token: "test", realmId: "test")
         await manager.setPublicSourceFactory { _, _ in fatalError("Observation must not open a public socket") }

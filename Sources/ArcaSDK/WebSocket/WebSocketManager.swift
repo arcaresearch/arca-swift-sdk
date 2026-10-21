@@ -259,6 +259,10 @@ public actor WebSocketManager {
         syncPublicSource()
     }
     func setMarketDataBudget(_ budget: MarketDataBudget?) { marketDataRouter.setBudget(budget); syncPublicSource() }
+    func notifyMarketDataNetworkAvailable() async {
+        guard !publicSuspended, !marketDataRouter.subscriptions.isEmpty, let source = publicSource else { return }
+        await source.networkAvailable()
+    }
     public var marketDataSourceStatus: MarketDataSourceStatus { marketDataRouter.status }
     func registerPriceMarkets() -> UUID { let owner = UUID(); marketDataRouter.register(owner); return owner }
     func updatePriceMarkets(_ owner: UUID, markets: Set<String>, revision: UInt64 = 0) {

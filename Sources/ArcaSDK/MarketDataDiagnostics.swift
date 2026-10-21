@@ -60,8 +60,12 @@ struct MarketDataDiagnosticsRecorder {
             if let at = old.firstPriceAtNanos, at >= start { next.firstPriceAtNanos = at }
         }
         next.openedAtNanos = opened ?? next.openedAtNanos
-        next.lastRetryScheduledAtNanos = retry ?? next.lastRetryScheduledAtNanos
-        next.lastRetryDelayMs = delay ?? next.lastRetryDelayMs
+        // A failure callback can resume after a connectivity hint accelerated
+        // its timer. Preserve the newest scheduling observation in either order.
+        if let retry, retry >= (next.lastRetryScheduledAtNanos ?? 0) {
+            next.lastRetryScheduledAtNanos = retry
+            next.lastRetryDelayMs = delay
+        }
         counters.hyperliquidConnection = next
     }
     @discardableResult mutating func response(_ at: UInt64) -> Bool {

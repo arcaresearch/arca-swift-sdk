@@ -40,8 +40,10 @@ enum PublicMarketUpdate: Sendable {
 /// Provider boundary: wire format/reconnection belongs to the source; preference belongs to the router.
 protocol PublicMarketSource: Sendable {
     func subscribe(_ subscriptions: Set<PublicMarketSubscription>, revision: UInt64) async
+    func networkAvailable() async
     func close() async
 }
+extension PublicMarketSource { func networkAvailable() async {} }
 
 /// Whether a string has the shape of a canonical market id (`{exchange}:{native}`,
 /// alphabetic exchange prefix) — the only keys a mids map can carry. Used to

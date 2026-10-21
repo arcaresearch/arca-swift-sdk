@@ -28,9 +28,28 @@ actor HyperliquidMarketSource: PublicMarketSource {
     private var heartbeat: Task<Void, Never>?
     private var changes: Task<Void, Never>?
     private var retry: Task<Void, Never>?
+    private var retryWindow = MarketRetryWindow()
+    private let retrySleep: @Sendable (UInt64) async throws -> Void
 
-    init(url: URL, receive: @escaping @Sendable (UInt64, PublicMarketUpdate) async -> Void) {
-        self.url = url; self.receive = receive
+    init(url: URL,
+         retrySleep: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+         receive: @escaping @Sendable (UInt64, PublicMarketUpdate) async -> Void) {
+        self.url = url; self.receive = receive; self.retrySleep = retrySleep
+    }
+    func networkAvailable() async {
+        guard !closed, !desired.isEmpty, socket == nil, retry != nil else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard let plan = retryWindow.advance(now: now, jitterMs: Int.random(in: 0..<250)) else { return }
+        launchRetry(plan)
+        await receive(generation, .connection(attemptAtNanos: connectAtNanos, retryAtNanos: now, retryDelayMs: plan.delayMs))
+    }
+    private func launchRetry(_ plan: MarketRetryWindow.Plan) {
+        retry?.cancel()
+        let epoch = generation, sleep = retrySleep
+        retry = Task { [weak self] in
+            do { try await sleep(UInt64(plan.delayMs) * 1_000_000) } catch { return }
+            await self?.reconnect(epoch: epoch, token: plan.token)
+        }
     }
     func subscribe(_ subscriptions: Set<PublicMarketSubscription>, revision: UInt64) {
         guard !closed, revision >= self.revision else { return }
@@ -139,18 +158,21 @@ actor HyperliquidMarketSource: PublicMarketSource {
             let delay = min(60, 2 << min(attempt, 5))
             attempt = min(attempt + 1, 6)
             let waitMs = delay * 1000 + Int.random(in: 0..<500)
-            retryTiming = .connection(attemptAtNanos: connectAtNanos, retryAtNanos: DispatchTime.now().uptimeNanoseconds, retryDelayMs: waitMs)
-            retry = Task { [weak self] in
-                do { try await Task.sleep(nanoseconds: UInt64(waitMs) * 1_000_000) } catch { return }
-                await self?.reconnect()
-            }
+            let scheduled = DispatchTime.now().uptimeNanoseconds
+            retryTiming = .connection(attemptAtNanos: connectAtNanos, retryAtNanos: scheduled, retryDelayMs: waitMs)
+            launchRetry(retryWindow.schedule(now: scheduled, delayMs: waitMs))
         }
         await receive(failedGeneration, .unavailable(reason))
         if let retryTiming { await receive(failedGeneration, retryTiming) }
     }
-    private func reconnect() { retry = nil; if !closed && !desired.isEmpty { connect() } }
+    private func reconnect(epoch: UInt64, token: UInt64) {
+        guard epoch == generation, retryWindow.take(token) else { return }
+        retry = nil
+        if !closed && !desired.isEmpty { connect() }
+    }
     private func stopSocket() {
         generation += 1
+        retry?.cancel(); retry = nil; retryWindow.cancel()
         reader?.cancel(); reader = nil; heartbeat?.cancel(); heartbeat = nil; changes?.cancel(); changes = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil; sent = []
     }
