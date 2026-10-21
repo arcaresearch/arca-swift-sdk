@@ -27,6 +27,8 @@ struct PublicMarketSubscription: Hashable, Sendable {
     var dex: String? = nil
 }
 enum PublicMarketUpdate: Sendable {
+    indirect case received(PublicMarketUpdate, atNanos: UInt64, attemptAtNanos: UInt64? = nil, openedAtNanos: UInt64? = nil)
+    case connection(attemptAtNanos: UInt64? = nil, openedAtNanos: UInt64? = nil, retryAtNanos: UInt64? = nil, retryDelayMs: Int? = nil)
     case quote(market: String, price: String, timeMs: Int)
     case mids(dex: String, prices: [String: String])
     case cost(key: String, bytes: Int)
@@ -150,7 +152,7 @@ struct MarketDataRouter {
     }
     mutating func direct(_ update: PublicMarketUpdate, nowMs: Int, costNowMs: Int? = nil) -> RealmEvent? {
         switch update {
-        case .traffic: return nil
+        case .traffic, .received, .connection: return nil
         case let .cost(key, bytes):
             let clock = costNowMs ?? nowMs
             if costs.record(key, bytes: bytes, nowMs: clock), lastBudgetRefreshMs.map({ clock - $0 >= 10_000 }) ?? true {

@@ -1,10 +1,24 @@
 import Foundation
 
+/// Latest direct connection attempt, in DispatchTime uptime nanoseconds. Nil means unobserved.
+/// Compare retry wait, handshake, first message and first accepted price separately. OS network
+/// availability is outside the SDK; correlate these with app connectivity callbacks.
+public struct MarketConnectionTiming: Sendable {
+    public var attemptAtNanos: UInt64? = nil
+    public var openedAtNanos: UInt64? = nil
+    public var firstMessageAtNanos: UInt64? = nil
+    public var firstPriceAtNanos: UInt64? = nil
+    public var lastRetryScheduledAtNanos: UInt64? = nil
+    public var lastRetryDelayMs: Int? = nil
+    public init() {}
+}
+
 /// Cumulative diagnostics for one SDK client lifetime. Payload bytes exclude TLS/framing;
 /// Arca bytes cover its whole shared socket. Values count routed interested quotes,
 /// not price movement, venue latency, or GPU presentation. No per-market identifiers.
 public struct MarketDataDiagnostics: Sendable {
     public var elapsedMs: Int = 0
+    public var hyperliquidConnection = MarketConnectionTiming()
     public var preference: MarketDataPreference = .arca
     public var requestedPriceMarkets: Int = 0
     public var directSubscriptions: Int = 0
@@ -32,7 +46,34 @@ struct MarketDataDiagnosticsRecorder {
     private var serving: [String: Bool] = [:]
     private var failedAtMs: Int?
     mutating func retain(_ interests: Set<String>) { serving = serving.filter { interests.contains($0.key) } }
-    mutating func suspend() { failedAtMs = nil }
+    mutating func suspend() { failedAtMs = nil; counters.hyperliquidConnection = MarketConnectionTiming() }
+    mutating func connection(_ update: PublicMarketUpdate) {
+        guard case let .connection(start?, opened, retry, delay) = update else { return }
+        let old = counters.hyperliquidConnection
+        if let previous = old.attemptAtNanos, start < previous { return }
+        if old.attemptAtNanos == start, opened == nil || opened == old.openedAtNanos, retry == nil { return }
+        var next = old
+        if old.attemptAtNanos != start {
+            next = MarketConnectionTiming(); next.attemptAtNanos = start
+            next.lastRetryScheduledAtNanos = old.lastRetryScheduledAtNanos; next.lastRetryDelayMs = old.lastRetryDelayMs
+            if let at = old.firstMessageAtNanos, at >= start { next.firstMessageAtNanos = at }
+            if let at = old.firstPriceAtNanos, at >= start { next.firstPriceAtNanos = at }
+        }
+        next.openedAtNanos = opened ?? next.openedAtNanos
+        next.lastRetryScheduledAtNanos = retry ?? next.lastRetryScheduledAtNanos
+        next.lastRetryDelayMs = delay ?? next.lastRetryDelayMs
+        counters.hyperliquidConnection = next
+    }
+    @discardableResult mutating func response(_ at: UInt64) -> Bool {
+        guard counters.hyperliquidConnection.firstMessageAtNanos == nil else { return false }
+        counters.hyperliquidConnection.firstMessageAtNanos = at
+        return true
+    }
+    @discardableResult mutating func acceptedPrice(_ at: UInt64) -> Bool {
+        guard counters.hyperliquidConnection.firstPriceAtNanos == nil else { return false }
+        counters.hyperliquidConnection.firstPriceAtNanos = at
+        return true
+    }
     mutating func connected(_ connected: Bool) {
         if counters.arcaConnected && !connected { counters.arcaDisconnects += 1 }
         counters.arcaConnected = connected

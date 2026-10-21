@@ -4,7 +4,15 @@ import Foundation
 actor HyperliquidMarketSource: PublicMarketSource {
     private let url: URL
     private let receive: @Sendable (UInt64, PublicMarketUpdate) async -> Void
-    private let session: URLSession
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.timeoutIntervalForRequest = 15
+        let delegate = PublicSocketOpenDelegate { [weak self] identifier, received in
+            Task { await self?.socketOpened(identifier: identifier, received: received) }
+        }
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }()
     private var desired: Set<PublicMarketSubscription> = []
     private var sent: Set<PublicMarketSubscription> = []
     private var socket: URLSessionWebSocketTask?
@@ -12,6 +20,8 @@ actor HyperliquidMarketSource: PublicMarketSource {
     private var generation: UInt64 = 0
     private var closed = false
     private var attempt = 0
+    private var connectAtNanos: UInt64 = 0
+    private var openedAtNanos: UInt64?
     private var openedAt = 0.0
     private var lastReceivedAt = 0.0
     private var reader: Task<Void, Never>?
@@ -21,10 +31,6 @@ actor HyperliquidMarketSource: PublicMarketSource {
 
     init(url: URL, receive: @escaping @Sendable (UInt64, PublicMarketUpdate) async -> Void) {
         self.url = url; self.receive = receive
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil
-        config.timeoutIntervalForRequest = 15
-        session = URLSession(configuration: config)
     }
     func subscribe(_ subscriptions: Set<PublicMarketSubscription>, revision: UInt64) {
         guard !closed, revision >= self.revision else { return }
@@ -38,6 +44,10 @@ actor HyperliquidMarketSource: PublicMarketSource {
     private func connect() {
         generation += 1
         let epoch = generation
+        openedAtNanos = nil
+        connectAtNanos = DispatchTime.now().uptimeNanoseconds
+        let started = connectAtNanos
+        Task { await receive(epoch, .connection(attemptAtNanos: started)) }
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 262_144
         socket = task; sent = []
@@ -48,7 +58,8 @@ actor HyperliquidMarketSource: PublicMarketSource {
                 while !Task.isCancelled {
                     let message = try await task.receive()
                     guard !Task.isCancelled else { return }
-                    await self?.message(message, epoch: epoch)
+                    let received = DispatchTime.now().uptimeNanoseconds
+                    await self?.message(message, epoch: epoch, received: received)
                 }
             } catch { await self?.fail(epoch: epoch, reason: "Hyperliquid connection failed") }
         }
@@ -60,17 +71,23 @@ actor HyperliquidMarketSource: PublicMarketSource {
         }
         sync()
     }
-    private func message(_ message: URLSessionWebSocketTask.Message, epoch: UInt64) async {
+    private func socketOpened(identifier: Int, received: UInt64) async {
+        guard !closed, socket?.taskIdentifier == identifier else { return }
+        openedAtNanos = received
+        await receive(generation, .connection(attemptAtNanos: connectAtNanos, openedAtNanos: received))
+    }
+    private func message(_ message: URLSessionWebSocketTask.Message, epoch: UInt64, received: UInt64) async {
         guard !closed, epoch == generation else { return }
         lastReceivedAt = ProcessInfo.processInfo.systemUptime
         let data: Data
         switch message { case .string(let text): data = Data(text.utf8); case .data(let bytes): data = bytes; @unknown default: return }
-        await receive(epoch, .traffic(bytes: data.count))
+        await receive(epoch, .received(.traffic(bytes: data.count), atNanos: received, attemptAtNanos: connectAtNanos, openedAtNanos: openedAtNanos))
+        guard !closed, epoch == generation else { return }
         guard data.count <= 262_144 else { await fail(epoch: epoch, reason: "Hyperliquid frame exceeded size budget"); return }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if json["channel"] as? String == "error" { await fail(epoch: epoch, reason: "Hyperliquid subscription rejected"); return }
         if let update = decodePublicMarketUpdate(json, subscriptions: sent) {
-            await receive(epoch, update)
+            await receive(epoch, .received(update, atNanos: received))
             switch update {
             case let .quote(market, _, _): await receive(epoch, .cost(key: market, bytes: data.count))
             case let .mids(dex, _): await receive(epoch, .cost(key: "@" + dex, bytes: data.count))
@@ -117,15 +134,19 @@ actor HyperliquidMarketSource: PublicMarketSource {
         if ProcessInfo.processInfo.systemUptime - openedAt >= 60 { attempt = 0 }
         stopSocket()
         let failedGeneration = generation
+        var retryTiming: PublicMarketUpdate?
         if !desired.isEmpty {
             let delay = min(60, 2 << min(attempt, 5))
             attempt = min(attempt + 1, 6)
+            let waitMs = delay * 1000 + Int.random(in: 0..<500)
+            retryTiming = .connection(attemptAtNanos: connectAtNanos, retryAtNanos: DispatchTime.now().uptimeNanoseconds, retryDelayMs: waitMs)
             retry = Task { [weak self] in
-                do { try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000 + UInt64.random(in: 0..<500_000_000)) } catch { return }
+                do { try await Task.sleep(nanoseconds: UInt64(waitMs) * 1_000_000) } catch { return }
                 await self?.reconnect()
             }
         }
         await receive(failedGeneration, .unavailable(reason))
+        if let retryTiming { await receive(failedGeneration, retryTiming) }
     }
     private func reconnect() { retry = nil; if !closed && !desired.isEmpty { connect() } }
     private func stopSocket() {
@@ -180,4 +201,13 @@ func decodePublicMarketUpdate(_ json: [String: Any], subscriptions: Set<PublicMa
         return .bar(market: sub.market, interval: interval, candle: candle)
     }
     return nil
+}
+
+// URLSession's actual WebSocket upgrade callback, not task.resume() or the first price.
+private final class PublicSocketOpenDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    let opened: @Sendable (Int, UInt64) -> Void
+    init(opened: @escaping @Sendable (Int, UInt64) -> Void) { self.opened = opened }
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        opened(webSocketTask.taskIdentifier, DispatchTime.now().uptimeNanoseconds)
+    }
 }

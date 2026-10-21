@@ -131,7 +131,45 @@ public actor WebSocketManager {
     // so a market that does not tick stays unpriced for that consumer for as
     // long as it stays quiet. `midsEvents()` replays this map to each new
     // consumer as its first element.
-    private var retainedMids: [String: String]?
+    private var retainedMids: [String: String]? {
+        didSet { if retainedMids == nil { resetPriceDeliveryDiagnostics() } }
+    }
+    private struct PriceDeliveryObserver {
+        var recorder: PriceDeliveryRecorder
+        let continuation: AsyncStream<[String: PriceDeliveryDiagnostic]>.Continuation
+    }
+    private var priceDeliveryObservers: [UUID: PriceDeliveryObserver] = [:]
+    public func watchPriceDeliveryDiagnostics(markets: Set<String>) throws -> AsyncStream<[String: PriceDeliveryDiagnostic]> {
+        let recorder = try PriceDeliveryRecorder(markets: markets)
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            priceDeliveryObservers[id] = PriceDeliveryObserver(recorder: recorder, continuation: continuation)
+            continuation.yield([:])
+            continuation.onTermination = { [weak self] _ in Task { await self?.removePriceDeliveryObserver(id) } }
+        }
+    }
+    private func removePriceDeliveryObserver(_ id: UUID) { priceDeliveryObservers.removeValue(forKey: id) }
+    private func stagePriceDelivery(_ prices: [String: String], source: MarketDataPreference, received: UInt64, venue: Int? = nil) {
+        guard !priceDeliveryObservers.isEmpty else { return }
+        let changed = prices.filter { market, price in
+            let queued = source == .hyperliquid ? pendingPublicPrices[market] : nil
+            return price != (queued ?? retainedMids?[market])
+        }
+        for id in priceDeliveryObservers.keys { priceDeliveryObservers[id]?.recorder.stage(changed, source: source, received: received, venue: venue) }
+    }
+    private func publishPriceDeliveryDiagnostics(_ prices: [String: String], committed: Set<String>) {
+        guard !priceDeliveryObservers.isEmpty else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        for id in priceDeliveryObservers.keys {
+            if let snapshot = priceDeliveryObservers[id]?.recorder.publish(prices, now: now, committed: committed) { priceDeliveryObservers[id]?.continuation.yield(snapshot) }
+        }
+    }
+    private func resetPriceDeliveryDiagnostics() {
+        for id in priceDeliveryObservers.keys { priceDeliveryObservers[id]?.recorder.clear(); priceDeliveryObservers[id]?.continuation.yield([:]) }
+    }
+    private func clearDirectReceiptPending(keep: Set<String> = []) {
+        for id in priceDeliveryObservers.keys { priceDeliveryObservers[id]?.recorder.clearDirectPending(keep: keep) }
+    }
     // Merge sparse deltas before the one-element queue. A slow valuation
     // consumer must retain quiet markets even when intermediate ticks drop.
     private var midsContinuations: [UUID: AsyncStream<[String: String]>.Continuation] = [:]
@@ -144,7 +182,7 @@ public actor WebSocketManager {
     private var publicFlushTask: Task<Void, Never>?
     private var lastPublicFlushAt = 0.0
     private var publicBatchEpoch: UInt64 = 0
-    private func clearPublicPrices() { publicBatchEpoch += 1; publicFlushTask?.cancel(); publicFlushTask = nil; pendingPublicPrices.removeAll() }
+    private func clearPublicPrices() { publicBatchEpoch += 1; publicFlushTask?.cancel(); publicFlushTask = nil; pendingPublicPrices.removeAll(); clearDirectReceiptPending() }
     private func queuePublicPrices(_ mids: [String: String]) {
         for (market, price) in mids where price != (pendingPublicPrices[market] ?? retainedMids?[market]) { pendingPublicPrices[market] = price }
         guard !pendingPublicPrices.isEmpty else { return }
@@ -163,9 +201,11 @@ public actor WebSocketManager {
         publicBatchEpoch += 1
         publicFlushTask?.cancel(); publicFlushTask = nil
         let mids = pendingPublicPrices.filter { retainedMids?[$0.key] != $0.value }; pendingPublicPrices.removeAll()
+        defer { clearDirectReceiptPending() }
         guard !mids.isEmpty else { return }
         lastPublicFlushAt = ProcessInfo.processInfo.systemUptime
         retainedMids = (retainedMids ?? [:]).merging(mids) { _, new in new }
+        publishPriceDeliveryDiagnostics(retainedMids ?? [:], committed: Set(mids.keys))
         publishMidsSnapshot()
         marketDataRecorder.prices(mids, direct: true, interests: marketDataRouter.priceInterestMarkets)
         publishMarketDiagnostics()
@@ -249,6 +289,7 @@ public actor WebSocketManager {
         marketDataRecorder.retain(marketDataRouter.priceInterestMarkets)
         let markets = marketDataRouter.directCoverageMarkets
         pendingPublicPrices = pendingPublicPrices.filter { markets.contains($0.key) }
+        clearDirectReceiptPending(keep: markets)
         guard !publicSuspended, !marketDataRouter.subscriptions.isEmpty else { stopPublicSource(); return }
         if publicSource == nil {
             publicSourceEpoch += 1
@@ -261,28 +302,44 @@ public actor WebSocketManager {
         let revision = subscriptionRevision, subscriptions = marketDataRouter.subscriptions
         if let source = publicSource { Task { await source.subscribe(subscriptions, revision: revision) } }
     }
-    private func receivePublicUpdate(_ update: PublicMarketUpdate, source: UInt64, connection: UInt64) {
+    private func receivePublicUpdate(_ incoming: PublicMarketUpdate, source: UInt64, connection: UInt64) {
+        let update: PublicMarketUpdate, received: UInt64
+        if case let .received(value, atNanos, _, _) = incoming { update = value; received = atNanos }
+        else { update = incoming; received = DispatchTime.now().uptimeNanoseconds }
         guard source == publicSourceEpoch, connection >= publicConnectionEpoch else { return }
         publicConnectionEpoch = connection
-        if case .traffic(let bytes) = update { marketDataRecorder.bytes(bytes, direct: true); publishMarketDiagnostics(); return }
+        if case let .received(_, _, start?, opened) = incoming { marketDataRecorder.connection(.connection(attemptAtNanos: start, openedAtNanos: opened)) }
+        if case .connection = update { marketDataRecorder.connection(update); publishMarketDiagnostics(force: true); return }
+        if case .traffic(let bytes) = update {
+            let firstResponse = marketDataRecorder.response(received)
+            marketDataRecorder.bytes(bytes, direct: true); publishMarketDiagnostics(force: firstResponse); return
+        }
         if case .unavailable = update { marketDataRecorder.failure(); clearPublicPrices() }
-        defer { publishMarketDiagnostics(force: { if case .unavailable = update { return true }; return false }()) }
+        var firstPrice = false
+        defer { publishMarketDiagnostics(force: firstPrice || { if case .unavailable = update { return true }; return false }()) }
         let before = marketDataRouter.subscriptions
         let routed = marketDataRouter.direct(update, nowMs: Int(Date().timeIntervalSince1970 * 1000), costNowMs: Int(ProcessInfo.processInfo.systemUptime * 1000))
         if before != marketDataRouter.subscriptions { syncPublicSource(arca: false) }
         guard let event = routed else { return }
         marketDataRecorder.recovered()
-        if let mids = event.mids { queuePublicPrices(mids) }
+        if let mids = event.mids {
+            firstPrice = marketDataRecorder.acceptedPrice(received)
+            let venue: Int? = { if case .quote(_, _, let time) = update { return time }; return nil }()
+            stagePriceDelivery(mids, source: .hyperliquid, received: received, venue: venue)
+            queuePublicPrices(mids)
+        }
         else { marketDataRecorder.candle(direct: true); for continuation in eventContinuations.values { continuation.yield(event) } }
     }
-    private func emitArcaMarketEvent(_ event: RealmEvent, snapshot: Bool = false) {
+    private func emitArcaMarketEvent(_ event: RealmEvent, snapshot: Bool = false, received: UInt64 = DispatchTime.now().uptimeNanoseconds) {
         if let mids = event.mids, event.type == EventType.midsUpdated.rawValue {
             let selected = marketDataRouter.arcaPrices(mids)
+            stagePriceDelivery(selected, source: .arca, received: received)
             if snapshot {
                 let direct = (retainedMids ?? [:]).filter { marketDataRouter.status.directPriceMarkets.contains($0.key) }
                 retainedMids = selected.merging(direct) { _, new in new }
             } else { retainedMids = (retainedMids ?? [:]).merging(selected) { _, new in new } }
             guard snapshot || !selected.isEmpty else { return }
+            publishPriceDeliveryDiagnostics(retainedMids ?? [:], committed: Set(selected.keys))
             publishMidsSnapshot()
             marketDataRecorder.prices(selected, direct: false, interests: marketDataRouter.priceInterestMarkets)
             publishMarketDiagnostics()
@@ -1620,6 +1677,7 @@ public actor WebSocketManager {
 
             do {
                 let message = try await task.receiveMessage()
+                let received = DispatchTime.now().uptimeNanoseconds
                 let text: String?
                 switch message {
                 case .string(let value):
@@ -1633,7 +1691,7 @@ public actor WebSocketManager {
                 if isWarming(generation) {
                     handleWarmingMessage(text, generation: generation)
                 } else if generation == primaryGeneration {
-                    handleMessage(text)
+                    handleMessage(text, received: received)
                 }
                 // Anything else arrived on a retired socket after the swap;
                 // consumers already have it from the socket that replaced it.
@@ -1719,7 +1777,7 @@ public actor WebSocketManager {
         // dispatch and keeps gap detection on a single sequence space.
     }
 
-    private func handleMessage(_ text: String) {
+    private func handleMessage(_ text: String, received: UInt64 = DispatchTime.now().uptimeNanoseconds) {
         guard let data = text.data(using: .utf8) else { return }
         marketDataRecorder.bytes(data.count, direct: false)
         defer { publishMarketDiagnostics() }
@@ -1858,7 +1916,7 @@ public actor WebSocketManager {
             // the initial price map (mirrors TypeScript SDK behavior).
             if msgType == "mids.snapshot",
                let midsRaw = json["mids"] as? [String: String] {
-                emitArcaMarketEvent(RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw), snapshot: true)
+                emitArcaMarketEvent(RealmEvent(type: EventType.midsUpdated.rawValue, mids: midsRaw), snapshot: true, received: received)
                 return
             }
 
@@ -1973,7 +2031,7 @@ public actor WebSocketManager {
             if event.type == EventType.fillRecorded.rawValue, let fill = event.recordedFill {
                 for observer in positionFillObservers.values { observer(fill, event) }
             }
-            emitArcaMarketEvent(event)
+            emitArcaMarketEvent(event, received: received)
         }
     }
 

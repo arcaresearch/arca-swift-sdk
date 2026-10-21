@@ -5,9 +5,11 @@ final class MarketDataRoutingTests: XCTestCase {
     func testOptionalMainnetPublicStreamProbe() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["ARCA_PUBLIC_STREAM_PROBE"] == "1")
         let counts = SendableBox((quotes: 0, bars: 0, errors: 0))
-        let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, update in
+        let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, incoming in
+            let update: PublicMarketUpdate
+            if case .received(let value, _, _, _) = incoming { update = value } else { update = incoming }
             counts.update { value in
-                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1; case .traffic, .cost, .mids: break }
+                switch update { case .quote: value.quotes += 1; case .bar: value.bars += 1; case .unavailable: value.errors += 1; case .traffic, .cost, .mids, .received, .connection: break }
             }
         }
         await source.subscribe([.init(market: "hl:0:BTC", coin: "BTC"), .init(market: "hl:0:BTC", coin: "BTC", interval: .oneMinute)], revision: 1)

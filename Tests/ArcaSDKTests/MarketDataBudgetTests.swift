@@ -5,7 +5,9 @@ final class MarketDataBudgetTests: XCTestCase {
     func testOptionalSharedSocketAllMidsAndBboProbe() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["ARCA_PUBLIC_BUDGET_PROBE"] == "1")
         let counts = SendableBox((native: 0, xyz: 0, quotes: 0, failures: 0))
-        let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, update in
+        let source = HyperliquidMarketSource(url: HyperliquidNetwork.mainnet.websocketURL) { _, incoming in
+            let update: PublicMarketUpdate
+            if case .received(let value, _, _, _) = incoming { update = value } else { update = incoming }
             counts.update { value in
                 switch update {
                 case let .mids(dex, prices):
