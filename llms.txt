@@ -1,5 +1,15 @@
 # Arca Swift SDK
 
+## Hyperliquid order response compatibility
+
+Account snapshots, order lists and individual-order reads use canonical
+`MARKET`/`LIMIT` order types and uppercase time-in-force values. Regular open
+orders report `OPEN`; waiting stop-loss/take-profit orders report
+`WAITING_FOR_TRIGGER`. For a trigger whose venue response omits TIF, Arca
+reports `GTC` for its lifetime; execution still follows `isMarket`. Preserve
+`isTrigger`, `triggerPx`, and `tpsl`. This server correction works with existing
+SDK versions and does not change the order at the venue.
+
 Native Swift concurrency SDK. See README.md and the public Swift SDK reference
 for the full API. Use canonical market IDs (for example hl:0:BTC), keep monetary
 values as decimal strings, and preserve server authority for execution/risk.
