@@ -27,6 +27,7 @@ final class WalletAccountTests: XCTestCase {
         let reasons: [String]
         let attention: [String]
         let autoDepositStates: [String]
+        let autoDepositHeldReasons: [String]
     }
 
     /// JSON as a comparable tree with `null`s removed, so Go's `omitempty`
@@ -60,6 +61,7 @@ final class WalletAccountTests: XCTestCase {
         XCTAssertEqual(WalletOperationState.allCases.map(\.rawValue), vocabulary.operationStates)
         XCTAssertEqual(WalletFailureReason.allCases.map(\.rawValue), vocabulary.reasons)
         XCTAssertEqual(AutoDepositState.allCases.map(\.rawValue), vocabulary.autoDepositStates)
+        XCTAssertEqual(AutoDepositHeldReason.allCases.map(\.rawValue), vocabulary.autoDepositHeldReasons)
 
         let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
             .filter { $0.hasSuffix(".json") && $0 != "vocabulary.json" }
@@ -99,6 +101,10 @@ final class WalletAccountTests: XCTestCase {
                 XCTAssertNotNil(auto.typedState, "\(file): autoDeposit state \(auto.state)")
                 autoDepositSeen.insert(auto.state)
                 if auto.state == AutoDepositState.off.rawValue { XCTAssertNil(auto.routeId, file) } else { XCTAssertNotNil(auto.routeId, file) }
+                if let reason = auto.heldReason {
+                    XCTAssertNotNil(auto.typedHeldReason, "\(file): heldReason \(reason)")
+                    XCTAssertNotNil(auto.heldMicro.flatMap(UInt64.init), "\(file): heldReason without an integer heldMicro")
+                }
             }
             for figure in [account.balances.confirmedMicro, account.balances.availableMicro, account.balances.reservedMicro, account.balances.pendingInMicro, account.balances.pendingOutMicro] {
                 XCTAssertNotNil(UInt64(figure), "\(file): balance \(figure) is not an integer string")

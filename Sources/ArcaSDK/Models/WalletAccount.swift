@@ -37,8 +37,10 @@ public struct WalletBalances: Codable, Equatable, Sendable {
 
 /// The external address linked to the wallet, as the address observer
 /// projects it. `balanceMicro` is nil when the projection has no baseline —
-/// never "0" as a stand-in for unknown.
+/// never "0" as a stand-in for unknown. `accounting` is true when Arca's
+/// executor sweeps this source (an Arca-owned accounting source).
 public struct WalletSource: Codable, Equatable, Sendable {
+    public let accounting: Bool?
     public let address: String
     public let balanceMicro: String?
     public let health: String
@@ -49,14 +51,21 @@ public struct WalletSource: Codable, Equatable, Sendable {
 /// The automatic-deposit route and USDC allowance of the linked source on
 /// the adapter, as observed on chain. `routeId` is absent when `state` is
 /// `off`; `allowanceMicro` is absent only when no baseline has been read.
+/// `heldMicro` is source money an active route will not forward now and
+/// `heldReason` says why; both are absent when nothing is held. Held money is
+/// not part of `balances.pendingInMicro`.
 public struct WalletAutoDeposit: Codable, Equatable, Sendable {
     public let state: String
     public let routeId: String?
     public let allowanceMicro: String?
+    public let heldMicro: String?
+    public let heldReason: String?
     public let asOf: WalletAsOf
 
     /// The typed state, or nil for a value this SDK does not know.
     public var typedState: AutoDepositState? { AutoDepositState(rawValue: state) }
+    /// The typed held reason, or nil when nothing is held or the value is unknown.
+    public var typedHeldReason: AutoDepositHeldReason? { heldReason.flatMap(AutoDepositHeldReason.init(rawValue:)) }
 }
 
 /// One owner-started operation in the closed vocabulary.
@@ -150,6 +159,7 @@ public enum WalletFailureReason: String, Codable, CaseIterable, Sendable {
     case destinationRefused = "destination_refused"
     case recoveryStarted = "recovery_started"
     case cancelled
+    case sourceChanged = "source_changed"
     case unknown
 }
 
@@ -159,4 +169,11 @@ public enum AutoDepositState: String, Codable, CaseIterable, Sendable {
     case active
     case needsApproval = "needs_approval"
     case needsAttention = "needs_attention"
+}
+
+/// `autoDeposit.heldReason` values.
+public enum AutoDepositHeldReason: String, Codable, CaseIterable, Sendable {
+    case belowMinimum = "below_minimum"
+    case cashLimit = "cash_limit"
+    case linkRevoked = "link_revoked"
 }
