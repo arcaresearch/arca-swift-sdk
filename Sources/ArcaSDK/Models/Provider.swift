@@ -118,6 +118,10 @@ public struct DepositLinkConsent: Codable, Equatable, Sendable {
 }
 
 public struct DepositLinkLimits: Codable, Equatable, Sendable {
+    public let maxDepositMicro: String?
+    /// Arrivals below this stay at the source until they add up to it.
+    public let minDepositMicro: String?
+    public let maxCashMicro: String?
     public let allowanceMicro: String?
 }
 

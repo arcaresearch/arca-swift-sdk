@@ -44,6 +44,25 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNil(link.consent)
     }
 
+    /// The link's standing limits were dropped on decode: only the allowance
+    /// survived, so an app could not show the minimum that holds dust.
+    func testDepositLinkLimitsKeepEveryStandingLimit() throws {
+        let json = #"""
+        {"id":"dlk_1","realmId":"rlm_1",
+         "source":{"objectId":"obj_p","path":"/users/a/privy","walletId":"pwl_a","address":"0xA"},
+         "destination":{"objectId":"obj_c","path":"/users/a/cash","boundaryId":"0xb","account":{"kernel":"0xk","venue":"0xv","localId":"0xl"}},
+         "chainId":"999","token":"0xt","adapter":{"address":"0xad","kind":"cash_autodeposit_v1"},
+         "requested":{"state":"active","at":"t"},"lifetime":"until_revoked_or_invalidated","consent":null,
+         "limits":{"maxDepositMicro":"1000000000","minDepositMicro":"5000000","maxCashMicro":"10000000000","allowanceMicro":"115792089237316195423570985008687907853269984665640564039457584007913129639935"},
+         "observed":{"status":"active","matchesDestination":true},"operations":{},"progress":"in_sync","createdAt":"t","updatedAt":"t"}
+        """#
+        let limits = try XCTUnwrap(decoder.decode(DepositLink.self, from: Data(json.utf8)).limits)
+        XCTAssertEqual(limits.maxDepositMicro, "1000000000")
+        XCTAssertEqual(limits.minDepositMicro, "5000000")
+        XCTAssertEqual(limits.maxCashMicro, "10000000000")
+        XCTAssertNotNil(limits.allowanceMicro)
+    }
+
     func testObjectDetailWithoutProviderSectionsDecodes() throws {
         let json = #"{"object":{"id":"obj_w","realmId":"rlm_1","path":"/w","type":"denominated","status":"active","systemOwned":false,"createdAt":"t","updatedAt":"t"},"operations":[],"events":[],"deltas":[],"balances":[]}"#
         let detail = try decoder.decode(ArcaObjectDetailResponse.self, from: Data(json.utf8))

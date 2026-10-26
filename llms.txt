@@ -50,6 +50,21 @@ The first price delay starts at socket-manager creation and concerns the first
 routed interested price. It is not venue latency. Quiet prices are not failures,
 no exchange timestamp is invented, and Arca still owns finalized candles.
 
+## Deposit links and held auto-deposit money
+
+`DepositLink.limits` decodes every standing limit: `allowanceMicro`,
+`maxDepositMicro`, `minDepositMicro` and `maxCashMicro` (older builds dropped the
+last three). A link's destination is a Cash account or, through the realm's
+trading adapter, a trading account. Creating one can fail with
+`DEPOSIT_LINK_SOURCE_CONFLICT` (the wallet already feeds another link;
+`details.conflictingLinkId` names it when known), `DEPOSIT_LINK_SOURCE_CAPACITY`
+(`details.limit`: the realm accounts for its limit of linked sources; a revoked
+link's source frees its slot once nothing is in flight for it) or
+`DEPOSIT_LINK_OWNER_MISMATCH`. On the wallet account, `autoDeposit.heldMicro` and
+`heldReason` (`typedHeldReason`: below_minimum, cash_limit, link_revoked) are what
+an active route keeps at the source; `balances.pendingInMicro` counts only what
+will be forwarded. Render held money as at the source, never as arriving.
+
 ## Wallet snapshot and money figures (2.14.0)
 
 `walletSnapshot(ownerAddress:arcaPath:boundaryId:)` reads the schema-2 wallet
