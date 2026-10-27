@@ -199,3 +199,16 @@ last completed snapshot; never await a new calculation during a UI render.
 marketDataDiagnostics.hyperliquidConnection retains latest attemptAtNanos, actual WebSocket openedAtNanos, firstMessageAtNanos and first routed firstPriceAtNanos (including unchanged accepted quotes), plus lastRetryScheduledAtNanos and lastRetryDelayMs retained across the next attempt. First-message and first-price transitions notify immediately; ordinary counters remain traffic-driven and may be reported on a later frame. Latest observations, not complete event history. Correlate with app validated-network callbacks to separate network availability, planned retry backoff, handshake, first message and first accepted quote. Stopping the public source resets the timeline.
 
 Network-restoration hint (2.16.0): `await arca.notifyMarketDataNetworkAvailable()` advances only an existing Hyperliquid public-source retry when 250–499 ms jitter would be sooner, with a 30-second cooldown per source. It does not create owners, reset exponential failure backoff, interrupt healthy/in-flight sockets, revive stopped/background sources, or reconnect the authenticated Arca transport. Call from an existing OS unavailable→available transition, not polling; on iOS NWPathMonitor satisfied is only an availability hint, not validated Internet reachability. Ignore initial/duplicate satisfaction and stop the observer with its owner. Recovery still requires connection/accepted-price evidence; a hint is not freshness.
+
+## Historical candle coverage (requires matching backend deployment)
+
+`candleHistory.earliestMs` is the earliest stored daily row, not a registry listing year.
+`hlEarliestMs` includes only recognized native provenance; zero means none is known.
+Negative epoch milliseconds are valid. These bounds do not prove uninterrupted coverage.
+For All/Max, traverse bounded daily windows to the observed lower bound, retain source
+metadata, keep reference sessions entirely before native coverage, and maintain the live
+SDK chart subscription separately. Explicit REST `1d` windows of at most 1,500 days with
+`skipBackfill=true` read durable storage and return an error when it is unavailable.
+CDN-enabled SDK reads can bypass REST; archive reconciliation must use a REST-only
+configuration. Do not interpret a failed page or an unknown bound as end-of-history.
+Historical CDN files published before the source-preserving worker fix may need repair.
