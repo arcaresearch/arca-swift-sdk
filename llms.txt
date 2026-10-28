@@ -133,7 +133,11 @@ snapshot (a path set whole; a prefix scope's first page, the rest fetched over
 REST with the same prefix). `setPaths(_:)` / `setPrefix(_:)` replace the scope
 in place under the same watch id (`update_projection_watch`; the ack carries the
 new scope's snapshot, which replaces the rows; a later call supersedes an
-earlier one); `scope` is the current interest set. A watch with no `paths` and
+earlier one); `scope` is the current interest set. The server answers the
+create and each update within 8 s, applies updates in the order sent, and
+counts them against the connection's 16 outstanding watch requests together
+with aggregation watches; a request past either limit fails with the server's
+error rather than a client-side timeout. A watch with no `paths` and
 no `prefix` is EMPTY — it delivers nothing until `setPaths` names a set — and
 never means every covered account; a client that wants the whole projection
 passes the projection's own prefix (on a realm-wide projection, the shape to
