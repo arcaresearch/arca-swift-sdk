@@ -34,7 +34,7 @@ final class WalletMoneyTests: XCTestCase {
         let dir = Self.fixturesDirectory
         guard FileManager.default.fileExists(atPath: dir.path) else { throw XCTSkip("fixtures not present at \(dir.path)") }
         let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".json") }.sorted()
-        XCTAssertGreaterThanOrEqual(files.count, 17, "fixture set shrank")
+        XCTAssertGreaterThanOrEqual(files.count, 19, "fixture set shrank")
         for file in files {
             let snapshot = try JSONDecoder().decode(WalletSnapshot.self, from: Data(contentsOf: dir.appendingPathComponent(file)))
             XCTAssertEqual(snapshot.schema, walletSnapshotSchema, file)
@@ -174,6 +174,22 @@ final class WalletMoneyTests: XCTestCase {
         XCTAssertFalse(figure.inMotion)
         XCTAssertEqual(money.total.expectedMicro, "2000000")
         XCTAssertEqual(money.total.settledMicro, "30920000")
+    }
+
+    func testCashDepositIsExpectedThenCountedOnceAsPendingIn() throws {
+        let expected = WalletMoney.compose(try Self.fixture("17-cash-deposit-expected"))
+        XCTAssertEqual(expected.cash.arriving.count, 1)
+        XCTAssertEqual(expected.cash.arriving.first?.stage, .expected)
+        XCTAssertEqual(expected.cash.arriving.first?.counterparty, .external(address: nil))
+        XCTAssertEqual(expected.cash.expectedMicro, "3000000")
+        XCTAssertEqual(expected.cash.arrivingMicro, "0", "expected money is listed, never counted")
+        XCTAssertFalse(expected.cash.inMotion)
+        XCTAssertEqual(expected.total.settledMicro, "30920000")
+        let onChain = WalletMoney.compose(try Self.fixture("18-cash-deposit-pending-in"), previous: expected)
+        XCTAssertEqual(onChain.cash.arriving.map { "\($0.amountMicro):\($0.stage.rawValue)" }, ["3000000:in_transit"], "on chain, the deposit is Cash's pending figure alone")
+        XCTAssertEqual(onChain.cash.expectedMicro, "0")
+        XCTAssertEqual(onChain.total.arriving.map(\.amountMicro), ["3000000"])
+        XCTAssertEqual(onChain.total.settledMicro, "30920000")
     }
 
     func testExternalDepositJoinsTheTotalWhenObservedAndLandsOnce() throws {
