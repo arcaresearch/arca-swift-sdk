@@ -384,8 +384,14 @@ public struct WalletMoney: Equatable, Sendable {
     }
 
     static func counterparty(_ endpoint: WalletEndpoint, snapshot: WalletSnapshot) -> MoneyCounterparty {
-        if endpoint.isCash || (endpoint.boundaryId != nil && endpoint.boundaryId == snapshot.boundaryId && !snapshot.boundaryId.isEmpty) {
-            return .cash
+        if endpoint.isCash {
+            // An identified Cash endpoint can belong to another owner. Only
+            // the unqualified local-prediction sentinel implies this wallet.
+            let identities = [(endpoint.boundaryId, snapshot.boundaryId),
+                              (endpoint.arcaId, snapshot.cashTarget.arcaId ?? ""),
+                              (endpoint.arcaPath, snapshot.cashTarget.arcaPath ?? "")]
+            let owned = identities.allSatisfy { value, expected in value == nil || value == "" || (!expected.isEmpty && value == expected) }
+            return owned ? .cash : .external(address: endpoint.address)
         }
         if let arcaId = endpoint.arcaId {
             if let account = snapshot.account(arcaId: arcaId) { return .account(arcaId: arcaId, name: account.name) }

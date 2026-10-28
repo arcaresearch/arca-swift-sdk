@@ -9,6 +9,24 @@ import XCTest
 /// Go, Kotlin and TypeScript SDKs.
 final class WalletMoneyTests: XCTestCase {
 
+    func testPersonSendDoesNotArriveInSendersCash() throws {
+        var previous: WalletMoney?
+        for name in ["19-person-send-reserved", "20-person-send-in-transit", "21-person-send-paid"] {
+            let money = WalletMoney.compose(try Self.fixture(name), previous: previous)
+            XCTAssertTrue(money.cash.arriving.isEmpty && money.cash.departing.isEmpty, name)
+            XCTAssertNil(money.cash.change, "A recipient credit never changes sender Cash")
+            if name != "21-person-send-paid" {
+                XCTAssertEqual(money.total.departing.count, 1, name)
+                XCTAssertEqual(money.account(Self.hl1)?.departing.count, 1, name)
+                XCTAssertEqual(money.total.departing.first?.counterparty, .external(address: "0xabcabcabcabcabcabcabcabcabcabcabcabcabca"))
+            } else {
+                XCTAssertTrue(money.total.departing.isEmpty)
+                XCTAssertEqual(money.total.change?.operationStatus, "succeeded")
+            }
+            previous = money
+        }
+    }
+
     // MARK: - Fixtures
 
     /// backend/libs/arca-go/fundingv9/testdata/wallet-money, reached from this
