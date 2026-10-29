@@ -57,6 +57,14 @@ public enum EventType: String, Sendable {
     case twapCompleted = "twap.completed"
     case twapCancelled = "twap.cancelled"
     case twapFailed = "twap.failed"
+    /// Fee-collector events, addressed to the collector arca's path: a
+    /// referral reward booked from the venue's per-referred-user counter,
+    /// the sweep's claim of the rewards bucket, and the sweep's settlement
+    /// into the realm's treasury. Delivered as generic realm events with a
+    /// `collector` payload.
+    case collectorReferralReward = "collector.referral_reward"
+    case collectorRewardsClaimed = "collector.rewards_claimed"
+    case collectorSwept = "collector.swept"
 }
 
 /// Channel groups for WebSocket subscriptions.
