@@ -570,9 +570,14 @@ extension Arca {
     ///   - points: Number of historical samples (default 1000, max 1000). Higher
     ///     values yield finer chart resolution from the server's ladder.
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`)
-    ///   - anchor: `.zero` (default) for standard P&L; `.equity` to shift the
-    ///     chart so the live (rightmost) value equals the current account equity.
-    ///     When `.equity`, each `PnlPoint` includes `valueUsd`.
+    ///   - anchor: `.zero` (default) for standard P&L; `.equity` to also set
+    ///     each point's `valueUsd` to its account value (`equityUsd`), so the
+    ///     live (rightmost) value is the current account equity.
+    ///
+    /// Every `pnlUsd` the stream emits counts from one fixed point,
+    /// ``PnlChartUpdate/baseline``: the first point of the opening history.
+    /// When a live window slides, refreshed history is re-derived onto that
+    /// baseline, so the line does not move.
     public func watchPnlChart(
         path: String,
         from: String,
@@ -611,21 +616,20 @@ extension Arca {
 
         let history = try await getPnlHistory(path: path, from: from, to: to, points: points)
         await ws.watchPath(path)
-        // `flowsSince` must align with the instant `startingEquityUsd` is
-        // measured at, or the live tick double-counts flows already baked
-        // into the anchor. The server anchors on the first point of the
-        // requested window and does not trim leading zero-equity points,
-        // so the window start IS the anchor instant. (This previously read
-        // a server `effectiveFrom` field for a trimming behaviour the
-        // consolidated read path does not implement and never emitted.)
-        let flowsSince = from
+        // `flowsSince` must name the instant `startingEquityUsd` is
+        // measured at, or the live tick subtracts a flow already inside
+        // it. That is the close of the first bucket, not the requested
+        // `from`.
+        let flowsSince = alignedFlowsSince(history, fallback: from)
         let aggStream = try await watchAggregation(
             sources: [AggregationSource(type: .prefix, value: path)],
             exchange: exchange,
             flowsSince: flowsSince
         )
 
-        let startingEquity = Double(history.startingEquityUsd) ?? 0
+        let baselineBox = SendableBox<PnlChartBaseline?>(
+            pnlBaseline(from: history.pnlPoints, startingEquityUsd: history.startingEquityUsd)
+        )
 
         var currentCumInflows = 0.0
         var currentCumOutflows = 0.0
@@ -634,12 +638,13 @@ extension Arca {
             if flow.direction == "inflow" { currentCumInflows += val }
             else { currentCumOutflows += val }
         }
+        var currentFlowInputs = (history.externalFlows ?? []).map(\.valueUsd)
 
         let resolutionSecondsBox = SendableBox<Int64>(chartResolutionSeconds(history.resolution))
         let initialHourBoundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
 
         // Override flow seed with server-provided cumulative flows from the
-        // initial aggregation snapshot (authoritative, covers from..now).
+        // initial aggregation snapshot (authoritative, covers flowsSince..now).
         if let agg = aggStream.aggregation.value {
             if let inStr = agg.cumInflowsUsd, let inVal = Double(inStr) {
                 currentCumInflows = inVal
@@ -647,6 +652,19 @@ extension Arca {
             if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
                 currentCumOutflows = outVal
             }
+            if agg.cumInflowsUsd != nil || agg.cumOutflowsUsd != nil {
+                currentFlowInputs = [agg.cumInflowsUsd, agg.cumOutflowsUsd].compactMap { $0 }
+            }
+        }
+
+        let cumInflowsBox = SendableBox<Double>(currentCumInflows)
+        let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
+        let flowInputsBox = SendableBox<[String]>(currentFlowInputs)
+        // Live P&L on the stream's baseline, at the precision of its inputs.
+        let livePnl: @Sendable (String?) -> String = { equity in
+            let start = baselineBox.value?.startingEquityUsd ?? history.startingEquityUsd
+            let pnl = (Double(equity ?? "0") ?? 0) - (Double(start) ?? 0) - cumInflowsBox.value + cumOutflowsBox.value
+            return formatPnlUsd(pnl, inputs: [equity, start] + flowInputsBox.value)
         }
 
         // Trim trailing points within the current time bucket. The server's
@@ -654,7 +672,7 @@ extension Arca {
         // lastClosed. Removing it prevents a discontinuity between the server's
         // live equity (Redis at HTTP time) and the SDK's live equity
         // (aggregation watch, potentially revalued with latest mids).
-        var trimmedHistorical = history.pnlPoints
+        var trimmedHistorical = rebasePnlPoints(history.pnlPoints, baseline: baselineBox.value)
         while let last = trimmedHistorical.last,
               let ts = iso.date(from: last.timestamp),
               Int64(ts.timeIntervalSince1970) > initialHourBoundary {
@@ -663,12 +681,9 @@ extension Arca {
 
         var initialChart = trimmedHistorical
         if let agg = aggStream.aggregation.value {
-            let liveEquity = Double(agg.totalEquityUsd) ?? 0
-            let pnl = liveEquity - startingEquity - currentCumInflows + currentCumOutflows
-            let livePnlStr = String(format: "%.2f", pnl)
             initialChart.append(PnlPoint(
                 timestamp: iso.string(from: Date()),
-                pnlUsd: livePnlStr,
+                pnlUsd: livePnl(agg.totalEquityUsd),
                 equityUsd: agg.totalEquityUsd,
                 status: .open
             ))
@@ -679,13 +694,29 @@ extension Arca {
 
         let state = SendableBox<WatchStreamState>(.connected)
         let historicalBox = SendableBox<[PnlPoint]>(trimmedHistorical)
+        let historyRevisionBox = SendableBox<Int>(0)
         let flowsBox = SendableBox<[ExternalFlowEntry]>(history.externalFlows ?? [])
         let chartBox = SendableBox<[PnlPoint]>(initialChart)
         let hourBoundaryBox = SendableBox<Int64>(initialHourBoundary)
-        let cumInflowsBox = SendableBox<Double>(currentCumInflows)
-        let cumOutflowsBox = SendableBox<Double>(currentCumOutflows)
         let liveEquityBox = SendableBox<String?>(aggStream.aggregation.value?.totalEquityUsd)
         let lastAggAtBox = SendableBox<Date>(Date())
+        // Installs a refetched window as the chart's history. A live window
+        // slides on every refresh, and the server counts the new window from
+        // its own first point; re-derive it onto the baseline this stream
+        // opened with, so the line never moves.
+        let absorbHistory: @Sendable (PnlHistoryResponse) -> [PnlPoint] = { fresh in
+            resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
+            let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
+            hourBoundaryBox.update { $0 = boundary }
+            if baselineBox.value == nil {
+                baselineBox.update { $0 = pnlBaseline(from: fresh.pnlPoints, startingEquityUsd: fresh.startingEquityUsd) }
+            }
+            let filtered = rebasePnlPoints(fresh.pnlPoints, baseline: baselineBox.value).filter { $0.status != .open }
+            historicalBox.update { $0 = filtered }
+            historyRevisionBox.update { $0 += 1 }
+            flowsBox.update { $0 = fresh.externalFlows ?? [] }
+            return filtered
+        }
         let chartWatchId = await ws.watchChartHistory(target: path)
         let gapId = await ws.onGap { [weak self] _ in
             Task { [weak self] in
@@ -697,13 +728,7 @@ extension Arca {
                 ])
                 self.historyCache.delete(key)
                 if let fresh = try? await self.getPnlHistory(path: path, from: w.from, to: w.to, points: points) {
-                    resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
-                    let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
-                    hourBoundaryBox.update { $0 = boundary }
-                    historicalBox.update { pts in
-                        pts = fresh.pnlPoints.filter { $0.status != .open }
-                    }
-                    flowsBox.update { $0 = fresh.externalFlows ?? [] }
+                    _ = absorbHistory(fresh)
                 }
             }
         }
@@ -726,21 +751,13 @@ extension Arca {
                 ])
                 self.historyCache.delete(key)
                 guard let fresh = try? await self.getPnlHistory(path: path, from: w.from, to: w.to, points: points) else { return }
-                resolutionSecondsBox.update { $0 = chartResolutionSeconds(fresh.resolution) }
-                let boundary = Int64(Date().timeIntervalSince1970 / Double(resolutionSecondsBox.value)) * resolutionSecondsBox.value
-                hourBoundaryBox.update { $0 = boundary }
-                let filtered = fresh.pnlPoints.filter { $0.status != .open }
-                historicalBox.update { $0 = filtered }
-                flowsBox.update { $0 = fresh.externalFlows ?? [] }
-                var allPoints = filtered
+                var allPoints = absorbHistory(fresh)
                 if let agg = aggStream.aggregation.value {
-                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
-                    let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
                     let localIso = ISO8601DateFormatter()
                     localIso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                     allPoints.append(PnlPoint(
                         timestamp: localIso.string(from: Date()),
-                        pnlUsd: String(format: "%.2f", pnl),
+                        pnlUsd: livePnl(agg.totalEquityUsd),
                         equityUsd: agg.totalEquityUsd,
                         status: .open
                     ))
@@ -749,10 +766,11 @@ extension Arca {
                     applyEquityAnchor(to: &allPoints)
                 }
                 chartBox.update { $0 = allPoints }
-                continuation.yield(PnlChartUpdate(points: allPoints, externalFlows: flowsBox.value))
+                continuation.yield(PnlChartUpdate(points: allPoints, externalFlows: flowsBox.value, baseline: baselineBox.value))
             }
 
             let aggTask = Task {
+                var lastYieldedRevision = historyRevisionBox.value
                 for await agg in aggStream.updates {
                     lastAggAtBox.update { $0 = Date() }
                     // Capture the previous live values BEFORE absorbing the
@@ -763,8 +781,7 @@ extension Arca {
                     // point's pnl/equity, which is the prior bucket's close
                     // and not the value the user saw at the boundary.
                     let previousLiveEquityStr = liveEquityBox.value
-                    let previousLiveEquity = Double(previousLiveEquityStr ?? "0") ?? 0
-                    let previousLivePnl = previousLiveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
+                    let previousLivePnl = livePnl(previousLiveEquityStr)
 
                     let nowEpoch = Int64(Date().timeIntervalSince1970)
                     let currentHourBoundary = (nowEpoch / resolutionSecondsBox.value) * resolutionSecondsBox.value
@@ -785,10 +802,11 @@ extension Arca {
                         historicalBox.update { historical in
                             historical.append(PnlPoint(
                                 timestamp: iso.string(from: boundaryDate),
-                                pnlUsd: String(format: "%.2f", previousLivePnl),
+                                pnlUsd: previousLivePnl,
                                 equityUsd: prevStr
                             ))
                         }
+                        historyRevisionBox.update { $0 += 1 }
                         hourBoundaryBox.update { $0 = currentHourBoundary }
                     }
 
@@ -798,14 +816,14 @@ extension Arca {
                     if let outStr = agg.cumOutflowsUsd, let outVal = Double(outStr) {
                         cumOutflowsBox.update { $0 = outVal }
                     }
+                    if agg.cumInflowsUsd != nil || agg.cumOutflowsUsd != nil {
+                        flowInputsBox.update { $0 = [agg.cumInflowsUsd, agg.cumOutflowsUsd].compactMap { $0 } }
+                    }
                     liveEquityBox.update { $0 = agg.totalEquityUsd }
 
-                    let liveEquity = Double(agg.totalEquityUsd) ?? 0
-                    let pnl = liveEquity - startingEquity - cumInflowsBox.value + cumOutflowsBox.value
-                    let livePnlStr = String(format: "%.2f", pnl)
                     let livePoint = PnlPoint(
                         timestamp: iso.string(from: Date()),
-                        pnlUsd: livePnlStr,
+                        pnlUsd: livePnl(agg.totalEquityUsd),
                         equityUsd: agg.totalEquityUsd,
                         status: .open
                     )
@@ -816,24 +834,28 @@ extension Arca {
                         applyEquityAnchor(to: &allPoints)
                     }
 
+                    // Sub-cent moves update `chart` without waking consumers.
                     let prevPoints = chartBox.value
                     let isSameValue: Bool
                     if anchor == .equity {
-                        isSameValue = prevPoints.last?.valueUsd == allPoints.last?.valueUsd
+                        isSameValue = sameCents(prevPoints.last?.valueUsd, allPoints.last?.valueUsd)
                     } else {
-                        isSameValue = prevPoints.last?.pnlUsd == allPoints.last?.pnlUsd
+                        isSameValue = sameCents(prevPoints.last?.pnlUsd, allPoints.last?.pnlUsd)
                     }
+                    let revision = historyRevisionBox.value
 
-                    if prevPoints.count == allPoints.count && isSameValue {
+                    if revision == lastYieldedRevision && prevPoints.count == allPoints.count && isSameValue {
                         chartBox.update { $0 = allPoints }
                         continue
                     }
 
                     chartBox.update { $0 = allPoints }
+                    lastYieldedRevision = revision
 
                     continuation.yield(PnlChartUpdate(
                         points: allPoints,
-                        externalFlows: flowsBox.value
+                        externalFlows: flowsBox.value,
+                        baseline: baselineBox.value
                     ))
                 }
             }
@@ -907,6 +929,7 @@ extension Arca {
         return PnlChartStream(
             state: state,
             chart: chartBox,
+            baseline: baselineBox,
             updates: updates,
             stop: {
                 await self.ws.removeGapHandler(gapId)

@@ -252,6 +252,22 @@ CDN-enabled SDK reads can bypass REST; archive reconciliation must use a REST-on
 configuration. Do not interpret a failed page or an unknown bound as end-of-history.
 Historical CDN files published before the source-preserving worker fix may need repair.
 
+## P&L chart baseline (requires matching aggregation deployment)
+
+Every `pnlUsd` a `watchPnlChart` stream emits counts from one fixed point,
+`PnlChartUpdate.baseline` (also `chart.baseline.value`): the first point of the opening
+history. A window whose `to` is now slides on each history refresh; the refreshed buckets
+are re-derived onto the same baseline from each point's lifetime `cumInflowsUsd` /
+`cumOutflowsUsd`, so history, boundary promotions and the live point form one line and a
+bucket's value does not change when the window moves. Do not realign refreshed responses by
+matching overlapping buckets. To join a second stream onto the first, add
+`adj(second baseline) − adj(first baseline)` to each of the second stream's `pnlUsd`, where
+`adj = startingEquityUsd − cumInflowsUsd + cumOutflowsUsd`.
+The live point's `pnlUsd` keeps the precision of its inputs, so `equityUsd − pnlUsd` is
+exact. With `anchor: .equity`, `valueUsd` is each bucket's `equityUsd` (it moves with
+deposits) and current equity on the live point. Against an aggregation service that does not
+send flow totals, refreshed history keeps the server's own baseline.
+
 ## Trading exits from unified collateral (requires matching platform deployment)
 
 Trading-to-Cash and external-send quotes include native-perps withdrawable USDC

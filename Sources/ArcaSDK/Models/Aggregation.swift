@@ -351,10 +351,14 @@ public struct PnlPoint: Codable, Sendable {
     /// point. `pnlUsd` is already derived from it.
     public let unflooredEquityUsd: String?
     public let status: ChartPointStatus?
+    /// The path's lifetime external inflows through this bucket. Nil on
+    /// SDK-built points (the live tip and boundary promotions).
     public let cumInflowsUsd: String?
+    /// The path's lifetime external outflows through this bucket.
     public let cumOutflowsUsd: String?
-    /// Present when the chart is created with `anchor: .equity`.
-    /// Equal to pnlUsd shifted so the live (rightmost) point equals current equity.
+    /// Present when the chart is created with `anchor: .equity`: the
+    /// bucket's account value, `equityUsd`, which moves with deposits and
+    /// withdrawals. On the live point it is the current account equity.
     public var valueUsd: String?
 
     public init(
@@ -382,7 +386,8 @@ public struct PnlPoint: Codable, Sendable {
 public enum PnlAnchor: Sendable {
     /// Standard P&L chart starting at 0.
     case zero
-    /// P&L shifted so the live (rightmost) value equals the current account equity.
+    /// Also set each point's `valueUsd` to its account value (`equityUsd`),
+    /// so the live (rightmost) value is the current account equity.
     case equity
 }
 
@@ -534,9 +539,50 @@ public struct EquityChartUpdate: Sendable {
     public let points: [EquityPoint]
 }
 
+/// The history point a live P&L chart counts from: its `pnlUsd` is zero and
+/// every other point's `pnlUsd` is measured from it. Fixed for the life of a
+/// `watchPnlChart` stream, so a window that slides forward never moves the
+/// line.
+///
+/// `startingEquityUsd − cumInflowsUsd + cumOutflowsUsd` is the account's
+/// flow-adjusted value at the baseline. Two streams opened at different
+/// times differ by exactly the difference of that quantity, which is how to
+/// join one stream's points onto another's.
+public struct PnlChartBaseline: Codable, Sendable, Equatable {
+    /// Timestamp of the baseline point.
+    public let timestamp: String
+    /// Equity at the baseline point (the unfloored value).
+    public let startingEquityUsd: String
+    /// The path's lifetime external inflows through the baseline point.
+    /// Nil on servers that predate it.
+    public let cumInflowsUsd: String?
+    /// The path's lifetime external outflows through the baseline point.
+    public let cumOutflowsUsd: String?
+
+    public init(timestamp: String, startingEquityUsd: String, cumInflowsUsd: String? = nil, cumOutflowsUsd: String? = nil) {
+        self.timestamp = timestamp
+        self.startingEquityUsd = startingEquityUsd
+        self.cumInflowsUsd = cumInflowsUsd
+        self.cumOutflowsUsd = cumOutflowsUsd
+    }
+}
+
 /// Emitted by `PnlChartStream` on each update.
 /// Contains the full P&L point array (historical + live tail) and all flows.
 public struct PnlChartUpdate: Sendable {
     public let points: [PnlPoint]
     public let externalFlows: [ExternalFlowEntry]
+    /// The history point every `pnlUsd` in this update counts from — the
+    /// historical buckets, the buckets the stream promotes at each boundary,
+    /// and the live point alike. Fixed for the life of the stream: when a
+    /// live window slides, refreshed history is re-derived onto it rather
+    /// than counted from the new window start. Nil until the stream has a
+    /// history point to count from.
+    public let baseline: PnlChartBaseline?
+
+    public init(points: [PnlPoint], externalFlows: [ExternalFlowEntry], baseline: PnlChartBaseline? = nil) {
+        self.points = points
+        self.externalFlows = externalFlows
+        self.baseline = baseline
+    }
 }

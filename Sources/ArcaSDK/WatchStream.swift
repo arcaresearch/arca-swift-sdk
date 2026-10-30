@@ -406,6 +406,10 @@ public struct PnlChartStream: Sendable {
     public let state: SendableBox<WatchStreamState>
     /// Current P&L chart points (historical + live tail).
     public let chart: SendableBox<[PnlPoint]>
+    /// The history point every `pnlUsd` on this stream counts from; see
+    /// ``PnlChartUpdate/baseline``. Nil until the stream has a history point
+    /// to count from.
+    public let baseline: SendableBox<PnlChartBaseline?>
     /// Async stream of P&L chart updates.
     public let updates: AsyncStream<PnlChartUpdate>
     /// Stop listening, unsubscribe, and destroy the underlying streams.
