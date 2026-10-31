@@ -294,6 +294,10 @@ public struct ExchangeState: Codable, Sendable {
     /// nanoseconds). Observations of one account are ordered by it; see
     /// ``observedBefore(_:)``. `nil` from a platform that predates the field.
     public let observedAt: String?
+    /// `"fold"` when this state was computed by the platform's own Hyperliquid
+    /// account fold from Arca's records rather than read from the venue;
+    /// ``observedAt`` is then the fold's publication time. `nil` on a venue read.
+    public let stateSource: String?
 
     public init(
         account: SimAccount, marginSummary: SimMarginSummary,
@@ -306,7 +310,8 @@ public struct ExchangeState: Codable, Sendable {
         financialInputId: String? = nil, mirrorUnsettledFunding: String? = nil,
         stateRefreshIntervalMs: Int? = nil,
         accountingPending: [AccountingPendingExecution]? = nil,
-        observedAt: String? = nil
+        observedAt: String? = nil,
+        stateSource: String? = nil
     ) {
         self.account = account; self.marginSummary = marginSummary
         self.crossMarginSummary = crossMarginSummary
@@ -320,6 +325,7 @@ public struct ExchangeState: Codable, Sendable {
         self.stateRefreshIntervalMs = stateRefreshIntervalMs
         self.accountingPending = accountingPending
         self.observedAt = observedAt
+        self.stateSource = stateSource
     }
 
     public init(from decoder: Decoder) throws {
@@ -340,12 +346,13 @@ public struct ExchangeState: Codable, Sendable {
         stateRefreshIntervalMs = try container.decodeIfPresent(Int.self, forKey: .stateRefreshIntervalMs)
         accountingPending = try container.decodeIfPresent([AccountingPendingExecution].self, forKey: .accountingPending)
         observedAt = try container.decodeIfPresent(String.self, forKey: .observedAt)
+        stateSource = try container.decodeIfPresent(String.self, forKey: .stateSource)
     }
 
     private enum CodingKeys: String, CodingKey {
         case account, marginSummary, crossMarginSummary, crossMaintenanceMarginUsed
         case positions, openOrders, feeRates, pendingIntents, pricingMode, collateralModel, tradingAllocation, financialInputId, mirrorUnsettledFunding, stateRefreshIntervalMs
-        case accountingPending, observedAt
+        case accountingPending, observedAt, stateSource
     }
 }
 
