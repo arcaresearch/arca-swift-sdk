@@ -13,8 +13,8 @@ enum OutboundMessage: Encodable {
     case unsubscribeOI
     case watchChartHistory(watchId: String, target: String, kind: String, objectId: String?)
     case unwatchChartHistory(watchId: String)
-    case watchProjection(projection: String, paths: [String]?, prefix: String?, requestId: String)
-    case updateProjectionWatch(watchId: String, paths: [String]?, prefix: String?, requestId: String)
+    case watchProjection(projection: String, paths: [String]?, prefix: String?, window: String? = nil, requestId: String)
+    case updateProjectionWatch(watchId: String, paths: [String]?, prefix: String?, window: String? = nil, requestId: String)
     case unwatchProjection(watchId: String)
     case attachAggregationWatch(watchId: String, requestId: String)
     case detachAggregationWatch(watchId: String)
@@ -69,17 +69,19 @@ enum OutboundMessage: Encodable {
         case .unwatchChartHistory(let watchId):
             try container.encode("unwatch_chart_history", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
-        case .watchProjection(let projection, let paths, let prefix, let requestId):
+        case .watchProjection(let projection, let paths, let prefix, let window, let requestId):
             try container.encode("watch_projection", forKey: .action)
             try container.encode(projection, forKey: .projection)
             try container.encodeIfPresent(paths, forKey: .paths)
             try container.encodeIfPresent(prefix, forKey: .prefix)
+            try container.encodeIfPresent(window, forKey: .window)
             try container.encode(requestId, forKey: .requestId)
-        case .updateProjectionWatch(let watchId, let paths, let prefix, let requestId):
+        case .updateProjectionWatch(let watchId, let paths, let prefix, let window, let requestId):
             try container.encode("update_projection_watch", forKey: .action)
             try container.encode(watchId, forKey: .watchId)
             try container.encodeIfPresent(paths, forKey: .paths)
             try container.encodeIfPresent(prefix, forKey: .prefix)
+            try container.encodeIfPresent(window, forKey: .window)
             try container.encode(requestId, forKey: .requestId)
         case .unwatchProjection(let watchId):
             try container.encode("unwatch_projection", forKey: .action)
@@ -116,17 +118,17 @@ enum OutboundMessage: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case action, token, realmId, capabilities, foreground, exchange, coins, intervals, path, batch
-        case watchId, target, kind, objectId, projection, paths, prefix, requestId, types, sources, flowsSince
+        case watchId, target, kind, objectId, projection, paths, prefix, window, requestId, types, sources, flowsSince
     }
 
     /// The same message addressed by a specific request id. Only the
     /// request/reply messages (projection create and update) carry one.
     func withRequestId(_ requestId: String) -> OutboundMessage {
         switch self {
-        case .watchProjection(let projection, let paths, let prefix, _):
-            return .watchProjection(projection: projection, paths: paths, prefix: prefix, requestId: requestId)
-        case .updateProjectionWatch(let watchId, let paths, let prefix, _):
-            return .updateProjectionWatch(watchId: watchId, paths: paths, prefix: prefix, requestId: requestId)
+        case .watchProjection(let projection, let paths, let prefix, let window, _):
+            return .watchProjection(projection: projection, paths: paths, prefix: prefix, window: window, requestId: requestId)
+        case .updateProjectionWatch(let watchId, let paths, let prefix, let window, _):
+            return .updateProjectionWatch(watchId: watchId, paths: paths, prefix: prefix, window: window, requestId: requestId)
         default:
             return self
         }

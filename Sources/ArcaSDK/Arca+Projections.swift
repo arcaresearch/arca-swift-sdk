@@ -70,13 +70,18 @@ extension Arca {
     ///     projection to find them. Like every other filter it only narrows.
     ///   - cursor: Keyset cursor from the prior page.
     ///   - limit: Page size (default 100, max 500).
+    ///   - window: Attach the windowed `pnl` / `volume` figures the
+    ///     projection grants. The read waits briefly for figures still being
+    ///     computed and returns any that are not ready as pending. Refused
+    ///     for a projection that grants neither.
     public func getProjectionValuations(
         name: String,
         prefix: String? = nil,
         path: String? = nil,
         paths: [String]? = nil,
         cursor: String? = nil,
-        limit: Int? = nil
+        limit: Int? = nil,
+        window: ProjectionWindow? = nil
     ) async throws -> ProjectionValuationsPage {
         var query: [String: String] = ["realmId": realm]
         if let prefix { query["prefix"] = prefix }
@@ -84,6 +89,7 @@ extension Arca {
         if let paths, !paths.isEmpty { query["paths"] = paths.joined(separator: ",") }
         if let cursor { query["cursor"] = cursor }
         if let limit { query["limit"] = String(limit) }
+        if let window { query["window"] = window.rawValue }
         return try await client.get("/projections/\(name)/valuations", query: query)
     }
 
@@ -107,7 +113,15 @@ extension Arca {
     /// the rest over REST before returning, so
     /// ``ProjectionWatchStream/valuations`` starts complete. The server-side
     /// watch is connection-scoped; reconnects and rotations re-create it
-    /// with the current scope automatically.
+    /// with the current scope automatically, retrying with backoff until a
+    /// re-create succeeds. A delivery gap or server resync re-reads the
+    /// scope under the same watch. While either is under way
+    /// ``ProjectionWatchStream/isStale`` is true and the rows are the last
+    /// ones delivered.
+    ///
+    /// With `window`, rows carry ``ProjectedValuation/pnl`` and
+    /// ``ProjectedValuation/volume``, each with its own `from` and status.
+    /// Rank or sum rows per figure only when their `from` matches.
     ///
     /// Requires `arca:ReadProjection` on the projection name. The stream
     /// never receives balances, reserved balances, fills, orders, or any
@@ -118,7 +132,15 @@ extension Arca {
     ///   - paths: Exact object paths to watch (max 500).
     ///   - prefix: A sub-tree of the projection to watch.
     ///   - exchange: Exchange identifier for mid prices (default: `"sim"`).
-    public func watchProjection(name: String, paths: [String] = [], prefix: String? = nil, exchange: String = "sim") async throws -> ProjectionWatchStream {
+    ///   - window: Attach the windowed `pnl` / `volume` figures the
+    ///     projection grants. `setPaths` / `setPrefix` keep it.
+    public func watchProjection(
+        name: String,
+        paths: [String] = [],
+        prefix: String? = nil,
+        exchange: String = "sim",
+        window: ProjectionWindow? = nil
+    ) async throws -> ProjectionWatchStream {
         await ws.ensureConnected()
         let initialScope = ProjectionWatchScope(paths: paths, prefix: prefix)
 
@@ -126,14 +148,14 @@ extension Arca {
             var all = reply.valuations
             var next = reply.cursor
             while let cursor = next, let self {
-                let page = try await self.getProjectionValuations(name: name, prefix: scope.wirePrefix, cursor: cursor)
+                let page = try await self.getProjectionValuations(name: name, prefix: scope.wirePrefix, cursor: cursor, window: window)
                 all.append(contentsOf: page.valuations)
                 next = page.cursor
             }
             return all
         }
 
-        let created = try await ws.createProjectionWatch(projection: name, scope: initialScope)
+        let created = try await ws.createProjectionWatch(projection: name, scope: initialScope, window: window?.rawValue)
         let initial = try await fetchRemaining(created, initialScope)
         var initialMap: [String: ProjectedValuation] = [:]
         for v in initial { initialMap[v.path] = v }
@@ -147,6 +169,8 @@ extension Arca {
         let scopeBox = SendableBox<ProjectionWatchScope>(initialScope)
         let continuationBox = SendableBox<AsyncStream<[String: ProjectedValuation]>.Continuation?>(nil)
         let refreshingBox = SendableBox<Bool>(false)
+        let resyncingBox = SendableBox<Bool>(false)
+        let resyncAgainBox = SendableBox<Bool>(false)
         let stoppedBox = SendableBox<Bool>(false)
         let projCallbacks = SendableBox<[UUID: @Sendable ([String: ProjectedValuation]) -> Void]>([:])
 
@@ -171,39 +195,51 @@ extension Arca {
             for cb in projCallbacks.value.values { cb(out) }
         }
 
+        let replaceRows: @Sendable ([ProjectedValuation]) -> Void = { vals in
+            var map: [String: ProjectedValuation] = [:]
+            for v in vals { map[v.path] = v }
+            structuralBox.update { $0 = map }
+            syncInterest()
+            emit()
+        }
+
         // The server-side watch lives on the connection that created it, so
         // every reconnect and every rotation must re-create it with the
         // CURRENT scope (and refetch the snapshot — deltas that fired
-        // during the gap are gone).
+        // during the gap are gone). A failed re-create leaves the stream
+        // reconnecting with its last rows and retries with backoff (1s
+        // doubling to 30s) until one succeeds or the stream stops.
         let recreateWatch: @Sendable () async -> Void = { [weak self] in
-            guard let self = self, !stoppedBox.value else { return }
-            guard !refreshingBox.value else { return }
-            refreshingBox.update { $0 = true }
-            do {
-                let oldWatchId = widBox.value
-                let scope = scopeBox.value
-                let newWatch = try await self.ws.createProjectionWatch(projection: name, scope: scope)
-                let vals = try await fetchRemaining(newWatch, scope)
-                guard !stoppedBox.value else {
-                    await self.ws.destroyProjectionWatch(watchId: newWatch.watchId)
-                    refreshingBox.update { $0 = false }
+            guard !stoppedBox.value, claimFlag(refreshingBox) else { return }
+            defer { refreshingBox.update { $0 = false } }
+            var attempt = 0
+            while !stoppedBox.value {
+                guard let self else { return }
+                do {
+                    let oldWatchId = widBox.value
+                    let scope = scopeBox.value
+                    let newWatch = try await self.ws.createProjectionWatch(projection: name, scope: scope, window: window?.rawValue)
+                    let vals = try await fetchRemaining(newWatch, scope)
+                    guard !stoppedBox.value else {
+                        await self.ws.destroyProjectionWatch(watchId: newWatch.watchId)
+                        return
+                    }
+                    widBox.update { $0 = newWatch.watchId }
+                    // Best-effort: the server ignores unknown watch IDs, so this
+                    // is safe even when the old watch died with the old socket.
+                    await self.ws.destroyProjectionWatch(watchId: oldWatchId)
+                    replaceRows(vals)
+                    state.update { $0 = .connected }
                     return
+                } catch {
+                    self.log.warning("watch", "projection watch re-create failed; retrying",
+                                     error: error, metadata: ["projection": name, "attempt": String(attempt + 1)])
+                    state.update { $0 = .reconnecting }
+                    let delay = min(30.0, pow(2.0, Double(attempt)))
+                    attempt += 1
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
-                widBox.update { $0 = newWatch.watchId }
-                // Best-effort: the server ignores unknown watch IDs, so this
-                // is safe even when the old watch died with the old socket.
-                await self.ws.destroyProjectionWatch(watchId: oldWatchId)
-                var map: [String: ProjectedValuation] = [:]
-                for v in vals { map[v.path] = v }
-                structuralBox.update { $0 = map }
-                syncInterest()
-                emit()
-            } catch {
-                // Best effort — keep existing data.
-                self.log.warning("watch", "projection watch re-create failed",
-                                 error: error, metadata: ["projection": name])
             }
-            refreshingBox.update { $0 = false }
         }
 
         // Scope changes are serialized so a later setPaths always wins; the
@@ -217,12 +253,44 @@ extension Arca {
                 let reply = try await self.ws.updateProjectionWatch(watchId: widBox.value, scope: scope)
                 let vals = try await fetchRemaining(reply, scope)
                 guard !stoppedBox.value, scopeBox.value == scope else { return } // superseded
-                var map: [String: ProjectedValuation] = [:]
-                for v in vals { map[v.path] = v }
-                structuralBox.update { $0 = map }
-                syncInterest()
-                emit()
+                replaceRows(vals)
             }
+        }
+
+        // object.valuation frames are critical: a lost one leaves a row
+        // wrong until that account changes again. A delivery gap or a
+        // server resync re-reads the scope under the same watch, behind any
+        // scope change in flight; a reconnect re-reads anyway, so it is
+        // skipped then. If the re-read fails the watch is re-created.
+        let resync: @Sendable () async -> Void = { [weak self] in
+            guard let self, !stoppedBox.value, state.value == .connected, !refreshingBox.value else { return }
+            guard claimFlag(resyncingBox) else {
+                resyncAgainBox.update { $0 = true }
+                return
+            }
+            repeat {
+                resyncAgainBox.update { $0 = false }
+                let scope = scopeBox.value
+                do {
+                    try await scopeQueue.run { [self] in
+                        guard !stoppedBox.value, scopeBox.value == scope else { return }
+                        let reply = try await self.ws.updateProjectionWatch(watchId: widBox.value, scope: scope)
+                        let vals = try await fetchRemaining(reply, scope)
+                        guard !stoppedBox.value, scopeBox.value == scope else { return }
+                        replaceRows(vals)
+                    }
+                } catch {
+                    self.log.warning("watch", "projection watch re-read after a gap failed; re-creating",
+                                     error: error, metadata: ["projection": name])
+                    resyncingBox.update { $0 = false }
+                    await recreateWatch()
+                    return
+                }
+            } while resyncAgainBox.value && !stoppedBox.value
+            resyncingBox.update { $0 = false }
+        }
+        let gapHandler = await ws.onGap { _ in
+            Task { await resync() }
         }
 
         let statusStream = await ws.statusStream
@@ -231,8 +299,7 @@ extension Arca {
                 if s == .disconnected && state.value != .loading {
                     state.update { $0 = .reconnecting }
                 } else if s == .connected && state.value == .reconnecting {
-                    await recreateWatch()
-                    state.update { $0 = .connected }
+                    Task { await recreateWatch() }
                 }
             }
         }
@@ -243,7 +310,7 @@ extension Arca {
         let rotatedStream = await ws.rotatedStream
         let rotatedTask = Task {
             for await _ in rotatedStream {
-                await recreateWatch()
+                Task { await recreateWatch() }
             }
         }
 
@@ -259,16 +326,19 @@ extension Arca {
                 for await (eventWatchId, deltas, removed, _) in projEvents {
                     guard eventWatchId == widBox.value else { continue }
                     structuralBox.update { current in
-                        for (path, valuation) in deltas {
-                            current[path] = valuation
-                        }
+                        // Removals first: an account replaced at the same
+                        // path arrives as its new row, which a removal must
+                        // not delete.
                         if let removed {
                             for path in removed {
                                 current.removeValue(forKey: path)
                             }
                         }
+                        for (path, valuation) in deltas {
+                            current[path] = valuation
+                        }
                     }
-                    state.update { $0 = .connected }
+                    if !refreshingBox.value { state.update { $0 = .connected } }
                     syncInterest()
                     emit()
                 }
@@ -296,24 +366,42 @@ extension Arca {
             state: state,
             projection: name,
             fields: created.fields,
+            window: created.window ?? window?.rawValue,
             watchId: widBox,
             scope: scopeBox,
             valuations: valBox,
             updates: updates,
             stop: { [ws] in
                 stoppedBox.update { $0 = true }
+                let continuation = continuationBox.value
                 continuationBox.update { $0 = nil }
+                continuation?.finish()
                 statusTask.cancel()
                 rotatedTask.cancel()
+                await ws.removeGapHandler(gapHandler)
                 await ws.releasePriceMarkets(priceInterest)
                 await ws.releaseMids(allMarkets: false)
                 await ws.destroyProjectionWatch(watchId: widBox.value)
             },
-            updateCallbacks: projCallbacks
+            updateCallbacks: projCallbacks,
+            resyncing: resyncingBox
         )
         stream.updateScope = applyScope
         return stream
     }
+}
+
+/// Sets a flag and reports whether this call set it, so exactly one of
+/// several racing callers proceeds.
+private func claimFlag(_ box: SendableBox<Bool>) -> Bool {
+    var claimed = false
+    box.update { value in
+        if !value {
+            value = true
+            claimed = true
+        }
+    }
+    return claimed
 }
 
 /// Runs async work one item at a time, in call order. Used to serialize a

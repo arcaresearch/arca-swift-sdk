@@ -44,13 +44,16 @@ public struct ProjectionWatchCreated: Sendable {
     public let fields: [String]
     public let valuations: [ProjectedValuation]
     public let cursor: String?
+    /// The window the rows' `pnl` / `volume` figures cover, when the watch has one.
+    public let window: String?
 
-    public init(watchId: String, projection: String, fields: [String], valuations: [ProjectedValuation], cursor: String?) {
+    public init(watchId: String, projection: String, fields: [String], valuations: [ProjectedValuation], cursor: String?, window: String? = nil) {
         self.watchId = watchId
         self.projection = projection
         self.fields = fields
         self.valuations = valuations
         self.cursor = cursor
+        self.window = window
     }
 }
 
@@ -1146,21 +1149,23 @@ public actor WebSocketManager {
     /// scope only narrows the projection's registration; an empty scope is
     /// an empty watch. The watch is connection-scoped on the server side,
     /// so callers must re-create it after a reconnect or rotation —
-    /// ``Arca/watchProjection(name:paths:prefix:exchange:)`` handles that
-    /// automatically.
-    public func createProjectionWatch(projection: String, scope: ProjectionWatchScope = ProjectionWatchScope()) async throws -> ProjectionWatchCreated {
+    /// ``Arca/watchProjection(name:paths:prefix:exchange:window:)`` handles
+    /// that automatically. `window` (`"30d"`) attaches the windowed `pnl` /
+    /// `volume` figures the projection grants to every row.
+    public func createProjectionWatch(projection: String, scope: ProjectionWatchScope = ProjectionWatchScope(), window: String? = nil) async throws -> ProjectionWatchCreated {
         try await projectionRequest(
-            .watchProjection(projection: projection, paths: scope.wirePaths, prefix: scope.wirePrefix, requestId: ""),
+            .watchProjection(projection: projection, paths: scope.wirePaths, prefix: scope.wirePrefix, window: window, requestId: ""),
             label: "watch_projection")
     }
 
     /// Replace a live projection watch's interest set in place: sends
     /// `update_projection_watch` and suspends until `projection_watch_updated`.
     /// The watch keeps its ID; the reply is the snapshot of the NEW scope,
-    /// which the caller swaps in wholesale.
-    public func updateProjectionWatch(watchId: String, scope: ProjectionWatchScope) async throws -> ProjectionWatchCreated {
+    /// which the caller swaps in wholesale. Without `window` the watch keeps
+    /// the one it has.
+    public func updateProjectionWatch(watchId: String, scope: ProjectionWatchScope, window: String? = nil) async throws -> ProjectionWatchCreated {
         try await projectionRequest(
-            .updateProjectionWatch(watchId: watchId, paths: scope.wirePaths, prefix: scope.wirePrefix, requestId: ""),
+            .updateProjectionWatch(watchId: watchId, paths: scope.wirePaths, prefix: scope.wirePrefix, window: window, requestId: ""),
             label: "update_projection_watch")
     }
 
@@ -1440,8 +1445,10 @@ public actor WebSocketManager {
     /// Stream of projection-watch delta frames: `object.valuation` events
     /// carrying a path-keyed map of redacted valuations for a projection
     /// watch. Frames are deltas — they carry only the accounts that changed
-    /// (merge rows by path) plus an optional `removed` list of paths whose
-    /// objects were deleted (drop those rows). Single-object
+    /// plus an optional `removed` list of paths whose objects were deleted
+    /// or hidden. Drop the removed rows first, then replace rows by path: a
+    /// row is always whole, and an account replaced at the same path
+    /// arrives as its new row (new `objectId`). Single-object
     /// `object.valuation` events (which carry `valuation`, not `valuations`)
     /// are not delivered here.
     public func projectionValuationEvents() -> AsyncStream<(String, [String: ProjectedValuation], [String]?, RealmEvent)> {
@@ -1852,18 +1859,19 @@ public actor WebSocketManager {
                 if let requestId = json["requestId"] as? String,
                    let continuation = pendingProjectionRequests.removeValue(forKey: requestId) {
                     projectionTimeoutTasks.removeValue(forKey: requestId)?.cancel()
+                    // Row by row: one row this SDK cannot read must not
+                    // empty the snapshot.
                     var valuations: [ProjectedValuation] = []
-                    if let raw = json["valuations"],
-                       let valData = JSONSafe.data(from: raw),
-                       let decoded = try? JSONDecoder().decode([ProjectedValuation].self, from: valData) {
-                        valuations = decoded
+                    if let raw = json["valuations"], let valData = JSONSafe.data(from: raw) {
+                        valuations = ProjectedValuation.decodeRows(valData)
                     }
                     continuation.resume(returning: ProjectionWatchCreated(
                         watchId: json["watchId"] as? String ?? "",
                         projection: json["projection"] as? String ?? "",
                         fields: json["fields"] as? [String] ?? [],
                         valuations: valuations,
-                        cursor: json["cursor"] as? String
+                        cursor: json["cursor"] as? String,
+                        window: json["window"] as? String
                     ))
                 }
                 return

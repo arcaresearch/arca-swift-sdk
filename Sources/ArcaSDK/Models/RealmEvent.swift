@@ -83,7 +83,9 @@ public struct RealmEvent: Codable, Sendable {
         watchId = try container.decodeIfPresent(String.self, forKey: .watchId)
         aggregation = try container.decodeIfPresent(PathAggregation.self, forKey: .aggregation)
         projection = try container.decodeIfPresent(String.self, forKey: .projection)
-        valuations = try container.decodeIfPresent([String: ProjectedValuation].self, forKey: .valuations)
+        // Row by row: one row this SDK cannot read must not drop the frame.
+        valuations = try container.decodeIfPresent([String: LenientDecoded<ProjectedValuation>].self, forKey: .valuations)?
+            .compactMapValues(\.value)
         removed = try container.decodeIfPresent([String].self, forKey: .removed)
         market = try container.decodeIfPresent(String.self, forKey: .market)
         interval = try container.decodeIfPresent(String.self, forKey: .interval)

@@ -172,6 +172,47 @@ the current scope. Requires `arca:ReadProjection` on the projection name.
 `getProjectionValuations(name:prefix:path:paths:cursor:limit:)` is the REST read
 with the same narrowing.
 
+## Rolling 30-day P&L and volume on projections (2.20.0)
+
+Requires the matching platform deployment. Register `pnl` and/or `volume` in a
+projection's `fields` (each is granted separately), then pass
+`window: .thirtyDays` to `watchProjection(name:paths:prefix:exchange:window:)`
+or `getProjectionValuations(..., window:)`. Rows then carry whichever figures
+the projection grants; a window on a projection that grants neither is rejected
+(`invalid_window`). Without a window nothing changes; `setPaths` / `setPrefix`
+keep it, and `stream.window` reports it.
+
+- `row.pnl: ProjectedPnl?` (`window`, `from`, `asOf`, `coverage`,
+  `coveredFrom`, `status`, `pnlUsd`). P&L over `(from, asOf]` is
+  `A(asOf) - A(from)` with `A(t) = equity(t) - cumInflows(t) + cumOutflows(t)`:
+  deposits, withdrawals and transfers never count; realized and unrealized
+  gains, fees, funding and liquidations do. It equals the P&L history's value
+  for the same `from`. `from` is an hour boundary and advances hourly.
+- `row.volume: ProjectedVolume?` (`window`, `from`, `asOf`, `coverage`,
+  `coveredFrom`, `status`, `volumeUsd`). Sum of `|size × price|` over executed
+  fills in `(from, asOf]`, liquidations and partial fills included, each fill
+  once; unfilled orders, deposits, transfers, fees, funding and price moves
+  never count. It changes only when a fill lands or the window advances.
+- `windowedStatus` per figure: `.complete`, `.incomplete` (P&L only: a mark
+  was missing, so the value is off by that position's move) or `.pending` (not
+  computed yet — `pnlUsd` / `volumeUsd` is nil, never `"0"`; render unknown).
+  `coverage == "since_creation"` marks an account younger than the window.
+  Rank or sum rows only when their `from` matches. Values are exact decimal
+  strings; parse with `Decimal(string:)`, never `Double`.
+- Between server frames the stream re-marks `equity`, `unrealizedValue` and
+  `pnl.pnlUsd` by the change in position P&L, in exact decimals, so unsettled
+  funding stays in; `volume` is never re-marked; server-priced rows are left as
+  delivered.
+- A row the client cannot decode is skipped on its own; the rest of the frame
+  still applies.
+- Recovery: a delivery gap or a server `stream.resync` re-reads the current
+  scope under the same watch; a reconnect re-creates the watch with the
+  current scope and window, retrying with backoff (1 s doubling to 30 s) until
+  it lands. `isStale` is true while either is under way — show the held rows
+  as stale, not as zero. A removal and a new row for the same path in one frame
+  (an account replaced at that path) keeps the new row. `stop()` finishes the
+  `updates` stream.
+
 `watchPrices(exchange:markets:)`: the market list is the stream's price interest
 on BOTH providers. The direct Hyperliquid source subscribes one `bbo` per market;
 the Arca socket's `subscribe_mids` carries the union of every live consumer's

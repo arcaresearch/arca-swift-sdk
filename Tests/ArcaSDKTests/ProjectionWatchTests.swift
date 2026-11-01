@@ -65,13 +65,13 @@ final class ProjectionWatchTests: XCTestCase {
 
     // MARK: - Revalue math
 
-    func testRevaluedRecomputesEquityFromRealizedPlusPnl() {
+    func testRevaluedShiftsEquityByThePnlChange() {
         let v = projected(
             equity: "1050", realized: "1000", unrealized: "50",
-            positions: [position(market: "hl:0:BTC", side: "long", size: "1", entry: "100", pnl: "50")]
+            positions: [position(market: "hl:0:BTC", side: "long", size: "1", entry: "100", mark: "150", pnl: "50")]
         )
         let out = v.revalued(with: ["hl:0:BTC": "300"])
-        // long 1 @ entry 100, mark 300 → pnl 200; equity = 1000 + 200
+        // long 1 marked 150 → 300: pnl 50 → 200, equity 1050 + 150
         XCTAssertEqual(out.unrealizedValue, "200")
         XCTAssertEqual(out.equity, "1200")
         XCTAssertEqual(out.positions?.first?.markPrice, "300")
@@ -81,7 +81,7 @@ final class ProjectionWatchTests: XCTestCase {
     func testRevaluedShiftsEquityByPnlDeltaWithoutRealized() {
         let v = projected(
             equity: "1050", realized: nil, unrealized: nil,
-            positions: [position(market: "hl:0:BTC", side: "long", size: "1", entry: "100", pnl: "50")]
+            positions: [position(market: "hl:0:BTC", side: "long", size: "1", entry: "100", mark: "150", pnl: "50")]
         )
         let out = v.revalued(with: ["hl:0:BTC": "300"])
         // pnl 50 → 200, delta +150; equity 1050 + 150; unrealized not projected → stays nil
@@ -235,8 +235,8 @@ final class ProjectionWatchTests: XCTestCase {
         )
     }
 
-    private func position(market: String, side: String, size: String, entry: String, pnl: String) -> PositionValue {
-        let json = #"{"market": "\#(market)", "side": "\#(side)", "size": "\#(size)", "entryPrice": "\#(entry)", "markPrice": "\#(entry)", "unrealizedPnl": "\#(pnl)", "valueUsd": "\#(pnl)"}"#
+    private func position(market: String, side: String, size: String, entry: String, mark: String? = nil, pnl: String) -> PositionValue {
+        let json = #"{"market": "\#(market)", "side": "\#(side)", "size": "\#(size)", "entryPrice": "\#(entry)", "markPrice": "\#(mark ?? entry)", "unrealizedPnl": "\#(pnl)", "valueUsd": "\#(pnl)"}"#
         return try! JSONDecoder().decode(PositionValue.self, from: Data(json.utf8))
     }
 

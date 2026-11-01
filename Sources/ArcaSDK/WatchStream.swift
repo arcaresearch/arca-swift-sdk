@@ -297,6 +297,10 @@ public struct AggregationWatchStream: Sendable {
 /// for the markets its rows hold, so a leaderboard ticks with the market at
 /// the cost of its own rows.
 ///
+/// With a window, rows carry ``ProjectedValuation/pnl`` and
+/// ``ProjectedValuation/volume``. `equity`, `unrealizedValue` and `pnl`
+/// re-mark together in exact decimals; `volume` never moves with mids.
+///
 /// The stream never receives balances, reserved balances, fills, orders,
 /// or any field outside the projection's registered set.
 public struct ProjectionWatchStream: Sendable {
@@ -314,6 +318,8 @@ public struct ProjectionWatchStream: Sendable {
     public let projection: String
     /// The projection's registered field set.
     public let fields: [String]
+    /// The rolling window the rows' `pnl` / `volume` figures cover, if any.
+    public let window: String?
     /// Current server-assigned watch ID (changes after reconnect/rotation).
     public let watchId: SendableBox<String>
     /// The interest set this watch currently covers.
@@ -322,11 +328,20 @@ public struct ProjectionWatchStream: Sendable {
     /// mids tick.
     public let valuations: SendableBox<[String: ProjectedValuation]>
     /// Async stream of merged valuation snapshots (latest-only buffering).
+    /// Finishes when ``stop`` is called.
     public let updates: AsyncStream<[String: ProjectedValuation]>
-    /// Stop listening, unsubscribe, and destroy the server-side watch.
+    /// Stop listening, unsubscribe, destroy the server-side watch, and
+    /// finish ``updates``.
     public let stop: @Sendable () async -> Void
 
     internal let updateCallbacks: SendableBox<[UUID: @Sendable ([String: ProjectedValuation]) -> Void]>
+    internal let resyncing: SendableBox<Bool>
+
+    /// True while the rows may be behind the server: the connection is
+    /// down, the watch is being re-created, or a delivery gap is being
+    /// re-read. The rows are the last ones delivered; show them as stale,
+    /// never as zero.
+    public var isStale: Bool { state.value != .connected || resyncing.value }
 
     /// Register a callback invoked on each merged snapshot. Returns an unsubscribe function.
     @discardableResult
