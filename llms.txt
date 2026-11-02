@@ -115,6 +115,13 @@ root, the money moving between them (`moving`), the funding operations and
 streams it (`AsyncThrowingStream<WalletSnapshot, Error>`) with the same
 resume and backoff as `walletAccountEvents`, keyed on `watermark.sequence`.
 
+Settlement may use the frozen pre-operation balance plus the confirmed change
+when an older buffered venue update cannot establish whether it already includes
+the transfer. Trading changes during that hold follow on the next qualifying
+venue update; a missing opening balance remains unknown. Never add a completed
+deposit to the server's settled balance. This is a platform correction and does
+not require an SDK upgrade.
+
 `watchWalletMoney(ownerAddress:arcaPath:boundaryId:)` returns a
 `WalletMoneyWatchStream` whose `money` is the latest `WalletMoney`: a
 `MoneyFigure` for the total, for Cash and for each account (`accounts`,
