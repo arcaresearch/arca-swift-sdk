@@ -1,5 +1,15 @@
 # Arca Swift SDK
 
+## Account refresh after a Hyperliquid fill
+
+After the corresponding platform deployment, fill and account-change events
+invalidate the server's cached and in-flight Hyperliquid account reads before
+event delivery on every replica. Waiting reads restart on that invalidation;
+older responses cannot repopulate the cache. This covers V9 REST state,
+positions and WebSocket enrichment and needs no SDK or app update. Keep using
+`watchExchangeState`; a successful close receipt is execution evidence, and
+available balance still comes from the refreshed account state.
+
 ## Deposits arriving on Cash
 
 After the corresponding platform deployment, a deposit a provider confirmed
