@@ -87,7 +87,7 @@ final class WalletMoneyTests: XCTestCase {
             for account in snapshot.accounts {
                 let figure = try XCTUnwrap(money.account(account.arcaId), "\(file): \(account.arcaId)")
                 XCTAssertEqual(figure.settledMicro, account.balances?.totalMicro, "\(file): \(account.arcaId) is balances.totalMicro")
-                XCTAssertEqual(figure.availableMicro, account.balances?.withdrawableMicro, file)
+                XCTAssertEqual(figure.availableMicro, account.balances.map { Micro.sum([$0.withdrawableMicro, $0.spotMicro]) }, file)
                 XCTAssertEqual(figure.current, account.current, file)
                 XCTAssertEqual(figure.asOf, account.asOf, file)
             }
@@ -95,6 +95,26 @@ final class WalletMoneyTests: XCTestCase {
             XCTAssertEqual(money.current, snapshot.totals.current, file)
             XCTAssertTrue(money.diagnostics.isEmpty, "\(file): \(money.diagnostics)")
         }
+    }
+
+    /// Under Hyperliquid's unified mode the venue reports withdrawable 0 and
+    /// keeps the free money in spot; an account must not read as having
+    /// nothing to pay out.
+    func testUnifiedAccountAvailableCountsFreeSpot() throws {
+        let money = WalletMoney.compose(try Self.fixture("22-unified-collateral"))
+        XCTAssertEqual(money.account(Self.hl1)?.availableMicro, "1100000", "free spot beside a held position")
+        XCTAssertEqual(money.account(Self.hl1)?.settledMicro, "1500000")
+        XCTAssertEqual(money.account(Self.hl2)?.availableMicro, "1000000", "nothing held: all of it")
+    }
+
+    func testMalformedAccountBalanceHasNoAvailable() {
+        let balances = { (withdrawable: String, spot: String) in
+            WalletNativeBalances(totalMicro: "1", perpMicro: "0", withdrawableMicro: withdrawable, spotMicro: spot, source: "hyperliquid_ws")
+        }
+        XCTAssertNil(WalletMoney.payout(balances("", "5")))
+        XCTAssertNil(WalletMoney.payout(balances("5", "x")))
+        XCTAssertNil(WalletMoney.payout(balances("-1", "5")))
+        XCTAssertEqual(WalletMoney.payout(balances("2", "3")), "5")
     }
 
     // MARK: - The move, stage by stage

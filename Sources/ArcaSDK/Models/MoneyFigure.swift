@@ -133,7 +133,8 @@ public struct MoneyFigure: Equatable, Sendable {
     /// `balances.totalMicro`, the wallet's `totals.totalMicro`.
     public let settledMicro: String?
     /// What the figure can pay out now: Cash `availableMicro` (confirmed less
-    /// reservations), an account's `withdrawableMicro`; nil for the total.
+    /// reservations), an account's `withdrawableMicro` plus `spotMicro`; nil
+    /// for the total and for an account with no well-formed balances.
     public let availableMicro: String?
     /// Money on its way in, one leg per operation.
     public let arriving: [MoneyLeg]
@@ -318,7 +319,7 @@ public struct WalletMoney: Equatable, Sendable {
         for account in snapshot.accounts {
             let ends = legs.accounts[account.arcaId] ?? LegEnds()
             var figure = MoneyFigure(kind: .account(arcaId: account.arcaId), settledMicro: account.balances?.totalMicro,
-                                     availableMicro: account.balances?.withdrawableMicro, arriving: ends.arriving, departing: ends.departing,
+                                     availableMicro: account.balances.flatMap(Self.payout), arriving: ends.arriving, departing: ends.departing,
                                      asOf: account.asOf, current: account.current, source: account.balances?.source ?? "unavailable")
             if let revaluation = revaluations[account.arcaId] {
                 switch Self.revaluation(revaluation, for: account, figure: figure) {
@@ -523,6 +524,17 @@ public struct WalletMoney: Equatable, Sendable {
         }
         if revaluation.observedAt < figureTime { return .failure("venue frame older than the figure") }
         return .success(revaluation.equityMicro)
+    }
+
+    /// What an account can pay out now: the venue's perps withdrawable plus
+    /// its free spot USDC, two parts of the one observation the frame
+    /// carries, counted as Arca's route previews count them. Under
+    /// Hyperliquid's unified and portfolio-margin modes withdrawable is 0 and
+    /// free spot is all of it. Nil unless both are non-negative integers.
+    static func payout(_ balances: WalletNativeBalances) -> String? {
+        guard let withdrawable = Micro.parse(balances.withdrawableMicro), let spot = Micro.parse(balances.spotMicro),
+              withdrawable >= 0, spot >= 0 else { return nil }
+        return String(withdrawable + spot)
     }
 
     // MARK: - Diagnostics

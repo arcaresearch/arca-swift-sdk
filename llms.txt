@@ -137,7 +137,9 @@ not require an SDK upgrade.
 `MoneyFigure` for the total, for Cash and for each account (`accounts`,
 `orderedAccounts`), each one Arca's figure VERBATIM (`settledMicro`: Cash
 `confirmedMicro`, an account's `balances.totalMicro`, `totals.totalMicro`;
-`availableMicro`: Cash `availableMicro`, an account's `withdrawableMicro`)
+`availableMicro`: Cash `availableMicro`, an account's `withdrawableMicro +
+spotMicro` from the same observation, so a unified-margin account whose venue
+reports withdrawable 0 still shows its free spot)
 plus the legs of the operations moving money into or out of it (`arriving`,
 `departing`: one `MoneyLeg` per operation with `stage` reserved / inTransit /
 expected, `amountMicro`, `counterparty` cash / account / external / unknown).
