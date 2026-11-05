@@ -14,6 +14,15 @@ public enum TwapType: String, Codable, Sendable {
     case dca
 }
 
+/// A TWAP order. It is scheduled as ``expectedSliceCount`` slots, one every
+/// ``intervalSeconds`` from ``startTime``. In each slot at most one slice is
+/// sent: an IOC market order for an even share of what is left over the
+/// remaining slots, never more than three planned slices and never more than
+/// `totalSize − executedSize`. A slot passes without a slice while the
+/// previous slice is still in flight, or when its share is below the venue's
+/// minimum order. The TWAP completes when `executedSize` reaches `totalSize`,
+/// when no slot is left, or at ``endTime``; it fails after five failed slices
+/// in a row.
 public struct Twap: Codable, Sendable {
     public let twapId: String
     public let realmId: String
@@ -25,18 +34,22 @@ public struct Twap: Codable, Sendable {
     public let market: String
     public let side: String
     public let totalSize: String?
+    /// Summed fill size of settled slices, partial fills included.
     public let executedSize: String
+    /// Summed fill size × average fill price (USD) of settled slices.
     public let executedNotional: String
-    /// Running counter of slices the scanner has dispatched so far. Starts
-    /// at 0 and increments once per dispatch. To render `"X of N"` before
-    /// the first slice resolves, use ``expectedSliceCount``.
+    /// Slices sent so far, including one still in flight. Starts at 0 and
+    /// never exceeds ``expectedSliceCount``.
     public let sliceCount: Int
-    /// Planned total slice count, computed at create time as
-    /// `max(1, durationSeconds / intervalSeconds)`. Stable for the
-    /// TWAP's lifetime; use this when displaying progress as `"X / N"`
-    /// since ``sliceCount`` is 0 until the first slice dispatches.
+    /// Number of slots: `max(1, durationSeconds / intervalSeconds)`. Stable
+    /// for the TWAP's lifetime; use it for `"X of N"` progress.
     public let expectedSliceCount: Int
+    /// Settled slices that executed a nonzero size, partial fills included.
     public let filledSlices: Int
+    /// Settled slices that executed nothing (rejected, failed, or an IOC
+    /// that found no liquidity within the slippage cap).
+    /// `sliceCount − filledSlices − failedSlices` is 1 while a slice is in
+    /// flight and 0 otherwise.
     public let failedSlices: Int
     public let intervalSeconds: Int
     /// Echo of the request's `durationMinutes`.
@@ -45,8 +58,11 @@ public struct Twap: Codable, Sendable {
     public let endTime: String?
     public let status: TwapStatus
     /// High-level discriminator for terminal state:
-    /// `"user"`, `"liquidated"`, `"consecutive_failures"`. Set on both
-    /// `cancelled` and `failed` TWAPs. Use this for programmatic branching.
+    /// `"user"`, `"liquidated"`, `"consecutive_failures"`,
+    /// `"progress_unknown"` (started before fills were counted into
+    /// `executedSize`, so stopped rather than risk trading past its total).
+    /// Set on both `cancelled` and `failed` TWAPs. Use this for
+    /// programmatic branching.
     public let cancelReason: String?
     /// Descriptive failure detail captured from the last slice when the
     /// TWAP terminates as `failed` (e.g. `"Slippage cap hit at 1.5%"`,
@@ -63,7 +79,12 @@ public struct Twap: Codable, Sendable {
     public let leverage: Int?
     public let slippageBps: Int
     public let randomize: Bool
+    /// Failed slices since the last filled one; the TWAP fails at 5.
     public let consecutiveFailures: Int
+    /// When the next slot opens and the next slice is due. `nil` once the
+    /// TWAP is no longer active. At or after ``endTime`` it means no slot is
+    /// left and the TWAP completes once its in-flight slice settles.
+    public let nextSliceAt: String?
     public let createdAt: String
     public let updatedAt: String
 }
