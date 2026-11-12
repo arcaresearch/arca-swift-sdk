@@ -43,4 +43,25 @@ final class ObservationOrderTests: XCTestCase {
         XCTAssertFalse(unstamped.observedBefore(later))
         XCTAssertFalse(later.observedBefore(unstamped))
     }
+
+    /// A watch re-marks its last structural state on every price tick. When
+    /// revaluation dropped `observedAt`, those frames came out unstamped, so a
+    /// consumer could not tell a pre-fill frame from the post-fill read it had
+    /// already applied: on staging a filled TWAP slice appeared after the
+    /// app's re-read and vanished on the next tick (2026-11-12, BRENTOIL).
+    func testRevaluedFrameKeepsItsReadTimeSoAPreFillTickCannotReplaceAPostFillRead() throws {
+        let preFill = try JSONDecoder().decode(ExchangeState.self, from: Data(#"""
+        {"account":{"id":"a","realmId":"r","name":"n","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},
+         "marginSummary":{"equity":"10000","initialMarginUsed":"500","maintenanceMarginRequired":"50","availableToWithdraw":"9500","totalNtlPos":"5000","totalUnrealizedPnl":"0","totalRawUsd":"10000"},
+         "positions":[{"id":"pos_btc","market":"hl:0:BTC","side":"long","size":"0.05","entryPrice":"100000","leverage":10,"marginUsed":"500"}],
+         "openOrders":[],"observedAt":"2026-11-12T20:52:45.1Z","stateSource":"fold"}
+        """#.utf8))
+        let postFill = try state(observedAt: "2026-11-12T20:52:56.8Z")
+
+        let tick = preFill.revalued(with: ["hl:0:BTC": "101000"])
+        XCTAssertNotEqual(tick.marginSummary.totalUnrealizedPnl, preFill.marginSummary.totalUnrealizedPnl, "the tick must actually re-mark")
+        XCTAssertEqual(tick.observedAt, preFill.observedAt, "revaluation changes prices, not when the state was read")
+        XCTAssertEqual(tick.stateSource, preFill.stateSource)
+        XCTAssertTrue(tick.observedBefore(postFill), "a re-marked pre-fill frame is still older than the post-fill read")
+    }
 }

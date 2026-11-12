@@ -1245,6 +1245,10 @@ extension ExchangeState {
             // Any field added to ExchangeState must be carried through here.
             collateralModel: collateralModel, tradingAllocation: tradingAllocation,
             financialInputId: financialInputId, mirrorUnsettledFunding: mirrorUnsettledFunding, stateRefreshIntervalMs: stateRefreshIntervalMs,
-            accountingPending: accountingPending)
+            accountingPending: accountingPending,
+            // Re-marking changes prices, not when the state was read. A
+            // re-marked frame without its read time is unordered, so a
+            // pre-fill tick could replace a post-fill read (observedBefore).
+            observedAt: observedAt, stateSource: stateSource)
     }
 }
