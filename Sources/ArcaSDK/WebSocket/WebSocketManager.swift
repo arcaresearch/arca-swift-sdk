@@ -623,14 +623,16 @@ public actor WebSocketManager {
     func recoverPathReady(_ path: String) async throws {
         watchPath(path)
         defer { unwatchPath(path) }
-        sendPathWatch(path, generation: primaryGeneration)
+        // Before auth, auth's resubscribe sends the fresh watch this waits on.
+        if _status == .connected { sendPathWatch(path, generation: primaryGeneration) }
         try await awaitPathReady(path)
     }
 
     func recoverPathSnapshotOperations(_ path: String) async throws -> [Operation] {
         watchPath(path)
         defer { unwatchPath(path) }
-        sendPathWatch(path, generation: primaryGeneration)
+        // Before auth, auth's resubscribe sends the fresh watch this waits on.
+        if _status == .connected { sendPathWatch(path, generation: primaryGeneration) }
         return try await awaitPathSnapshotOperations(path)
     }
 
@@ -685,7 +687,8 @@ public actor WebSocketManager {
         }
         if !added.isEmpty {
             ensureConnected()
-            sendEventTypes(added, generation: primaryGeneration)
+            // Auth replays every counted type (resubscribeAll).
+            if _status == .connected { sendEventTypes(added, generation: primaryGeneration) }
         }
     }
 
@@ -734,7 +737,7 @@ public actor WebSocketManager {
     func recoverEventTypesReady(_ types: [String]) async throws {
         acquireEventTypes(types)
         defer { releaseEventTypes(types) }
-        sendEventTypes(types, generation: primaryGeneration)
+        if _status == .connected { sendEventTypes(types, generation: primaryGeneration) }
         try await awaitEventTypesReady(types)
     }
 
@@ -779,7 +782,12 @@ public actor WebSocketManager {
                 task.cancel()
             } else {
                 ensureConnected()
-                sendPathWatch(path, generation: primaryGeneration)
+                // Before auth the server answers "watch" with "not
+                // authenticated" and no requestId, which reads as a dead
+                // connection: the socket was dropped and the reconnect backoff
+                // outlasted the caller (Gobi iOS's home chart, 2026-11-12).
+                // Auth replays every counted path (resubscribeAll).
+                if _status == .connected { sendPathWatch(path, generation: primaryGeneration) }
             }
         }
     }
@@ -1038,7 +1046,11 @@ public actor WebSocketManager {
         let watchId = UUID().uuidString
         chartHistoryWatches[watchId] = (target: target, kind: kind, objectId: objectId)
         ensureConnected()
-        sendMessage(.watchChartHistory(watchId: watchId, target: target, kind: kind, objectId: objectId))
+        // The frame carries no requestId, so a pre-auth refusal would drop the
+        // socket. Auth replays every registered chart watch (resubscribeAll).
+        if _status == .connected {
+            sendMessage(.watchChartHistory(watchId: watchId, target: target, kind: kind, objectId: objectId))
+        }
         return watchId
     }
 
