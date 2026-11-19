@@ -8,6 +8,15 @@ final class OrderSizingTests: XCTestCase {
         XCTAssertEqual(try Arca.normalizedReductionSize(size: "123456789.123456789", fraction: "1", decimals: 9), "123456789.123456789")
         XCTAssertEqual(try Arca.normalizedReductionSize(size: "5", fraction: "0.5", decimals: 0), "2")
     }
+    // The unclosable 0.6 PUMP position (2026-11-15): a full close rounded down to the lot
+    // threw for a position under one lot and left the sub-lot part of a larger one open.
+    func testFullReductionReturnsThePositionSizeUnrounded() throws {
+        XCTAssertEqual(try Arca.normalizedReductionSize(size: "0.6", fraction: "1", decimals: 0), "0.6")
+        XCTAssertEqual(try Arca.normalizedReductionSize(size: "37313101.6", fraction: "1.0", decimals: 0), "37313101.6")
+        XCTAssertEqual(try Arca.normalizedReductionSize(size: "3.000", fraction: "1", decimals: 5), "3")
+        XCTAssertEqual(try Arca.normalizedReductionSize(size: "37313101.6", fraction: "0.5", decimals: 0), "18656550")
+        XCTAssertThrowsError(try Arca.normalizedReductionSize(size: "0.6", fraction: "0.5", decimals: 0))
+    }
     func testInvalidAndSubLotInputsFailClosed() {
         for size in ["0", "-1", "NaN", "1junk", "1e9", " 1"] {
             XCTAssertThrowsError(try Arca.normalizedReductionSize(size: size, fraction: "1", decimals: 5))

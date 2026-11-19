@@ -357,7 +357,7 @@ All methods excluded from this SDK (admin/debug utilities like `checkInvariants`
 
 ## Account capabilities and reduction sizing
 
-Use getExchangeCapabilities for account-authoritative optional controls. Use normalizedReductionSize with canonical market, exact size and fraction; it reads market lot precision and returns an exact rounded-down decimal, rejecting missing metadata and invalid/sub-lot values. Never infer precision or feature support from a venue prefix.
+Use getExchangeCapabilities for account-authoritative optional controls. Use normalizedReductionSize with canonical market, exact size and fraction; it reads market lot precision and returns an exact rounded-down decimal for a partial reduction, rejecting missing metadata and invalid/sub-lot values. A full reduction (fraction 1) returns the size unchanged, so a position holding a part smaller than one lot can still be closed with a reduce-only order. Never infer precision or feature support from a venue prefix.
 ## Operation wait recovery
 
 `waitForOperation` listens before acquiring its subscription. Startup and actual
