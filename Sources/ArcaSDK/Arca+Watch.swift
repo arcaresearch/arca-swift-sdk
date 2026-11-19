@@ -1104,7 +1104,7 @@ extension Arca {
                         startPosition: nil, fee: preview.fee, exchangeFee: nil, platformFee: nil,
                         builderFee: preview.builderFee, realizedPnl: preview.realizedPnl, resultingPosition: nil,
                         isLiquidation: preview.isLiquidation, createdAt: preview.createdAt, isTrigger: nil,
-                        tpsl: nil, triggerPx: nil, liquidationKind: nil)
+                        tpsl: nil, triggerPx: nil, liquidationKind: nil, closeReason: nil)
                 } else { continue }
                 guard market == nil || fill.market == market else { continue }
                 let key = fill.fillId ?? fill.id

@@ -1780,6 +1780,37 @@ final class ModelDecodingTests: XCTestCase {
         XCTAssertNil(fill.orderId)
     }
 
+    /// A venue close that is not a liquidation (the paper venue sweeping a
+    /// position smaller than one lot) decodes with its reason, so an app can
+    /// tell it from a liquidation without inferring from size and fee.
+    func testFillDecodingWithCloseReason() throws {
+        func fill(_ extra: String) throws -> Fill {
+            let json = """
+            {
+                "id": "ple_sweep", "operationId": "opr_sweep", "market": "hl:0:PUMP",
+                "side": "sell", "size": "0.6", "price": "0.0026885", "fee": "0",
+                "resultingPosition": { "side": "long", "size": "0", "leverage": 10 },
+                "isLiquidation": true, "createdAt": "2026-11-19T17:58:01.000000Z"\(extra)
+            }
+            """.data(using: .utf8)!
+            return try decoder.decode(Fill.self, from: json)
+        }
+
+        let sweep = try fill(#", "closeReason": "dust_sweep""#)
+        XCTAssertEqual(sweep.closeReason, "dust_sweep")
+        XCTAssertTrue(sweep.isDustSweep)
+        XCTAssertNil(sweep.liquidationKind)
+
+        let adl = try fill(#", "closeReason": "adl", "liquidationKind": "adl""#)
+        XCTAssertEqual(adl.closeReason, "adl")
+        XCTAssertFalse(adl.isDustSweep)
+
+        // Older fills and paper margin liquidations carry no reason.
+        let unstamped = try fill("")
+        XCTAssertNil(unstamped.closeReason)
+        XCTAssertFalse(unstamped.isDustSweep)
+    }
+
     func testSparklinesResponseDecoding() throws {
         let json = """
         {

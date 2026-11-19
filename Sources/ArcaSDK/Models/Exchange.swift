@@ -1136,10 +1136,23 @@ public struct Fill: Codable, Sendable {
     public let tpsl: String?
     /// Trigger price of the originating order. Present only for trigger orders.
     public let triggerPx: String?
-    /// Classification of an `isLiquidation` fill: "liquidation" (margin
-    /// call) or "adl" (backstop / auto-deleverage close). Absent on
-    /// liquidations recorded before the venue method was stamped.
+    /// Classification of an `isLiquidation` fill that was a margin
+    /// liquidation: "liquidation" (margin call) or "adl" (backstop /
+    /// auto-deleverage close). Absent on liquidations recorded before the
+    /// venue method was stamped, and on a venue close that was not a
+    /// liquidation (see `closeReason`).
     public let liquidationKind: String?
+    /// Why the venue closed the position on an `isLiquidation` fill:
+    /// "liquidation" or "adl" (the account could not carry it), "delisted"
+    /// (the market was delisted and the position settled), or "dust_sweep"
+    /// (the paper venue closed a position smaller than one lot, at the mark,
+    /// with no fee). `nil` when the venue recorded no reason; treat that as a
+    /// liquidation.
+    public let closeReason: String?
+
+    /// True when the venue closed dust on its own: housekeeping, not a
+    /// liquidation. Do not notify the user that they were liquidated.
+    public var isDustSweep: Bool { closeReason == "dust_sweep" }
 }
 
 public struct FillListResponse: Codable, Sendable {
