@@ -52,7 +52,13 @@ public final class ArcaClient: @unchecked Sendable {
     /// `auth` message. The server may gate opt-in features (e.g. the sim-only
     /// price overlay / server-authoritative pricing) to clients that advertise
     /// the matching token. Inert until a server-side feature reads it.
-    public static let advertisedCapabilities: [String] = ["server-authoritative-pricing"]
+    ///
+    /// `open-operation-states` says this SDK decodes an operation in any state,
+    /// including ones it has no case for (``OperationState/unknown``). To a
+    /// client that advertises capabilities without it, the server reports a
+    /// `pending_review` operation as `pending`, because SDK versions before it
+    /// failed to decode the whole response.
+    public static let advertisedCapabilities: [String] = ["server-authoritative-pricing", "open-operation-states"]
 
     public init(
         token: String,

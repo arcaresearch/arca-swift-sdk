@@ -47,6 +47,18 @@ Pending creation and receiver setup process every streamed chain head; the
 realm's configured confirmation depth and settlement checks still apply.
 This correction requires the corresponding platform deployment.
 
+## Operation states
+
+`Operation.state` can be `pending`, `pending_review`, `completed`, `failed` or
+`expired`. `pending_review` means the platform could not settle the outcome and
+set the operation aside: it is not finished and can still become completed or
+failed. The cases are `.pending`, `.pendingReview`, `.completed`, `.failed`, `.expired`, `.unknown`. A state this SDK version does not know decodes as `.unknown`
+instead of failing the whole response. Only completed, failed and expired are
+terminal (`isTerminal`); treat every other state as still open. SDK builds
+before this one failed to decode any response containing an operation in
+review (including the object detail fetched by `watchExchangeState`), so the
+server reports such an operation as `pending` to them.
+
 ## Hyperliquid order response compatibility
 
 Account snapshots, order lists and individual-order reads use canonical

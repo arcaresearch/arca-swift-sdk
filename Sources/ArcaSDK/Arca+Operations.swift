@@ -215,7 +215,7 @@ extension Arca {
         switch operation.state {
         case .failed, .expired:
             throw ArcaError.operationFailed(operation: operation)
-        case .pending, .completed:
+        case .pending, .pendingReview, .completed, .unknown:
             break
         }
     }

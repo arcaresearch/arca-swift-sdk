@@ -61,7 +61,7 @@ public final class OperationHandle<Response: OperationResponse>: @unchecked Send
             if response.operation.state == .failed || response.operation.state == .expired {
                 throw ArcaError.operationFailed(operation: response.operation)
             }
-            guard response.operation.state == .pending else { return response }
+            guard !response.operation.state.isTerminal else { return response }
             let completed = try await wait(response.operation.id.rawValue)
             return response.withOperation(completed)
         }

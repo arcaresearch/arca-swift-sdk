@@ -133,16 +133,36 @@ public enum OperationType: Codable, Sendable, Hashable {
     }
 }
 
+/// Where an operation stands.
+///
+/// The server's vocabulary can grow, and an operation in a state this SDK
+/// version has no name for must still decode: it travels inside object detail,
+/// operation lists and stream snapshots, so one unreadable state used to make
+/// the whole response unreadable. In November 2026 two Gobi Live users could
+/// not open their trading account for six days because one of their operations
+/// was `pending_review`, which this enum did not list. A value with no case
+/// here decodes as ``unknown``.
 public enum OperationState: String, Codable, Sendable {
     case pending
+    /// Not finished and not progressing on its own: the platform could not
+    /// settle the outcome and has set the operation aside for a person or a
+    /// later venue read. It can still become `completed` or `failed`.
+    case pendingReview = "pending_review"
     case completed
     case failed
     case expired
+    /// A state this SDK version does not know. Treated as not finished.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = OperationState(rawValue: raw) ?? .unknown
+    }
 
     public var isTerminal: Bool {
         switch self {
         case .completed, .failed, .expired: return true
-        case .pending: return false
+        case .pending, .pendingReview, .unknown: return false
         }
     }
 }
